@@ -87,11 +87,28 @@ def _resources(text: str) -> tuple[str, ...]:
     return tuple(RESOURCE_PREFIX_RE.sub("", name) for name in names)
 
 
-def canonicalise(name: str, lmul: list[str]) -> tuple[str, dict[str, str]]:
+def canonicalise(
+    name: str, lmul: list[str], glued: dict[str, list[str]] | None = None
+) -> tuple[str, dict[str, str]]:
     """Split a record name into ``(template, {axis: member})``."""
     axes: dict[str, str] = {}
     segments = []
+    glued = glued or {}
     for token in name.split("_"):
+        attached = None
+        for axis, stems in glued.items():
+            for stem in stems:
+                suffix = token[len(stem):] if token.startswith(stem) else None
+                if suffix in ("8", "16", "32", "64"):
+                    attached = (axis, suffix, stem)
+                    break
+            if attached:
+                break
+        if attached:
+            axis, member, stem = attached
+            axes[axis] = member
+            segments.append(f"{stem}{{{{ {axis} }}}}".replace(" ", ""))
+            continue
         if token in lmul:
             axes["LMUL"] = token
             segments.append("{{LMUL}}")
@@ -115,7 +132,9 @@ def canonicalise(name: str, lmul: list[str]) -> tuple[str, dict[str, str]]:
     return "_".join(segments), axes
 
 
-def collect(recs, model: str, lmul: list[str]) -> tuple[dict[str, Base], int]:
+def collect(
+    recs, model: str, lmul: list[str], glued: dict[str, list[str]] | None = None
+) -> tuple[dict[str, Base], int]:
     bases: dict[str, Base] = {}
     total = 0
     for name in recs.body:
@@ -126,7 +145,7 @@ def collect(recs, model: str, lmul: list[str]) -> tuple[dict[str, Base], int]:
             continue
         total += 1
         wt = f["WriteType"]
-        template, axes = canonicalise(wt, lmul)
+        template, axes = canonicalise(wt, lmul, glued)
         base = bases.setdefault(template, Base(template))
         key = tuple(f"{axis}={axes[axis]}" for axis in sorted(axes))
         base.members[key] = Payload(
@@ -143,20 +162,61 @@ def collect(recs, model: str, lmul: list[str]) -> tuple[dict[str, Base], int]:
     return bases, total
 
 
-def _member_env(key: tuple[str, ...], vlen: int) -> dict[str, int]:
+def _member_env(key: tuple[str, ...], base: Base, vlen: int) -> dict[str, int]:
+    """Numeric environment for one member.
+
+    ``worst`` means "the widest member this base actually covers", which is how
+    ``SiFive7IsWorstCaseMX<mx, SchedMxList>`` behaves: a family over MF8..M4
+    emits a ``_WorstCase`` record that duplicates M4, not M8.
+    """
+    present = [name for name in base.axes.get("LMUL", []) if name != "WorstCase"]
+    widest = max((LMUL_UNITS[DEFAULT_LMUL.index(name)] for name in present), default=LMUL_UNITS[-1])
     env: dict[str, int] = {"vlen": vlen}
     for item in key:
         axis, _, member = item.partition("=")
         if axis == "LMUL":
-            units = LMUL_UNITS[DEFAULT_LMUL.index(member)] if member != "WorstCase" else LMUL_UNITS[-1]
-            env["LMUL"] = units
+            env["LMUL"] = widest if member == "WorstCase" else LMUL_UNITS[DEFAULT_LMUL.index(member)]
         else:
             env[axis] = int(member)
     return env
 
 
-def _eval(expr: str, env: dict[str, int], base: Base, key: tuple[str, ...]) -> int:
-    return family_expand._eval_expr(expr, dict(env))
+def _eval(
+    expr: str,
+    env: dict[str, int],
+    base: Base,
+    key: tuple[str, ...],
+    projections: dict[str, dict[str, int]] | None = None,
+) -> int:
+    merged = dict(env)
+    for name, table in (projections or {}).items():
+        axis, _, prop = name.partition(".")
+        chosen = dict(item.partition("=")[::2] for item in key).get(axis)
+        if chosen is not None and chosen in table:
+            merged[f"{axis}.{prop}"] = table[chosen]
+    return family_expand._eval_expr(expr, merged)
+
+
+def _table_or_expr(
+    entry: dict,
+    field: str,
+    key: tuple[str, ...],
+    env: dict[str, int],
+    base: Base,
+    projections: dict[str, dict[str, int]] | None,
+) -> int | None:
+    """A field is either an expression or an explicit per-member table."""
+    table = entry.get(f"{field}_table")
+    if table is not None:
+        chosen = dict(item.partition("=")[::2] for item in key)
+        for axis in ("LMUL", "SEW", "EEW", "NF"):
+            if axis in chosen and chosen[axis] in table:
+                return int(table[chosen[axis]])
+        raise family_expand.ExpandError(f"{field}_table has no row for {key}")
+    expr = entry.get(field)
+    if expr is None:
+        return None
+    return _eval(expr, env, base, key, projections)
 
 
 def _entry_scope(base: Base, entry: dict) -> list[tuple[str, ...]] | None:
@@ -182,16 +242,15 @@ def match_formula(base: Base, entry: dict, vlen: int) -> tuple[list[tuple[str, .
     matched = []
     for key in scope:
         payload = base.members[key]
-        env = _member_env(key, vlen)
+        env = _member_env(key, base, vlen)
         for axis in ("LMUL", "NF", "EEW", "SEW"):
             if axis in entry.get("requires", []) and axis not in env:
                 return ["missing axis " + axis]
         try:
-            latency = _eval(entry["latency"], env, base, key)
-            release_hi = entry.get("release_hi")
-            release = (
-                (1, _eval(release_hi, env, base, key)) if release_hi is not None else ()
-            )
+            projections = entry.get("projections")
+            latency = _table_or_expr(entry, "latency", key, env, base, projections)
+            release_hi = _table_or_expr(entry, "release_hi", key, env, base, projections)
+            release = (1, release_hi) if release_hi is not None else ()
         except family_expand.ExpandError as exc:
             return [], [f"{key}: {exc}"]
         resources = tuple(entry.get("resources", ()))
@@ -209,17 +268,24 @@ def match_formula(base: Base, entry: dict, vlen: int) -> tuple[list[tuple[str, .
             )
             continue
         matched.append(key)
-    return matched, failures
+    if failures:
+        # An entry explains a base completely or not at all; a partial fit is a
+        # different formula, not a partial explanation.
+        return [], failures
+    return matched, []
 
 
 def report(records: str, model: str, catalogue: str | None, vlen: int, out: Path) -> int:
     recs = load_records(records)
-    bases, total = collect(recs, model, DEFAULT_LMUL)
-    entries = json.loads(Path(catalogue).read_text())["formulas"] if catalogue else []
+    payload = json.loads(Path(catalogue).read_text()) if catalogue else {}
+    entries = payload.get("formulas", [])
+    glued = payload.get("glued")
+    bases, total = collect(recs, model, DEFAULT_LMUL, glued)
     out.mkdir(parents=True, exist_ok=True)
 
     unexplained = []
     matched = 0
+    kinds = {"flat": 0, "constant": 0, "formula": 0}
     with (out / "bases.jsonl").open("w") as handle:
         for template in sorted(bases):
             base = bases[template]
@@ -230,7 +296,9 @@ def report(records: str, model: str, catalogue: str | None, vlen: int, out: Path
                 if explained and not failures:
                     fits.append(entry["name"])
                     covered.update(explained)
-            complete = len(covered) == len(base.members)
+            constant = len({payload.as_tuple() for payload in base.members.values()}) == 1
+            flat = not base.axes
+            complete = flat or constant or len(covered) == len(base.members)
             handle.write(
                 json.dumps(
                     {
@@ -238,6 +306,7 @@ def report(records: str, model: str, catalogue: str | None, vlen: int, out: Path
                         "axes": {axis: sorted(values) for axis, values in base.axes.items()},
                         "members": len(base.members),
                         "formulas": fits,
+                        "kind": "flat" if flat else ("constant" if constant else "formula"),
                         "records": [
                             {
                                 "key": list(key),
@@ -256,6 +325,12 @@ def report(records: str, model: str, catalogue: str | None, vlen: int, out: Path
             )
             if complete:
                 matched += 1
+                if flat:
+                    kinds["flat"] += 1
+                elif constant:
+                    kinds["constant"] += 1
+                else:
+                    kinds["formula"] += 1
             else:
                 unexplained.append(
                     {
@@ -281,7 +356,8 @@ def report(records: str, model: str, catalogue: str | None, vlen: int, out: Path
             handle.write(f"  - e.g. {', '.join(templates[:4])}\n")
 
     print(f"explicit records: {total}")
-    print(f"bases: {len(bases)}  matched: {matched}  unexplained: {len(unexplained)}")
+    print(f"bases: {len(bases)}  explained: {matched}  unexplained: {len(unexplained)}")
+    print(f"  flat: {kinds['flat']}  constant: {kinds['constant']}  formula: {kinds['formula']}")
     print(f"latency shapes: {len(shapes)}")
     for item in unexplained[:10]:
         print(f"  unexplained: {item['template']} {item['axes']}")

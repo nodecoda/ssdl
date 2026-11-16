@@ -135,6 +135,227 @@
         "VS"
       ],
       "source": "RISCVSchedSiFive7.td:713-720"
+    },
+    {
+      "name": "mask-one-per-element",
+      "latency": "max(1, LMUL // 4)",
+      "release_hi": "1 + max(1, LMUL // 4)",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:109-126 (SiFive7GetCyclesOnePerElement), mask/compare writes"
+    },
+    {
+      "name": "vector-alu-4",
+      "latency": "4",
+      "release_hi": "1 + max(1, LMUL // 4)",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:205-230 (single-DLEN ALU children), latency 4"
+    },
+    {
+      "name": "vector-alu-8",
+      "latency": "8",
+      "release_hi": "1 + max(1, LMUL // 4)",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:205-230, latency 8"
+    },
+    {
+      "name": "vector-cmp",
+      "latency": "4 + max(0, max(1, LMUL // 4) - 1)",
+      "release_hi": "1 + max(1, LMUL // 4)",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:205-230 (compare adds the VLUpperBound tail)"
+    },
+    {
+      "name": "reduction",
+      "latency": "max(1, LMUL // 4) + 5 * (4 + log2(vlen // (2 * SEW)))",
+      "release_hi": "1 + max(1, LMUL // 4) + 5 * (4 + log2(vlen // (2 * SEW)))",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:131-151 (SiFive7GetReductionCycles)"
+    },
+    {
+      "name": "gather",
+      "latency": "7 + 256 // SEW",
+      "release_hi": "1 + (vlen * LMUL) // (8 * SEW) + 4",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:1123 (GatherEI16VVCycles)"
+    },
+    {
+      "name": "compress",
+      "latency": "7 + (vlen * LMUL) // (8 * SEW)",
+      "release_hi": "1 + 7 + (vlen * LMUL) // (8 * SEW)",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:913 (compress uses one-element cycles)"
+    },
+    {
+      "name": "div-sqrt",
+      "latency": "SEW.div_factor * 16 * LMUL // SEW",
+      "release_hi": "1 + SEW.div_factor * 16 * LMUL // SEW",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:127-140 (SiFive7GetDivOrSqrtFactor)",
+      "projections": {
+        "SEW.div_factor": {
+          "16": 15,
+          "32": 28,
+          "64": 57
+        }
+      }
+    },
+    {
+      "name": "load-4",
+      "latency": "4",
+      "release_hi": "1 + max(1, LMUL // 4)",
+      "resources": [
+        "VCQ",
+        "VL"
+      ],
+      "source": "RISCVSchedSiFive7.td:574-640 (VLDE family: one element per DLEN, latency 4)"
+    },
+    {
+      "name": "store-1",
+      "latency": "1",
+      "release_hi": "1 + max(1, LMUL // 4)",
+      "resources": [
+        "VCQ",
+        "VS"
+      ],
+      "source": "RISCVSchedSiFive7.td:660-668 (unit-stride stores)"
+    },
+    {
+      "name": "store-vector",
+      "latency": "1",
+      "release_hi": "1 + (vlen * LMUL) // (8 * EEW)",
+      "resources": [
+        "VCQ",
+        "VS"
+      ],
+      "source": "RISCVSchedSiFive7.td:660-668 (strided/indexed stores release after VLUpperBound)"
+    },
+    {
+      "name": "mask-move",
+      "latency": "4",
+      "release_hi": "2 + LMUL // 64",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:68-73 (isSingleDLEN/GetMaskLoadStoreCycles)"
+    },
+    {
+      "name": "narrowing",
+      "latency": "8",
+      "release_hi": "1 + max(1, LMUL // 2)",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:205-230 (narrowing ops use the Seg2 shape)"
+    },
+    {
+      "name": "integer-div",
+      "latency": "16 * LMUL",
+      "release_hi": "1 + 16 * LMUL",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:662 (VIDiv scales with LMUL only)"
+    },
+    {
+      "name": "ordered-reduction",
+      "latency": "6 * (vlen * LMUL) // (8 * SEW)",
+      "release_hi": "1 + 6 * (vlen * LMUL) // (8 * SEW)",
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td:153-166 (SiFive7GetOrderedReductionCycles: 6*VL)"
+    },
+    {
+      "name": "mask-load",
+      "latency": "4",
+      "release_hi": "2 + LMUL // 64",
+      "resources": [
+        "VCQ",
+        "VL"
+      ],
+      "source": "RISCVSchedSiFive7.td:68-73 (SiFive7GetMaskLoadStoreCycles), :574"
+    },
+    {
+      "name": "mask-store",
+      "latency": "1",
+      "release_hi": "2 + LMUL // 64",
+      "resources": [
+        "VCQ",
+        "VS"
+      ],
+      "source": "RISCVSchedSiFive7.td:68-73, :660"
+    },
+    {
+      "name": "indexed-load",
+      "latency": "3 + (vlen * LMUL) // (8 * EEW)",
+      "release_hi": "1 + (vlen * LMUL) // (8 * EEW)",
+      "resources": [
+        "VCQ",
+        "VL"
+      ],
+      "source": "RISCVSchedSiFive7.td:91-110 with nf=1 (indexed loads stall until addresses are ready)"
+    },
+    {
+      "name": "sf-vfnrclip",
+      "latency_table": {
+        "MF8": 7,
+        "MF4": 8,
+        "MF2": 10,
+        "M1": 13,
+        "M2": 19,
+        "WorstCase": 19
+      },
+      "release_hi_table": {
+        "MF8": 2,
+        "MF4": 3,
+        "MF2": 5,
+        "M1": 9,
+        "M2": 17,
+        "WorstCase": 17
+      },
+      "resources": [
+        "VCQ",
+        "VA1"
+      ],
+      "source": "RISCVSchedSiFive7.td (SF VFNRClip: transcribed table, no closed form upstream)",
+      "table": true
     }
-  ]
+  ],
+  "glued": {
+    "EEW": [
+      "WriteVSTS",
+      "WriteVSTOX",
+      "WriteVSTUX",
+      "WriteVLDOX",
+      "WriteVLDUX"
+    ]
+  }
 }

@@ -3,7 +3,7 @@
 - date: 2026-11-17
 - status: **Implemented + pilot verified（全模型重生成待完成）**
 - 工具：`tools/ssdl/family_expand.py`
-- 测试：`check.py` 59/59
+- 测试：`check.py` 60/60
 - 源：LLVM `700e551714cc`
 
 ## 1. 实现了什么
@@ -136,13 +136,17 @@ machine vlde {
 | 项 | 值 |
 |---|---:|
 | 显式 `WriteRes` | 3772 |
-| canonical base | 355 |
-| 轴集合为 `{LMUL}` / `{}` / `{LMUL,SEW}` / `{NF,EEW,LMUL}` | 182 / 126 / 38 / 9 |
-| SEG 九族（每族 224 = NF7×EEW4×LMUL8） | 2016 条 / 6 条公式 |
+| canonical base | 340 |
+| 分类：扁平 / 载荷恒定 / 公式 | 126 / 40 / 174 |
+| 公式目录条目 | 22（其中 1 条是显式表） |
+| 未解释 base | **0** |
 
-公式目录 `data/riscv-sched-formulas.json` 每条都引用 TableGen class 行号；矿工只检查目录，不从记录反推公式。SEG 的 6 条公式已 100% 覆盖 2016 条（`family_catalogue_explains_every_segmented_family`）。
+公式目录 `data/riscv-sched-formulas.json` 每条都引用 TableGen class 行号；矿工只检查目录，不从记录反推公式。`family_catalogue_leaves_no_record_unexplained` 断言 3772 条全部归入三类之一，`family_catalogue_explains_every_segmented_family` 断言 SEG 九族 2016 条由 6 条公式逐成员复现。
 
-剩余 346 个 base 尚未入目录，`/tmp/mine/unexplained.json` 就是清单。
+两条语义是这一步逼出来的，已写进 `family_expand.py`：
+
+1. `worst(AXIS)` 的数值 = **该 base 实际覆盖的最宽成员**，不是全局 M8。上游 `SiFive7IsWorstCaseMX<mx, SchedMxList>` 就是这样：覆盖 MF8..M4 的族，`_WorstCase` 复制 M4。表达方式是给窄族声明自己的轴视图（成员表不同，`name_format` 相同）。
+2. 轴可以有第二个数值投影：`set SEW = [...] : units = [...], div_factor = [15, 28, 57];`，表达式写 `SEW.div_factor`。上游 `SiFive7GetDivOrSqrtFactor` 就是 `!cond(sew)` 表，这是逐行转写而不是拟合。
 
 ## 5. 剩余工作（Step 3 未完成项）
 
@@ -159,5 +163,5 @@ machine vlde {
 cd /home/ubuntu/llvm/llvm-dev
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
-python3 tools/ssdl/check.py   # 59/59
+python3 tools/ssdl/check.py   # 60/60
 ```
