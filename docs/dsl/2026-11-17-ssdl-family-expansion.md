@@ -148,9 +148,32 @@ machine vlde {
 1. `worst(AXIS)` 的数值 = **该 base 实际覆盖的最宽成员**，不是全局 M8。上游 `SiFive7IsWorstCaseMX<mx, SchedMxList>` 就是这样：覆盖 MF8..M4 的族，`_WorstCase` 复制 M4。表达方式是给窄族声明自己的轴视图（成员表不同，`name_format` 相同）。
 2. 轴可以有第二个数值投影：`set SEW = [...] : units = [...], div_factor = [15, 28, 57];`，表达式写 `SEW.div_factor`。上游 `SiFive7GetDivOrSqrtFactor` 就是 `!cond(sew)` 表，这是逐行转写而不是拟合。
 
+## 4.2 从 base 还原压缩源：发射器与第一条等价性诊断
+
+`family_mine.py --emit` 把 340 个 base 还原成 `docs/examples/sifive7-family-writes.ssdl`（1143 行）：
+
+| 指标 | 值 |
+|---|---:|
+| 压缩源行数 | 1143 |
+| 展开后 bind 数 | 3772（等于显式 `WriteRes`） |
+| 相对展开源 | 12259 → 1143（10.7×，单模型） |
+| 轴视图 | 8 个 LMUL 视图 + SEW/EEW/NF（窄族需要自己的最宽成员） |
+| 非笛卡尔成员集 | 按轴分解成矩形块（`[LMUL in [...], SEW in [...]]`） |
+
+`family_expand --check-coverage` 通过；`emit_td` 通过；`-print-records` 后 `equiv.py` 给出第一条真实差异：
+
+```text
+1638 read      ReadAdvance 未生成
+ 474 write     SchedWrite 只在 intree（如 WriteVLDS*）
+  92 variant   SchedWriteVariant 未生成
+   1 InstRW    调度类映射未生成
+```
+
+结论：压缩前端的形状是对的（3772 条 bind 全部还原），但「等价」还差三类记录。这不是公式问题，是 Step 3.4 的范围问题：ReadAdvance 的维度化（`advance R[LMUL] : cycles = ...`）、`variant`、`map` 尚未进入压缩源。
+
 ## 5. 剩余工作（Step 3 未完成项）
 
-1. **全模型压缩源**：把 SiFive7VLEN512 的 3772 条显式 WR 全部写成 ~355 条语句（含 126 条扁平）。当前只完成了 `WriteVLDE` 子族。
+1. **全模型压缩源**：WriteRes 半边已完成（1143 行 → 3772 条）；ReadAdvance（1638）、`variant`（92）、`InstRW` 仍缺。
 2. ~~公式库~~ → 已收敛为 `units` + `cdiv/max/min`，不再是自由投影（上游 `!cond(mx)` 就是同一组整数运算）。
 3. **四组 `equiv.py`**：`SiFive7VLEN512/128X100/1024X300` + `Andes45Model` 全部 `records match`。当前只做了子族字段级比较。
 4. ~~`WorstCase` 语义~~ → 已实现 `worst(D)`：伪成员、不参与计数、数值取最宽成员。

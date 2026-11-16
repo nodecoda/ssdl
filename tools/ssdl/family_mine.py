@@ -61,6 +61,7 @@ class Payload:
 class Base:
     template: str
     axes: dict[str, list[str]] = field(default_factory=dict)
+    shape: "Shape | None" = None
     members: dict[tuple[str, ...], Payload] = field(default_factory=dict)
 
     @property
@@ -87,13 +88,34 @@ def _resources(text: str) -> tuple[str, ...]:
     return tuple(RESOURCE_PREFIX_RE.sub("", name) for name in names)
 
 
+@dataclass
+class Shape:
+    template: str
+    axes: dict[str, str]
+    base: str
+    order: list[str]
+    formats: dict[str, str]
+
+
 def canonicalise(
     name: str, lmul: list[str], glued: dict[str, list[str]] | None = None
-) -> tuple[str, dict[str, str]]:
-    """Split a record name into ``(template, {axis: member})``."""
+) -> Shape:
+    """Split a record name into template, axes, the literal base and formats."""
     axes: dict[str, str] = {}
     segments = []
+    literals: list[str] = []
+    order: list[str] = []
+    formats: dict[str, str] = {}
     glued = glued or {}
+
+    def add(axis: str, member: str, fmt: str, literal: str) -> None:
+        axes[axis] = member
+        order.append(axis)
+        formats[axis] = fmt
+        segments.append(f"{literal}{{{{ {axis} }}}}".replace(" ", ""))
+        if literal:
+            literals.append(literal)
+
     for token in name.split("_"):
         attached = None
         for axis, stems in glued.items():
@@ -106,30 +128,24 @@ def canonicalise(
                 break
         if attached:
             axis, member, stem = attached
-            axes[axis] = member
-            segments.append(f"{stem}{{{{ {axis} }}}}".replace(" ", ""))
+            add(axis, member, "{value}", stem)
             continue
-        if token in lmul:
-            axes["LMUL"] = token
-            segments.append("{{LMUL}}")
-            continue
-        if token == "WorstCase":
-            axes["LMUL"] = "WorstCase"
-            segments.append("{{LMUL}}")
+        if token in lmul or token == "WorstCase":
+            add("LMUL", token, "_{value}", "")
             continue
         match = SEW_RE.match(token)
         if match:
-            axes["SEW"] = match.group(1)
-            segments.append("{{SEW}}")
+            add("SEW", match.group(1), "_E{value}", "")
             continue
         match = SEG_RE.match(token)
         if match:
-            axes["NF"] = match.group("nf")
-            axes["EEW"] = match.group("eew")
-            segments.append(f"{match.group('stem')}{{{{NF}}}}e{{{{EEW}}}}")
+            stem = match.group("stem")
+            add("NF", match.group("nf"), "{value}", stem)
+            add("EEW", match.group("eew"), "e{value}", "")
             continue
+        literals.append(token)
         segments.append(token)
-    return "_".join(segments), axes
+    return Shape("_".join(segments), axes, "_".join(literals), order, formats)
 
 
 def collect(
@@ -145,8 +161,10 @@ def collect(
             continue
         total += 1
         wt = f["WriteType"]
-        template, axes = canonicalise(wt, lmul, glued)
+        shape = canonicalise(wt, lmul, glued)
+        template, axes = shape.template, shape.axes
         base = bases.setdefault(template, Base(template))
+        base.shape = shape
         key = tuple(f"{axis}={axes[axis]}" for axis in sorted(axes))
         base.members[key] = Payload(
             latency=int(f["Latency"]),
@@ -371,11 +389,267 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--catalogue", default="data/riscv-sched-formulas.json")
     parser.add_argument("--vlen", type=int, default=512)
     parser.add_argument("--out", default="/tmp/mine")
+    parser.add_argument("--emit", help="write compressed SSDL for the model here")
+    parser.add_argument("--prefix", default="VLEN512SiFive7", help="ProcResource name prefix")
+    parser.add_argument("--family", default="siFive7")
+    parser.add_argument("--instance", default="sifive-7-series")
     args = parser.parse_args(argv)
     catalogue = args.catalogue if Path(args.catalogue).exists() else None
     if catalogue is None:
         print("note: no catalogue yet; every base will be unexplained", file=sys.stderr)
+    if args.emit:
+        payload = json.loads(Path(args.catalogue).read_text())
+        recs = load_records(args.records)
+        text = emit_ssdl(
+            recs, args.model, payload, args.vlen, args.prefix,
+            args.family, args.instance, args.model,
+        )
+        Path(args.emit).write_text(text)
+        print(f"wrote {args.emit}: {len(text.splitlines())} lines")
+        return 0
     return report(args.records, args.model, catalogue, args.vlen, Path(args.out))
+
+
+
+
+# --------------------------------------------------------------------------
+# Emission: turn the mined bases back into compressed SSDL.
+# --------------------------------------------------------------------------
+
+LMUL_ORDER = {name: index for index, name in enumerate(DEFAULT_LMUL)}
+
+
+def _order_members(axis: str, members) -> tuple[str, ...]:
+    if axis == "LMUL":
+        return tuple(sorted(set(members), key=lambda m: LMUL_ORDER[m]))
+    return tuple(sorted(set(members), key=int))
+
+
+def resource_table(recs, model: str) -> dict[str, dict]:
+    table = {}
+    for name in recs.body:
+        cls = recs.cls.get(name, "")
+        if cls not in ("ProcResource", "ProcResGroup"):
+            continue
+        fields = _fields(recs, name)
+        if fields.get("SchedModel") != model:
+            continue
+        kind = fields.get("Kind", name)
+        if cls == "ProcResGroup":
+            members = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", fields.get("Resources", ""))
+            table[kind] = {"group": members, "buffer": int(fields.get("BufferSize", "0") or 0)}
+        else:
+            table[kind] = {
+                "units": int(fields.get("NumUnits", "1")),
+                "buffer": int(fields.get("BufferSize", "0") or 0),
+                "super": None if fields.get("Super", "?") == "?" else fields["Super"],
+            }
+    return table
+
+
+def decompose(keys: list[tuple[str, ...]], axes: list[str]) -> list[dict[str, tuple[str, ...]]]:
+    """Split a member set into rectangular blocks (product == member count).
+
+    ``WriteVFALUV_{LMUL}_E{SEW}`` is not a product: SEW=64 only exists for
+    M1..M8.  Splitting by the axis with the fewest values recovers rectangles,
+    which is exactly what ``[LMUL in [...], SEW in [...]]`` can express.
+    """
+    if not keys:
+        return []
+    table = [dict(item.partition("=")[::2] for item in key) for key in keys]
+    values = {axis: _order_members(axis, [row[axis] for row in table]) for axis in axes}
+    size = 1
+    for axis in axes:
+        size *= len(values[axis])
+    if size == len(keys):
+        return [values]
+    axis = min(axes, key=lambda name: len(values[name]))
+    blocks = []
+    for value in values[axis]:
+        subset = [key for key, row in zip(keys, table) if row[axis] == value]
+        rest = [name for name in axes if name != axis]
+        for block in decompose(subset, rest) if rest else [{}]:
+            blocks.append({axis: (value,), **block})
+    return blocks
+
+
+class AxisViews:
+    def __init__(self):
+        self.views: dict[tuple, str] = {}
+        self.definitions: list[str] = []
+
+    def get(self, axis: str, members: tuple[str, ...], fmt: str) -> str:
+        key = (axis, members, fmt)
+        if key not in self.views:
+            name = axis if (axis == "LMUL" and members == tuple(DEFAULT_LMUL)) else f"{axis}_{len(self.views)}"
+            self.views[key] = name
+            units = (
+                [LMUL_UNITS[DEFAULT_LMUL.index(member)] for member in members]
+                if axis == "LMUL"
+                else [int(member) for member in members]
+            )
+            if axis in ("EEW", "NF", "SEW"):
+                units = [int(member) for member in members]
+            extra = ""
+            if axis == "SEW" and all(member in ("16", "32", "64") for member in members):
+                factors = {"16": 15, "32": 28, "64": 57}
+                extra = ", div_factor = [" + ", ".join(str(factors[m]) for m in members) + "]"
+            self.definitions.append(
+                f"set {name} = [{', '.join(members)}] : kind = dimension, "
+                f'name_format = "{fmt}", units = [{", ".join(str(u) for u in units)}]{extra};'
+            )
+        return self.views[key]
+
+    def render(self, axis: str, members: tuple[str, ...], fmt: str) -> str:
+        name = self.get(axis, members, fmt)
+        declared = next(ms for (ax, ms, f), n in self.views.items() if n == name)
+        if tuple(members) == declared:
+            return name
+        return f"{name} in [{', '.join(members)}]"
+
+
+def _rename(expr: str, mapping: dict[str, str]) -> str:
+    """Formulas name the axis (`LMUL`); the emitted statement uses the view."""
+    out = expr
+    for axis, view in mapping.items():
+        out = re.sub(rf"\b{axis}\b", view, out)
+    return out
+
+
+def _release(entry: dict, mapping: dict[str, str]) -> str:
+    if not entry.get("release_hi"):
+        return "[]"
+    return f"[1, {_rename(entry['release_hi'], mapping)}]"
+
+
+def render_bind(prefix, target, latency, uops, resources, release, acquire) -> str:
+    res = ", ".join(prefix + name for name in resources)
+    rel = "[" + ", ".join(str(value) for value in release) + "]" if release else "[]"
+    acq = "[" + ", ".join(str(value) for value in acquire) + "]" if acquire else "[]"
+    return (
+        f"    bind {target} -> [{res}], latency = {latency}, uops = {uops}, "
+        f"release = {rel}, acquire = {acq};"
+    )
+
+
+def emit_ssdl(
+    recs,
+    model: str,
+    catalogue: dict,
+    vlen: int,
+    prefix: str,
+    family: str,
+    instance: str,
+    machine_name: str,
+) -> str:
+    bases, total = collect(recs, model, DEFAULT_LMUL, catalogue.get("glued"))
+    entries = catalogue["formulas"]
+    resources = resource_table(recs, model)
+    views = AxisViews()
+    lines: list[str] = [
+        f"# Generated from {model} by tools/ssdl/family_mine.py --emit.",
+        f"# Formula catalogue: data/riscv-sched-formulas.json (each entry cites TableGen).",
+        "",
+    ]
+    body: list[str] = []
+    for name in sorted(resources):
+        info = resources[name]
+        if "group" in info:
+            body.append(f"    res_group {name} = [{', '.join(info['group'])}]"
+                        + (f" : buffer = {info['buffer']};" if info["buffer"] else ";"))
+            continue
+        extra = f", buffer = {info['buffer']}" if info["buffer"] else ""
+        super_ = f" : super = {info['super']}" if info["super"] else ""
+        body.append(f"    resource {name}{super_} : units = {info['units']}{extra};")
+    body.append("")
+
+    for template in sorted(bases):
+        base = bases[template]
+        shape = base.shape
+        if not base.axes:
+            (key,) = base.members
+            payload = base.members[key]
+            body.append(f"    write {shape.base};")
+            body.append(render_bind(prefix, shape.base, payload.latency, payload.uops,
+                                    payload.resources, payload.release, payload.acquire))
+            continue
+        main_axes = [axis for axis in shape.order if axis != "LMUL" or "WorstCase" not in base.axes[axis]]
+        all_axes = [axis for axis in shape.order]
+        members = {
+            axis: _order_members(axis, [m for m in base.axes[axis] if m != "WorstCase"])
+            for axis in all_axes
+        }
+        if any(not members[axis] for axis in all_axes):
+            payload = next(iter(base.members.values()))
+            query = ", ".join(f"worst({axis})" for axis in all_axes)
+            target = f"{shape.base}[{query}]"
+            body.append(f"    write {target};")
+            body.append(render_bind(prefix, target, payload.latency, payload.uops,
+                                    payload.resources, payload.release, payload.acquire))
+            continue
+        keys = [key for key in sorted(base.members) if "LMUL=WorstCase" not in key]
+        covered: dict[str, list[tuple[str, ...]]] = {}
+        for key in keys:
+            chosen = None
+            for entry in entries:
+                got, _ = match_formula(base, entry, vlen)
+                if key in got:
+                    chosen = entry["name"]
+                    break
+            covered.setdefault(chosen, []).append(key)
+        for chosen, group in covered.items():
+            entry = next((e for e in entries if e["name"] == chosen), None)
+            for block in decompose(group, all_axes):
+                query = ", ".join(
+                    views.render(axis, _order_members(axis, block[axis]), shape.formats[axis])
+                    for axis in all_axes
+                )
+                target = f"{shape.base}[{query}]"
+                body.append(f"    write {target};")
+                if entry is None or entry.get("latency_table"):
+                    payload = base.members[group[0]]
+                    body.append(render_bind(prefix, target, payload.latency, payload.uops,
+                                            payload.resources, payload.release, payload.acquire))
+                else:
+                    mapping = {
+                        axis: views.get(axis, _order_members(axis, block[axis]), shape.formats[axis])
+                        for axis in all_axes
+                    }
+                    body.append(
+                        f"    bind {target} -> [{', '.join(prefix + r for r in entry['resources'])}], "
+                        f"latency = {_rename(entry['latency'], mapping)}, uops = {entry.get('uops', 1)}, "
+                        f"release = {_release(entry, mapping)}, acquire = [0, 1];"
+                    )
+        if "WorstCase" in base.axes.get("LMUL", ()):
+            key = next(k for k in sorted(base.members) if "LMUL=WorstCase" in k)
+            query = ", ".join(
+                f"worst({views.render(axis, members[axis], shape.formats[axis])})"
+                if axis == "LMUL"
+                else views.render(axis, members[axis], shape.formats[axis])
+                for axis in all_axes
+            )
+            target = f"{shape.base}[{query}]"
+            body.append(f"    write {target};")
+            entry = next(
+                (e for e in entries if key in match_formula(base, e, vlen)[0]), None
+            )
+            if entry is None or entry.get("latency_table"):
+                payload = base.members[key]
+                body.append(render_bind(prefix, target, payload.latency, payload.uops,
+                                        payload.resources, payload.release, payload.acquire))
+            else:
+                mapping = {
+                    axis: views.get(axis, members[axis], shape.formats[axis]) for axis in all_axes
+                }
+                body.append(
+                    f"    bind {target} -> [{', '.join(prefix + r for r in entry['resources'])}], "
+                    f"latency = {_rename(entry['latency'], mapping)}, uops = {entry.get('uops', 1)}, "
+                    f"release = {_release(entry, mapping)}, acquire = [0, 1];"
+                )
+
+    header = views.definitions + ["", f"machine {family}(vlen: INT) {{"]
+    footer = ["}", "", f"machine {instance} : {family}({vlen}) {{", "}"]
+    return "\n".join(lines + header + body + footer) + "\n"
 
 
 if __name__ == "__main__":
