@@ -60,6 +60,9 @@ ITEM_HEAD_RE = re.compile(rf"^(write|read|bind|advance)\s+({IDENT})\s*\[")
 DIM_USE_WORST_RE = re.compile(rf"^worst\(\s*({IDENT})\s*\)$")
 DIM_USE_SUBSET_RE = re.compile(rf"^({IDENT})\s+in\s*\[([^\]]*)\]$")
 DIM_USE_RE = re.compile(rf"^({IDENT})$")
+VARIANT_HEAD_RE = re.compile(rf"^variant\s+({IDENT})\s*(?:\[(.*)\])?\s*\{{$")
+VARIANT_CASE_RE = re.compile(r"^(case\s+.+?|default)\s*:\s*\[(.*)\]\s*;$")
+SELECTED_RE = re.compile(rf"^({IDENT})\s*(?:\[(.*)\])?$")
 FAMILY_RE = re.compile(rf"^machine\s+({IDENT})\s*\((.*?)\)\s*\{{")
 INSTANCE_RE = re.compile(rf"^machine\s+({IDENT})\s*:\s*({IDENT})\s*\((.*?)\)\s*\{{")
 PLAIN_RE = re.compile(rf"^machine\s+({IDENT})\s*\{{")
@@ -362,10 +365,26 @@ def _axis_units(
     return units
 
 
-def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine]]:
-    """Return (dimensions, machines) from the compressed source."""
+GLOBAL_KEYWORDS = (
+    "feature",
+    "predicate",
+    "predicate_prolog",
+    "sti_decl",
+    "sti_function",
+    "tii_predicate",
+    "itineraries",
+)
+
+
+def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine], list[str]]:
+    """Return (dimensions, machines, globals) from the compressed source.
+
+    ``globals`` are target-level declarations (features, predicates, ...) that
+    the family layer copies through untouched.
+    """
     dimensions: dict[str, Axis] = {}
     machines: list[Machine] = []
+    globals_: list[str] = []
     current: Machine | None = None
     depth = 0
     for line_no, line in _logical_lines(text):
@@ -437,17 +456,25 @@ def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine]]:
                 continue
             if line.strip() == "}":
                 continue
+            if line.split(" ", 1)[0].rstrip(":") in GLOBAL_KEYWORDS:
+                globals_.append(line)
+                continue
             raise ExpandError(f"line {line_no}: expected a declaration, got {line.strip()!r}")
         else:
-            if line.strip() == "}":
+            text = line.strip()
+            if text == "}":
                 depth -= 1
                 if depth == 0:
                     current = None
+                    continue
+                current.body.append(Stmt(line_no, "}"))
                 continue
-            current.body.append(Stmt(line_no, line.strip()))
+            if text.endswith("{"):
+                depth += 1
+            current.body.append(Stmt(line_no, text))
     if current is not None:
         raise ExpandError(f"unterminated machine {current.name}")
-    return dimensions, machines
+    return dimensions, machines, globals_
 
 
 def _parse_dim_uses(
@@ -485,6 +512,117 @@ def _parse_dim_uses(
     return uses
 
 
+def _expand_variant(
+    line: int,
+    base: str,
+    index_text: str,
+    cases: list[Stmt],
+    env: dict[str, object],
+    dimensions: dict[str, Axis],
+) -> list[str]:
+    """Expand ``variant Base[A] { case P: [Sel[A]]; default: [Sel2[A]]; }``.
+
+    Selections must use axes of the subject; each member of the subject is
+    substituted into the selection before the case is emitted.
+    """
+    uses = _parse_dim_uses(index_text, dimensions) if index_text.strip() else []
+    axes = [axis for axis, _members, _worst in uses]
+    if len(set(axes)) != len(axes):
+        raise ExpandError(f"line {line}: axis repeated in variant index {index_text!r}")
+
+    parsed_cases = []
+    for case in cases:
+        match = VARIANT_CASE_RE.match(case.text)
+        if not match:
+            raise ExpandError(f"line {case.line}: bad variant case {case.text!r}")
+        head = "default" if match.group(1) == "default" else "case " + match.group(1)[5:].strip()
+        selected = [item.strip() for item in _split_top_level(match.group(2)) if item.strip()]
+        parsed_cases.append((case.line, head, selected))
+
+    out: list[str] = []
+    for use_index in _product_index(uses):
+        mapping = {
+            axis: member
+            for (axis, _members, _worst), member in zip(uses, use_index)
+        }
+        suffix = "".join(
+            "_WorstCase" if is_worst else dimensions[axis].name(member)
+            for (axis, _members, is_worst), member in zip(uses, use_index)
+        )
+        out.append(f"variant {base}{suffix} {{")
+        for case_line, head, selected in parsed_cases:
+            names = []
+            for entry in selected:
+                names.append(_expand_selected(case_line, entry, mapping, dimensions))
+            out.append(f"    {head}: [{', '.join(names)}];")
+        out.append("}")
+    return out
+
+
+def _expand_selected(
+    line: int,
+    text: str,
+    mapping: dict[str, str],
+    dimensions: dict[str, Axis],
+) -> str:
+    match = SELECTED_RE.match(text)
+    if not match:
+        raise ExpandError(f"line {line}: bad variant selection {text!r}")
+    base, index_text = match.group(1), match.group(2)
+    if index_text is None:
+        return base
+    suffix = ""
+    for item in _split_top_level(index_text):
+        item = item.strip()
+        worst = DIM_USE_WORST_RE.match(item)
+        if worst:
+            subject_axis = _subject_axis(line, base, worst.group(1), mapping, dimensions)
+            suffix += "_WorstCase"
+            continue
+        subset = DIM_USE_SUBSET_RE.match(item)
+        if subset:
+            raise ExpandError(f"line {line}: variant selection cannot narrow an axis")
+        plain = DIM_USE_RE.match(item)
+        if not plain:
+            raise ExpandError(f"line {line}: bad variant selection index {item!r}")
+        axis = plain.group(1)
+        subject_axis = _subject_axis(line, base, axis, mapping, dimensions)
+        # The selection's own set carries the suffix format, e.g. "_{value}_Pred".
+        suffix += dimensions[axis].name(mapping[subject_axis])
+    return base + suffix
+
+
+def _subject_axis(
+    line: int,
+    base: str,
+    axis: str,
+    mapping: dict[str, str],
+    dimensions: dict[str, Axis],
+) -> str:
+    """Map a selection's set onto the subject axis it must follow.
+
+    A selection may use a different view of the same axis (``LMUL_7`` with
+    ``name_format = "_{value}_Pred"``) because the suffix differs while the
+    members do not.  Two views with identical members are the same axis; if
+    that is ambiguous the source has to name the subject's view directly.
+    """
+    if axis in mapping:
+        return axis
+    if axis not in dimensions:
+        raise ExpandError(f"line {line}: undeclared dimension {axis!r}")
+    candidates = [
+        subject
+        for subject in mapping
+        if subject in dimensions and dimensions[subject].values == dimensions[axis].values
+    ]
+    if len(candidates) != 1:
+        raise ExpandError(
+            f"line {line}: selection {base} uses {axis!r}, which does not name an axis "
+            f"of the subject (candidates: {candidates or 'none'})"
+        )
+    return candidates[0]
+
+
 def _expand_body(
     body: list[Stmt],
     env: dict[str, object],
@@ -493,7 +631,27 @@ def _expand_body(
 ) -> list[str]:
     out: list[str] = []
     emitted: dict[tuple[str, str], int] = {}
-    for stmt in body:
+    pos = 0
+    while pos < len(body):
+        stmt = body[pos]
+        variant = VARIANT_HEAD_RE.match(stmt.text)
+        if variant:
+            cases = []
+            cursor = pos + 1
+            while cursor < len(body) and body[cursor].text != "}":
+                cases.append(body[cursor])
+                cursor += 1
+            if cursor == len(body):
+                raise ExpandError(f"line {stmt.line}: unterminated variant {variant.group(1)}")
+            out.extend(
+                _expand_variant(
+                    stmt.line, variant.group(1), variant.group(2) or "", cases,
+                    env, dimensions,
+                )
+            )
+            pos = cursor + 1
+            continue
+        pos += 1
         parsed = _parse_item(stmt.text)
         if parsed is None:
             out.append(_subst_fields(stmt.text, env))
@@ -579,7 +737,7 @@ def expand(
     add_axis: tuple[str, str] | None = None,
     origins: list[tuple[str, str, int]] | None = None,
 ) -> str:
-    dimensions, machines = split_blocks(text)
+    dimensions, machines, globals_ = split_blocks(text)
     if add_axis:
         axis, value = add_axis
         if axis not in dimensions:
@@ -589,7 +747,9 @@ def expand(
     families = {machine.name: machine for machine in machines if machine.family is None and machine.params}
     if origins is None:
         origins = []
-    lines: list[str] = []
+    lines: list[str] = list(globals_)
+    if globals_:
+        lines.append("")
     for machine in machines:
         if machine.family is not None:
             base = families.get(machine.family.name)
@@ -626,7 +786,9 @@ def check_coverage(
     for block in re.finditer(r"machine\s+(\w+)\s*\{(.*?)\n\}", flat, re.DOTALL):
         name, body = block.group(1), block.group(2)
         writes = set(re.findall(r"^\s*write\s+(\w+)\s*;", body, re.MULTILINE))
-        for base in writes:
+        # A variant subject is aliased to its variant, so it has no bind.
+        subjects = set(re.findall(r"^\s*variant\s+(\w+)", body, re.MULTILINE))
+        for base in writes - subjects:
             if not re.search(rf"^\s*bind\s+{re.escape(base)}\s*->", body, re.MULTILINE):
                 where = site.get(("write", base))
                 suffix = f" (line {where})" if where else ""

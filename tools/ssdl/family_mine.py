@@ -95,6 +95,7 @@ class Shape:
     base: str
     order: list[str]
     formats: dict[str, str]
+    tails: dict[str, str]
 
 
 def canonicalise(
@@ -145,7 +146,21 @@ def canonicalise(
             continue
         literals.append(token)
         segments.append(token)
-    return Shape("_".join(segments), axes, "_".join(literals), order, formats)
+    template_text = "_".join(segments)
+    first = template_text.find("{{")
+    base = template_text[:first].rstrip("_") if first >= 0 else template_text
+    tails: dict[str, str] = {}
+    for index, segment in enumerate(segments):
+        match = re.fullmatch(r"\{\{(\w+)\}\}", segment)
+        if not match:
+            continue
+        tail = []
+        for later in segments[index + 1:]:
+            if re.fullmatch(r"\{\{(\w+)\}\}", later):
+                break
+            tail.append(later)
+        tails[match.group(1)] = "_" + "_".join(tail) if tail else ""
+    return Shape(template_text, axes, base, order, formats, tails)
 
 
 def collect(
@@ -393,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prefix", default="VLEN512SiFive7", help="ProcResource name prefix")
     parser.add_argument("--family", default="siFive7")
     parser.add_argument("--instance", default="sifive-7-series")
+    parser.add_argument("--processor", help="host ProcessorModel def to copy features/tunes from")
     args = parser.parse_args(argv)
     catalogue = args.catalogue if Path(args.catalogue).exists() else None
     if catalogue is None:
@@ -402,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         recs = load_records(args.records)
         text = emit_ssdl(
             recs, args.model, payload, args.vlen, args.prefix,
-            args.family, args.instance, args.model,
+            args.family, args.instance, args.model, args.processor,
         )
         Path(args.emit).write_text(text)
         print(f"wrote {args.emit}: {len(text.splitlines())} lines")
@@ -481,7 +497,11 @@ class AxisViews:
     def get(self, axis: str, members: tuple[str, ...], fmt: str) -> str:
         key = (axis, members, fmt)
         if key not in self.views:
-            name = axis if (axis == "LMUL" and members == tuple(DEFAULT_LMUL)) else f"{axis}_{len(self.views)}"
+            name = (
+                axis
+                if axis == "LMUL" and members == tuple(DEFAULT_LMUL) and fmt == "_{value}"
+                else f"{axis}_{len(self.views)}"
+            )
             self.views[key] = name
             units = (
                 [LMUL_UNITS[DEFAULT_LMUL.index(member)] for member in members]
@@ -569,11 +589,15 @@ def emit_reads(bases: dict[str, dict], views: "AxisViews") -> list[str]:
     lines: list[str] = []
 
     def advance(target: str, payload: tuple) -> str:
-        cycles, _writes, _tun, unsupported = payload
-        return (
-            f"    advance {target} : cycles = {cycles}"
-            + (", unsupported = true;" if unsupported == "1" else ";")
-        )
+        cycles, writes, tun, unsupported = payload
+        text = f"    advance {target} : cycles = {cycles}"
+        if writes and writes != "[]":
+            text += f" : writes = {writes}"
+        if tun and tun != "[]":
+            text += f" : tunables = {tun}"
+        if unsupported == "1":
+            text += " : unsupported = true"
+        return text + ";"
 
     for template in sorted(bases):
         base = bases[template]
@@ -626,6 +650,477 @@ def emit_reads(bases: dict[str, dict], views: "AxisViews") -> list[str]:
     return lines
 
 
+def _strip_prefix(name: str, prefix: str) -> str:
+    return name[len(prefix):] if prefix and name.startswith(prefix) else name
+
+
+def _strip_anon(name: str) -> str:
+    """``VLEN512SiFive7anonymous_89809WriteVLDS8_M1_Pred`` -> ``WriteVLDS8_M1_Pred``."""
+    return re.sub(r"^.*?anonymous_\d+", "", name)
+
+
+def _fmt(shape: "Shape", axis: str) -> str:
+    return shape.formats[axis] + shape.tails.get(axis, "")
+
+
+def _concrete(shape: "Shape", members: dict[str, str]) -> str:
+    """Rebuild one concrete name from base, formats and tails."""
+    out = shape.base
+    for axis in shape.order:
+        out += shape.formats[axis].replace("{value}", members[axis])
+        out += shape.tails.get(axis, "")
+    return out
+
+
+def _list(text: str | None) -> list[str]:
+    if not text:
+        return []
+    return [part.strip() for part in text.strip().strip("[]").split(",") if part.strip()]
+
+
+def collect_unsupported(recs, model: str, lmul, glued) -> dict[str, dict]:
+    """``WriteRes`` records TableGen filled in with ``Unsupported = 1``."""
+    bases: dict[str, dict] = {}
+    for name in recs.body:
+        if recs.cls.get(name) != "WriteRes":
+            continue
+        fields = _fields(recs, name)
+        if fields.get("SchedModel") != model or fields.get("Unsupported") != "1":
+            continue
+        shape = canonicalise(fields["WriteType"], lmul, glued)
+        base = bases.setdefault(shape.template, {"shape": shape, "axes": {}, "members": set()})
+        base["members"].add(tuple(f"{axis}={shape.axes[axis]}" for axis in shape.order))
+        for axis, member in shape.axes.items():
+            values = base["axes"].setdefault(axis, [])
+            if member not in values:
+                values.append(member)
+    return bases
+
+
+def emit_unsupported(bases: dict[str, dict], views: "AxisViews") -> list[str]:
+    lines: list[str] = []
+    for template in sorted(bases):
+        base = bases[template]
+        shape = base["shape"]
+        if not base["axes"]:
+            lines.append(f"    write {shape.base};")
+            lines.append(f"    bind {shape.base} -> [], unsupported = true;")
+            continue
+        axes = list(shape.order)
+        if any("WorstCase" in base["axes"][axis] for axis in axes):
+            for key in sorted(base["members"]):
+                name = _concrete(shape, dict(part.split("=") for part in key))
+                lines.append(f"    write {name};")
+                lines.append(f"    bind {name} -> [], unsupported = true;")
+            continue
+        for block in decompose(sorted(base["members"]), axes):
+            query = ", ".join(
+                views.render(axis, _order_members(axis, block[axis]), _fmt(shape, axis))
+                for axis in axes
+            )
+            target = f"{shape.base}[{query}]"
+            lines.append(f"    write {target};")
+            lines.append(f"    bind {target} -> [], unsupported = true;")
+    return lines
+
+
+def collect_branch_writes(recs, model: str, prefix: str, lmul, glued) -> dict[str, dict]:
+    """``SchedWriteRes`` defs: the concrete writes a variant case selects."""
+    bases: dict[str, dict] = {}
+    for name in recs.body:
+        if recs.cls.get(name) != "SchedWriteRes":
+            continue
+        fields = _fields(recs, name)
+        if fields.get("SchedModel") != model:
+            continue
+        short = _strip_anon(_strip_prefix(name, prefix))
+        shape = canonicalise(short, lmul, glued)
+        base = bases.setdefault(shape.template, {"shape": shape, "axes": {}, "members": {}})
+        key = tuple(f"{axis}={shape.axes[axis]}" for axis in shape.order)
+        base["members"][key] = Payload(
+            latency=int(fields.get("Latency", "0")),
+            uops=int(fields.get("NumMicroOps", "1")),
+            resources=_resources(fields.get("ProcResources", "")),
+            release=_ints(fields.get("ReleaseAtCycles", "")),
+            acquire=_ints(fields.get("AcquireAtCycles", "")),
+        )
+        for axis, member in shape.axes.items():
+            values = base["axes"].setdefault(axis, [])
+            if member not in values:
+                values.append(member)
+    return bases
+
+
+def emit_branch_writes(bases: dict[str, dict], prefix: str, views: "AxisViews") -> list[str]:
+    lines: list[str] = []
+    for template in sorted(bases):
+        base = bases[template]
+        shape = base["shape"]
+        if not base["axes"]:
+            (key,) = base["members"]
+            payload = base["members"][key]
+            lines.append(f"    write {shape.base};")
+            lines.append(render_bind(prefix, shape.base, payload.latency, payload.uops,
+                                     payload.resources, payload.release, payload.acquire))
+            continue
+        axes = list(shape.order)
+        if any("WorstCase" in base["axes"][axis] for axis in axes):
+            for key, payload in sorted(base["members"].items()):
+                name = _concrete(shape, dict(part.split("=") for part in key))
+                lines.append(f"    write {name};")
+                lines.append(render_bind(prefix, name, payload.latency, payload.uops,
+                                         payload.resources, payload.release, payload.acquire))
+            continue
+        groups: dict[tuple, list[tuple[str, ...]]] = {}
+        for key, payload in base["members"].items():
+            signature = (payload.latency, payload.uops, payload.resources,
+                         payload.release, payload.acquire)
+            groups.setdefault(signature, []).append(key)
+        for keys in groups.values():
+            payload = base["members"][keys[0]]
+            for block in decompose(keys, axes):
+                query = ", ".join(
+                    views.render(axis, _order_members(axis, block[axis]), _fmt(shape, axis))
+                    for axis in axes
+                )
+                target = f"{shape.base}[{query}]"
+                lines.append(f"    write {target};")
+                lines.append(render_bind(prefix, target, payload.latency, payload.uops,
+                                         payload.resources, payload.release, payload.acquire))
+    return lines
+
+
+def _mc_text(recs, name: str | None) -> str:
+    if not name:
+        raise SystemExit("family_mine: variant predicate has no MCInstPredicate")
+    cls = recs.cls.get(name, "")
+    fields = _fields(recs, name)
+    if cls == "CheckRegOperand":
+        return f"reg_is({fields['OpIndex']}, {fields['Reg']})"
+    if cls == "CheckOpcode":
+        ops = _list(fields.get("ValidOpcodes") or fields.get("Opcodes"))
+        return f"opcode([{', '.join(ops)}])"
+    if cls == "MCTrue":
+        return "true"
+    if cls == "MCFalse":
+        return "false"
+    if cls in ("CheckAll", "AllOf", "CheckAny", "AnyOf", "CheckNot", "Not"):
+        kids = [_mc_text(recs, kid) for kid in _list(fields.get("Predicates") or fields.get("Pred"))]
+        fn = {"CheckAll": "all_of", "AllOf": "all_of", "CheckAny": "any_of",
+              "AnyOf": "any_of"}.get(cls)
+        if fn is None:
+            return f"not({kids[0]})"
+        return f"{fn}({', '.join(kids)})"
+    raise SystemExit(f"family_mine: unsupported MCInstPredicate class {cls!r} ({name})")
+
+
+def _pred_text(recs, name: str | None) -> str | None:
+    """Translate a ``SchedPredicateBase`` record into SSDL, or None for default."""
+    if not name or name == "NoSchedPred":
+        return None
+    cls = recs.cls.get(name, "")
+    fields = _fields(recs, name)
+    if cls == "FeatureSchedPredicate":
+        return f"feature({fields['Feature']})"
+    if cls in ("AllOfSchedPreds", "AnyOfSchedPreds", "NoneOfSchedPreds"):
+        kids = [_pred_text(recs, kid) for kid in _list(fields.get("Predicates"))]
+        if None in kids:
+            raise SystemExit(f"family_mine: {name} mixes a default predicate into a combiner")
+        if cls == "AllOfSchedPreds":
+            return f"all_of({', '.join(kids)})"
+        if cls == "AnyOfSchedPreds":
+            return f"any_of({', '.join(kids)})"
+        return f"not(any_of({', '.join(kids)}))"
+    if cls in ("NotSchedPred", "NotSchedPreds"):
+        inner = _pred_text(recs, _list(fields.get("Predicates"))[0])
+        return f"not({inner})"
+    if cls == "MCSchedPredicate":
+        return _mc_text(recs, fields.get("Pred"))
+    raise SystemExit(f"family_mine: unsupported SchedPredicateBase class {cls!r} ({name})")
+
+
+def collect_variants(recs, model: str, prefix: str, lmul, glued) -> list[dict]:
+    """Alias subjects and their ``SchedVar`` cases, with expanded selections."""
+    out: list[dict] = []
+    for name in recs.body:
+        if recs.cls.get(name) != "SchedAlias":
+            continue
+        fields = _fields(recs, name)
+        if fields.get("SchedModel") != model:
+            continue
+        subject = canonicalise(_strip_anon(_strip_prefix(fields["MatchRW"], prefix)), lmul, glued)
+        variant = fields["AliasRW"]
+        cases = []
+        for var in _list(_fields(recs, variant).get("Variants")):
+            var_fields = _fields(recs, var)
+            selected = [
+                canonicalise(_strip_anon(_strip_prefix(sel, prefix)), lmul, glued)
+                for sel in _list(var_fields.get("Selected"))
+            ]
+            cases.append({"pred": _pred_text(recs, var_fields.get("Predicate")), "selected": selected})
+        out.append({"subject": subject, "cases": cases})
+    return out
+
+
+def emit_variants(variants: list[dict], views: "AxisViews") -> list[str]:
+    """One ``variant`` per subject template, over the members that exist.
+
+    The records contain one alias per member, all with the same case
+    structure, so they collapse to a single dimensioned statement.
+    Worst-case subjects get their own ``worst(AXIS)`` statement.
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for item in variants:
+        shape = item["subject"]
+        key = (shape.template, tuple(shape.axes.get(axis) == "WorstCase" for axis in shape.order))
+        groups.setdefault(key, []).append(item)
+
+    lines: list[str] = []
+    for key in sorted(groups):
+        items = groups[key]
+        subject = items[0]["subject"]
+        axes = list(subject.order)
+        members: dict[str, list[str]] = {}
+        for axis in axes:
+            seen: list[str] = []
+            for item in items:
+                member = item["subject"].axes.get(axis)
+                if member and member != "WorstCase" and member not in seen:
+                    seen.append(member)
+            members[axis] = _order_members(axis, seen) if seen else ()
+
+        signature = [
+            [(case["pred"], tuple(sel.template for sel in case["selected"])) for case in item["cases"]]
+            for item in items
+        ]
+        if any(sig != signature[0] for sig in signature):
+            raise SystemExit(
+                f"family_mine: members of {subject.template} disagree on their variant cases"
+            )
+
+        worst = any(subject.axes.get(axis) == "WorstCase" for axis in axes)
+
+        def name_of(shape) -> str:
+            if worst:
+                return _concrete(shape, shape.axes)
+            if not shape.order:
+                return shape.base
+            parts = []
+            for axis in shape.order:
+                if axis not in members or not members[axis]:
+                    raise SystemExit(
+                        f"family_mine: variant selection {shape.template} uses {axis!r} "
+                        f"with no members on subject {subject.template}"
+                    )
+                view = views.render(axis, members[axis], _fmt(shape, axis))
+                parts.append(view)
+            return f"{shape.base}[{', '.join(parts)}]"
+
+        if worst:
+            target = _concrete(subject, subject.axes)
+        elif not axes:
+            target = subject.base
+        else:
+            target = f"{subject.base}[{', '.join(views.render(axis, members[axis], _fmt(subject, axis)) for axis in axes)}]"
+        lines.append(f"    variant {target} {{")
+        for case in items[0]["cases"]:
+            head = f"case {case['pred']}:" if case["pred"] else "default:"
+            sels = ", ".join(name_of(sel) for sel in case["selected"])
+            lines.append(f"        {head} [{sels}];")
+        lines.append("    }")
+    return lines
+
+
+def declared_names(tables: list[dict]) -> set[str]:
+    """Concrete write names the other emitters already declare."""
+    names: set[str] = set()
+    for table in tables:
+        for base in table.values():
+            if isinstance(base, dict):
+                shape, keys = base["shape"], base["members"]
+            else:
+                shape, keys = base.shape, base.members
+            if not keys:
+                names.add(shape.base)
+                continue
+            for key in keys:
+                names.add(
+                    _concrete(shape, dict(part.split("=") for part in key))
+                    if key
+                    else shape.base
+                )
+    return names
+
+
+def emit_subject_writes(variants: list[dict], declared: set[str], views: "AxisViews") -> list[str]:
+    """Declare variant subjects that no bind introduced.
+
+    A subject is aliased to its variant, so it carries no WriteRes; it still
+    has to exist as a SchedWrite before the variant can name it.
+    """
+    by_template: dict[str, list[dict]] = {}
+    for item in variants:
+        by_template.setdefault(item["subject"].template, []).append(item)
+    lines: list[str] = []
+    for template in sorted(by_template):
+        items = by_template[template]
+        subject = items[0]["subject"]
+        axes = list(subject.order)
+        missing = []
+        for item in items:
+            shape = item["subject"]
+            name = _concrete(shape, shape.axes) if shape.order else shape.base
+            if name in declared:
+                continue
+            declared.add(name)
+            missing.append(tuple(f"{axis}={shape.axes[axis]}" for axis in axes))
+        if not missing:
+            continue
+        if not axes or any("WorstCase" in part for key in missing for part in key):
+            for key in missing:
+                lines.append(f"    write {_concrete(subject, dict(part.split('=') for part in key))};")
+            continue
+        for block in decompose(missing, axes):
+            parts = []
+            for axis in axes:
+                members = _order_members(axis, block[axis])
+                parts.append(views.render(axis, members, _fmt(subject, axis)))
+            lines.append(f"    write {subject.base}[{', '.join(parts)}];")
+    return lines
+
+
+MODEL_PROP_FIELDS = (
+    ("int IssueWidth", "issue_width", -1, "${value}"),
+    ("int MicroOpBufferSize", "micro_op_buffer_size", -1, "${value}"),
+    ("int LoopMicroOpBufferSize", "loop_micro_op_buffer", -1, "${value}"),
+    ("int LoadLatency", "load_latency", -1, "${value}"),
+    ("int HighLatency", "high_latency", -1, "${value}"),
+    ("int MispredictPenalty", "mispredict_penalty", -1, "${value}"),
+    ("bit PostRAScheduler", "post_ra_scheduler", False, "${value}"),
+    ("bit CompleteModel", "complete_model", True, "${value}"),
+    ("bit FullInstRWOverlapCheck", "full_inst_rw_overlap_check", True, "${value}"),
+    ("bit EnableIntervals", "enable_intervals", False, "${value}"),
+)
+
+
+def collect_model_props(recs, model: str) -> list[str]:
+    """Machine properties that differ from the ``SchedMachineModel`` defaults."""
+    lines: list[str] = []
+    for field_name, key, default, _ in MODEL_PROP_FIELDS:
+        raw = recs.value(model, field_name)
+        if field_name.startswith("int"):
+            value = int(raw) if raw is not None else default
+        else:
+            value = raw not in (None, "0") if raw is not None else default
+        if value == default:
+            continue
+        rendered = "true" if value is True else ("false" if value is False else value)
+        lines.append(f"    {key} = {rendered};")
+    return lines
+
+
+def _feature_decl(recs, name: str) -> str | None:
+    """One ``feature`` declaration copied from a host feature record."""
+    fields = _fields(recs, name)
+    if "Name" not in fields:
+        return None
+    mattr = fields["Name"]
+    field = fields.get("FieldName", '""')
+    value = fields.get("Value", '"true"')
+    desc = fields.get("Desc", '""')
+    cls = recs.cls.get(name, "")
+    positive = fields.get("PositiveDirectiveName")
+    if positive is not None:
+        negative = fields.get("NegativeDirectiveName")
+        if negative is None:
+            negative = '"no-' + positive.strip('"') + '"'
+        return (
+            f"feature {name} : kind = tune, field = {field}, "
+            f"value = {value}, positive_directive = {positive}, "
+            f"negative_directive = {negative}, desc = {desc};"
+        )
+    return (
+        f"feature {name} : kind = plain, mattr = {mattr}, field = {field}, "
+        f"value = {value}, desc = {desc};"
+    )
+
+
+def collect_processor(recs, processor: str | None) -> tuple[list[str], list[str], list[str]]:
+    """Feature decls and the two processor lists, straight from the host record."""
+    if not processor or processor not in recs.body:
+        return [], [], []
+    features = _list(recs.value(processor, "list<SubtargetFeature> Features"))
+    tune = _list(recs.value(processor, "list<SubtargetFeature> TuneFeatures"))
+    decls: list[str] = []
+    seen: set[str] = set()
+    for name in features + tune:
+        line = _feature_decl(recs, name)
+        if line is not None and name not in seen:
+            seen.add(name)
+            decls.append(line)
+    return decls, features, tune
+
+
+def collect_inst_rw(recs, model: str, prefix: str) -> list[str]:
+    """``InstRW`` records: one ``map`` per record, members spelled out."""
+    lines: list[str] = []
+    for name in recs.scoped_to(model):
+        instrs = recs.value(name, "dag Instrs")
+        if instrs is None:
+            continue
+        inst_names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", instrs)
+        # Drop the dag opcode keyword (`instrs`/`instregex`).
+        inst_names = [item for item in inst_names if item not in ("instrs", "instregex")]
+        rws = [n[len(prefix):] if n.startswith(prefix) else n
+               for n in _list(recs.value(name, "list<SchedReadWrite> OperandReadWrites"))]
+        if not inst_names or not rws:
+            continue
+        unsupported = recs.value(name, "bit Unsupported")
+        suffix = " : unsupported = true" if unsupported == "1" else ""
+        lines.append(f"    map [{', '.join(inst_names)}] -> [{', '.join(rws)}]{suffix};")
+    return lines
+
+
+def collect_features(recs, variants: list[dict]) -> list[str]:
+    """Feature decls for the predicates the variants use."""
+    needed: list[str] = []
+
+    def walk(text: str | None) -> None:
+        if not text:
+            return
+        for match in re.finditer(r"feature\(([A-Za-z_]\w*)\)", text):
+            if match.group(1) not in needed:
+                needed.append(match.group(1))
+
+    for item in variants:
+        for case in item["cases"]:
+            walk(case["pred"])
+    lines = []
+    for feature in needed:
+        fields = _fields(recs, feature)
+        lines.append(
+            f"feature {feature} : kind = plain, mattr = {fields['Name']}, "
+            f"field = {fields['FieldName']}, value = {fields.get('Value', chr(34) + 'true' + chr(34))};"
+        )
+    return lines
+
+
+def collect_predicate_decls(variants: list[dict]) -> list[str]:
+    """One ``predicate`` per distinct case expression, referenced by name."""
+    lines: list[str] = []
+    names: dict[str, str] = {}
+    for item in variants:
+        for case in item["cases"]:
+            pred = case["pred"]
+            if pred is None or pred in names:
+                continue
+            name = f"Pred_{len(names)}"
+            names[pred] = name
+            lines.append(f"predicate {name} = {pred};")
+            case["pred"] = name
+    return lines
+
+
 def emit_ssdl(
     recs,
     model: str,
@@ -635,8 +1130,14 @@ def emit_ssdl(
     family: str,
     instance: str,
     machine_name: str,
+    processor: str | None = None,
 ) -> str:
     bases, total = collect(recs, model, DEFAULT_LMUL, catalogue.get("glued"))
+    unsupported = collect_unsupported(recs, model, DEFAULT_LMUL, catalogue.get("glued"))
+    branch_writes = collect_branch_writes(
+        recs, model, prefix, DEFAULT_LMUL, catalogue.get("glued")
+    )
+    variants = collect_variants(recs, model, prefix, DEFAULT_LMUL, catalogue.get("glued"))
     entries = catalogue["formulas"]
     resources = resource_table(recs, model)
     views = AxisViews()
@@ -650,9 +1151,9 @@ def emit_ssdl(
         info = resources[name]
         if "group" in info:
             body.append(f"    res_group {name} = [{', '.join(info['group'])}]"
-                        + (f" : buffer = {info['buffer']};" if info["buffer"] else ";"))
+                        + (f" : buffer = {info['buffer']};" if info["buffer"] >= 0 else ";"))
             continue
-        extra = f", buffer = {info['buffer']}" if info["buffer"] else ""
+        extra = f", buffer = {info['buffer']}" if info["buffer"] >= 0 else ""
         super_ = f" : super = {info['super']}" if info["super"] else ""
         body.append(f"    resource {name}{super_} : units = {info['units']}{extra};")
     body.append("")
@@ -667,86 +1168,123 @@ def emit_ssdl(
             body.append(render_bind(prefix, shape.base, payload.latency, payload.uops,
                                     payload.resources, payload.release, payload.acquire))
             continue
-        main_axes = [axis for axis in shape.order if axis != "LMUL" or "WorstCase" not in base.axes[axis]]
-        all_axes = [axis for axis in shape.order]
+        all_axes = list(shape.order)
         members = {
             axis: _order_members(axis, [m for m in base.axes[axis] if m != "WorstCase"])
             for axis in all_axes
         }
         if any(not members[axis] for axis in all_axes):
-            payload = next(iter(base.members.values()))
-            query = ", ".join(f"worst({axis})" for axis in all_axes)
-            target = f"{shape.base}[{query}]"
-            body.append(f"    write {target};")
-            body.append(render_bind(prefix, target, payload.latency, payload.uops,
-                                    payload.resources, payload.release, payload.acquire))
+            # Nothing but a worst case exists on some axis: emit it concretely.
+            for key in sorted(base.members):
+                name = _concrete(shape, dict(part.split("=") for part in key))
+                payload = base.members[key]
+                body.append(f"    write {name};")
+                body.append(render_bind(prefix, name, payload.latency, payload.uops,
+                                        payload.resources, payload.release, payload.acquire))
             continue
-        keys = [key for key in sorted(base.members) if "LMUL=WorstCase" not in key]
-        covered: dict[str, list[tuple[str, ...]]] = {}
-        for key in keys:
-            chosen = None
-            for entry in entries:
-                got, _ = match_formula(base, entry, vlen)
-                if key in got:
-                    chosen = entry["name"]
-                    break
+
+        def query_for(block: dict[str, tuple[str, ...]]) -> str:
+            parts = []
+            for axis in all_axes:
+                chosen = [member for member in block[axis] if member != "WorstCase"]
+                if len(chosen) != len(block[axis]):
+                    parts.append(
+                        f"worst({views.render(axis, members[axis], _fmt(shape, axis))})"
+                    )
+                else:
+                    parts.append(
+                        views.render(axis, _order_members(axis, chosen), _fmt(shape, axis))
+                    )
+            return f"{shape.base}[{', '.join(parts)}]"
+
+        covered: dict[object, list[tuple[str, ...]]] = {}
+        for key in sorted(base.members):
+            chosen = next(
+                (entry["name"] for entry in entries if key in match_formula(base, entry, vlen)[0]),
+                None,
+            )
+            entry = next((e for e in entries if e["name"] == chosen), None)
+            if entry is None or entry.get("latency_table"):
+                payload = base.members[key]
+                chosen = (chosen, payload.latency, payload.release, payload.resources)
             covered.setdefault(chosen, []).append(key)
+
         for chosen, group in covered.items():
             entry = next((e for e in entries if e["name"] == chosen), None)
-            for block in decompose(group, all_axes):
-                query = ", ".join(
-                    views.render(axis, _order_members(axis, block[axis]), shape.formats[axis])
-                    for axis in all_axes
-                )
-                target = f"{shape.base}[{query}]"
+            worst_keys = [key for key in group if any("=WorstCase" in part for part in key)]
+            normal_keys = [key for key in group if key not in worst_keys]
+            blocks = decompose(normal_keys, all_axes) if normal_keys else []
+            blocks += [
+                {axis: (dict(part.split("=") for part in key)[axis],) for axis in all_axes}
+                for key in worst_keys
+            ]
+            for block in blocks:
+                target = query_for(block)
                 body.append(f"    write {target};")
                 if entry is None or entry.get("latency_table"):
-                    payload = base.members[group[0]]
+                    sample = next(
+                        (k for k in group if all(
+                            dict(part.split("=") for part in k)[axis] == block[axis][0]
+                            for axis in all_axes
+                        )),
+                        group[0],
+                    )
+                    payload = base.members[sample]
                     body.append(render_bind(prefix, target, payload.latency, payload.uops,
                                             payload.resources, payload.release, payload.acquire))
                 else:
-                    mapping = {
-                        axis: views.get(axis, _order_members(axis, block[axis]), shape.formats[axis])
-                        for axis in all_axes
-                    }
+                    mapping = {}
+                    for axis in all_axes:
+                        chosen = [member for member in block[axis] if member != "WorstCase"]
+                        view_members = (
+                            tuple(_order_members(axis, chosen)) if chosen else members[axis]
+                        )
+                        mapping[axis] = views.get(axis, view_members, _fmt(shape, axis))
                     body.append(
                         f"    bind {target} -> [{', '.join(prefix + r for r in entry['resources'])}], "
                         f"latency = {_rename(entry['latency'], mapping)}, uops = {entry.get('uops', 1)}, "
                         f"release = {_release(entry, mapping)}, acquire = [0, 1];"
                     )
-        if "WorstCase" in base.axes.get("LMUL", ()):
-            key = next(k for k in sorted(base.members) if "LMUL=WorstCase" in k)
-            query = ", ".join(
-                f"worst({views.render(axis, members[axis], shape.formats[axis])})"
-                if axis == "LMUL"
-                else views.render(axis, members[axis], shape.formats[axis])
-                for axis in all_axes
-            )
-            target = f"{shape.base}[{query}]"
-            body.append(f"    write {target};")
-            entry = next(
-                (e for e in entries if key in match_formula(base, e, vlen)[0]), None
-            )
-            if entry is None or entry.get("latency_table"):
-                payload = base.members[key]
-                body.append(render_bind(prefix, target, payload.latency, payload.uops,
-                                        payload.resources, payload.release, payload.acquire))
-            else:
-                mapping = {
-                    axis: views.get(axis, members[axis], shape.formats[axis]) for axis in all_axes
-                }
-                body.append(
-                    f"    bind {target} -> [{', '.join(prefix + r for r in entry['resources'])}], "
-                    f"latency = {_rename(entry['latency'], mapping)}, uops = {entry.get('uops', 1)}, "
-                    f"release = {_release(entry, mapping)}, acquire = [0, 1];"
-                )
 
+    declared = declared_names([bases, unsupported, branch_writes])
+    subject_lines = emit_subject_writes(variants, declared, views)
+    unsupported_lines = emit_unsupported(unsupported, views)
+    branch_lines = emit_branch_writes(branch_writes, prefix, views)
+    inst_rw_lines = collect_inst_rw(recs, model, prefix)
     reads = collect_reads(recs, model, catalogue.get("glued"))
     # Reads may introduce new axis views, so they must run before the header is
     # snapshotted from ``views.definitions``.
-    body = emit_reads(reads, views) + [""] + body
-    header = views.definitions + ["", f"machine {family}(vlen: INT) {{"]
-    footer = ["}", "", f"machine {instance} : {family}({vlen}) {{", "}"]
+    body = (
+        body
+        + subject_lines
+        + unsupported_lines
+        + branch_lines
+        + ([""] if branch_lines or unsupported_lines else [])
+        + emit_reads(reads, views)
+        + [""]
+        + emit_variants(variants, views)
+        + inst_rw_lines
+    )
+    proc_decls, proc_features, proc_tunes = collect_processor(recs, processor)
+    features = collect_features(recs, variants)
+    seen = {line.split()[1] for line in features}
+    for line in proc_decls:
+        name = line.split()[1]
+        if name not in seen:
+            seen.add(name)
+            features.append(line)
+    predicates = collect_predicate_decls(variants)
+    header = features + ([""] if features else []) + predicates + ([""] if predicates else [])
+    props = collect_model_props(recs, model)
+    header += views.definitions + ["", f"machine {family}(vlen: INT) {{"]
+    header += props
+    inst_props: list[str] = []
+    if proc_features:
+        inst_props.append(f"    features = [{', '.join(proc_features)}];")
+    if proc_tunes:
+        inst_props.append(f"    tune_features = [{', '.join(proc_tunes)}];")
+    footer = ["}", "", f"machine {instance} : {family}({vlen}) {{"]
+    footer += inst_props + ["}"]
     return "\n".join(lines + header + body + footer) + "\n"
 
 

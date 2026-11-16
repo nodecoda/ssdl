@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -151,6 +152,23 @@ class Model:
         )
 
 
+ANON_RE = re.compile(r"^.*?anonymous_\d+")
+WRES_RE = re.compile(r"^.*?_WRes_")
+
+
+def canon_name(name: str, prefix: str | None = None) -> str:
+    """Strip names that are not part of the scheduling contract.
+
+    ``defm`` and anonymous defs put the instance prefix and a counter into
+    record names; neither carries meaning.  The emitter also renames a
+    variant subject's own binding to ``<machine>_WRes_<write>`` because an
+    aliased subject cannot carry a WriteRes.
+    """
+    if prefix and name.startswith(prefix):
+        name = name[len(prefix):]
+    return WRES_RE.sub("", ANON_RE.sub("", name))
+
+
 # (``-print-records`` field, SSDL property, TableGen default).  Defaults come
 # from ``SchedMachineModel`` in ``TargetSchedule.td``: an omitted field and an
 # explicit default are the same machine model.
@@ -169,30 +187,43 @@ MODEL_PROPS = (
 )
 
 
-def build(recs: RecordFile, model: str) -> Model:
+def build(recs: RecordFile, model: str, prefix: str | None = None) -> Model:
     out = Model()
+    bound: set[str] = set()
     for name in recs.scoped_to(model):
         if recs.value(name, "SchedWrite WriteType") is not None:
-            key = recs.value(name, "SchedWrite WriteType")
-            out.writes[key] = write_props(recs, name)
+            key = canon_name(recs.value(name, "SchedWrite WriteType"), prefix)
+            if recs.cls.get(name) == "WriteRes":
+                # A binding outranks the bare subject declaration: the emitter
+                # splits an aliased subject into ``X`` plus
+                # ``<machine>_WRes_X``, and the latter carries the payload.
+                out.writes[key] = write_props(recs, name)
+                bound.add(key)
+            elif key not in bound:
+                out.writes[key] = write_props(recs, name)
         elif recs.cls.get(name) == "SchedWriteRes":
-            out.writes[name] = write_props(recs, name)
+            key = canon_name(name, prefix)
+            out.writes[key] = write_props(recs, name)
+            bound.add(key)
         if recs.value(name, "SchedRead ReadType") is not None:
             out.reads[recs.value(name, "SchedRead ReadType")] = read_props(recs, name)
         elif recs.cls.get(name) == "SchedReadAdvance":
-            out.reads[name] = read_props(recs, name)
+            out.reads[canon_name(name, prefix)] = read_props(recs, name)
         if recs.value(name, "SchedReadWrite MatchRW") is not None:
             match = recs.value(name, "SchedReadWrite MatchRW")
             variant = recs.value(name, "SchedReadWrite AliasRW")
             cases = []
             for var in as_list(recs.value(variant, "list<SchedVar> Variants")):
                 pred = pred_canon(recs, recs.value(var, "SchedPredicateBase Predicate"))
-                selected = as_list(recs.value(var, "list<SchedReadWrite> Selected"))
+                selected = tuple(
+                    canon_name(sel, prefix)
+                    for sel in as_list(recs.value(var, "list<SchedReadWrite> Selected"))
+                )
                 cases.append((pred, selected))
             # Include the target class so an alias to a variant cannot look
             # like an alias to a WriteSequence just because both have no
             # SchedVars.
-            out.variants[match] = (recs.cls.get(variant, ""), tuple(cases))
+            out.variants[canon_name(match, prefix)] = (recs.cls.get(variant, ""), tuple(cases))
         if recs.value(name, "dag Instrs") is not None:
             rws = as_list(recs.value(name, "list<SchedReadWrite> OperandReadWrites"))
             out.instrw[(recs.value(name, "dag Instrs"), rws)] = (
@@ -247,8 +278,12 @@ def feature_names(recs: RecordFile, names: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def build_processor(recs: RecordFile, name: str) -> Processor:
+    # SSDL identifiers are ``[A-Za-z_]\w*``, so a host processor name such as
+    # ``sifive-7-series`` can only be spelled ``sifive_7_series``.  Fold the
+    # separator on both sides; the processor record itself is still selected
+    # by ``--in-processor``/``--gen-processor``.
     return Processor(
-        name=unquote(recs.value(name, "string Name")),
+        name=unquote(recs.value(name, "string Name")).replace("-", "_"),
         sched_model=recs.value(name, "SchedMachineModel SchedModel") or "",
         features=feature_names(recs, as_list(recs.value(name, "list<SubtargetFeature> Features"))),
         tune_features=feature_names(
@@ -338,6 +373,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--in-processor", help="in-tree ProcessorModel def to compare")
     ap.add_argument("--gen-processor", help="generated ProcessorModel def to compare")
     ap.add_argument("--limit", type=int, default=20)
+    ap.add_argument(
+        "--strip-prefix",
+        default=None,
+        help="instance prefix the in-tree defm put on record names, e.g. VLEN512SiFive7",
+    )
     args = ap.parse_args(argv)
 
     intree_recs = load(args.intree)
@@ -351,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     if (intree_cpu is None) != (generated_cpu is None):
         ap.error("--in-processor and --gen-processor must be given together")
     return compare(
-        build(intree_recs, args.in_model),
+        build(intree_recs, args.in_model, args.strip_prefix),
         build(generated_recs, args.gen_model),
         args.limit,
         intree_cpu,
