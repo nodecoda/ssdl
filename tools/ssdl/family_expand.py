@@ -75,6 +75,7 @@ class Axis:
     values: list[str]
     name_format: str = "_{value}"
     units: list[int] | None = None
+    extra: dict[str, list[int]] = field(default_factory=dict)
 
     def name(self, member: str) -> str:
         if "{value}" not in self.name_format:
@@ -86,6 +87,13 @@ class Axis:
         if self.units is None:
             raise ExpandError("axis is used in a numeric field but declares no `units`")
         return self.units[-1] if member is None else self.units[self.values.index(member)]
+
+    def projection(self, key: str, member: str | None) -> int:
+        """A named secondary projection, e.g. ``SEW.div_factor``."""
+        if key not in self.extra:
+            raise ExpandError(f"axis has no projection {key!r}")
+        values = self.extra[key]
+        return values[-1] if member is None else values[self.values.index(member)]
 
 
 @dataclass
@@ -155,11 +163,28 @@ def _parse_items(text: str) -> list[str]:
     return [item for item in items if item]
 
 
+def _log2(value: int) -> int:
+    """TableGen ``!logtwo``: only defined for positive powers of two."""
+    if value <= 0 or value & (value - 1):
+        raise ExpandError(f"log2({value}) is not a power of two")
+    return value.bit_length() - 1
+
+
 CALLS = {
     "cdiv": lambda a, b: (a + b - 1) // b,
     "max": max,
     "min": min,
+    "log2": _log2,
 }
+
+
+class _FlattenAttributes(ast.NodeTransformer):
+    """``SEW.div_factor`` becomes one env key, ``SEW.div_factor``."""
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        if isinstance(node.value, ast.Name):
+            return ast.copy_location(ast.Name(id=f"{node.value.id}.{node.attr}", ctx=node.ctx), node)
+        return node
 NODE_BUDGET = 64
 
 
@@ -182,6 +207,7 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
         ast.Constant,
         ast.Name,
         ast.Call,
+        ast.Attribute,
         ast.Add,
         ast.Sub,
         ast.Mult,
@@ -192,6 +218,7 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
         ast.UAdd,
         ast.Load,
     )
+    tree = _FlattenAttributes().visit(tree)
     if sum(1 for _ in ast.walk(tree)) > NODE_BUDGET:
         raise ExpandError(f"expression too large in {expr!r}")
     call_functions = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
@@ -210,11 +237,16 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
                 f"unknown parameter {node.id!r} in {expr!r} "
                 f"(axis names need `units` to appear in numeric fields)"
             )
-    value = eval(  # noqa: S307
-        compile(tree, "<expr>", "eval"),
-        {"__builtins__": {}, **CALLS},
-        env,
-    )
+    try:
+        value = eval(  # noqa: S307
+            compile(tree, "<expr>", "eval"),
+            {"__builtins__": {}, **CALLS},
+            env,
+        )
+    except ExpandError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - kernel misuse is a source error
+        raise ExpandError(f"bad expression {expr!r}: {exc}") from exc
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, float):
@@ -360,10 +392,16 @@ def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine]]:
                 if not values:
                     raise ExpandError(f"line {line_no}: axis {name} is empty")
                 units = _axis_units(name, values, props.get("units"), line_no)
+                extra = {
+                    key: _axis_units(name, values, value, line_no)
+                    for key, value in props.items()
+                    if key not in ("kind", "name_format", "units")
+                }
                 dimensions[name] = Axis(
                     values=values,
                     name_format=props.get("name_format") or "_{value}",
                     units=units,
+                    extra={key: value for key, value in extra.items() if value is not None},
                 )
                 continue
             match = FAMILY_RE.match(line)
@@ -506,7 +544,10 @@ def _axis_env(
             continue
         if axis in merged:
             raise ExpandError(f"axis {axis} shadows a family parameter of the same name")
-        merged[axis] = spec.unit_of(None if is_worst else member)
+        chosen = None if is_worst else member
+        merged[axis] = spec.unit_of(chosen)
+        for key in spec.extra:
+            merged[f"{axis}.{key}"] = spec.projection(key, chosen)
     return merged
 
 

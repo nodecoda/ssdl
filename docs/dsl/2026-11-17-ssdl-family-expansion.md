@@ -3,7 +3,7 @@
 - date: 2026-11-17
 - status: **Implemented + pilot verified（全模型重生成待完成）**
 - 工具：`tools/ssdl/family_expand.py`
-- 测试：`check.py` 58/58
+- 测试：`check.py` 59/59
 - 源：LLVM `700e551714cc`
 
 ## 1. 实现了什么
@@ -129,6 +129,21 @@ machine vlde {
 
 结论：**压缩的收益来自「公式一次、记录多次」，不是文本折叠**。载荷只在 40 个组里恒定，其余 3592 条必须写成表达式；但载荷只有 30 种形状，说明公式是少数（§1.4 的两条即覆盖 117 + 53 组）。仅靠字符串压缩无法达到计划里的 20×。
 
+## 4.1 矿工：把 3772 条记录折叠成 355 个 base
+
+`tools/ssdl/family_mine.py` 不做生成，只回答 AC8 的问题：折叠所有轴之后，还剩几个 base 没有可命名的公式。
+
+| 项 | 值 |
+|---|---:|
+| 显式 `WriteRes` | 3772 |
+| canonical base | 355 |
+| 轴集合为 `{LMUL}` / `{}` / `{LMUL,SEW}` / `{NF,EEW,LMUL}` | 182 / 126 / 38 / 9 |
+| SEG 九族（每族 224 = NF7×EEW4×LMUL8） | 2016 条 / 6 条公式 |
+
+公式目录 `data/riscv-sched-formulas.json` 每条都引用 TableGen class 行号；矿工只检查目录，不从记录反推公式。SEG 的 6 条公式已 100% 覆盖 2016 条（`family_catalogue_explains_every_segmented_family`）。
+
+剩余 346 个 base 尚未入目录，`/tmp/mine/unexplained.json` 就是清单。
+
 ## 5. 剩余工作（Step 3 未完成项）
 
 1. **全模型压缩源**：把 SiFive7VLEN512 的 3772 条显式 WR 全部写成 ~355 条语句（含 126 条扁平）。当前只完成了 `WriteVLDE` 子族。
@@ -144,5 +159,5 @@ machine vlde {
 cd /home/ubuntu/llvm/llvm-dev
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
-python3 tools/ssdl/check.py   # 58/58
+python3 tools/ssdl/check.py   # 59/59
 ```

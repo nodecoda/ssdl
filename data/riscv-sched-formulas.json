@@ -1,0 +1,140 @@
+{
+  "llvm": "700e551714cc",
+  "note": "Every entry mirrors a TableGen class; `source` is the citation. The miner only checks these, it never invents one from the records. Globs match the canonical template, where axis members are already placeholders.",
+  "formulas": [
+    {
+      "name": "load-unit-nf2",
+      "templates": [
+        "WriteVLSEG*"
+      ],
+      "subset": {
+        "NF": [
+          "2"
+        ]
+      },
+      "latency": "3 + max(1, LMUL // 2)",
+      "release_hi": "1 + max(1, LMUL // 2)",
+      "resources": [
+        "VCQ",
+        "VL"
+      ],
+      "source": "RISCVSchedSiFive7.td:77-89 (Seg2), :681"
+    },
+    {
+      "name": "load-unit-nfN",
+      "templates": [
+        "WriteVLSEG*"
+      ],
+      "subset": {
+        "NF": [
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ]
+      },
+      "latency": "3 + (vlen * LMUL) // (8 * EEW) * cdiv(EEW * NF, vlen // 2)",
+      "release_hi": "1 + (vlen * LMUL) // (8 * EEW) * cdiv(EEW * NF, vlen // 2)",
+      "resources": [
+        "VCQ",
+        "VL"
+      ],
+      "source": "RISCVSchedSiFive7.td:91-110 (GetCyclesSegmented), :691"
+    },
+    {
+      "name": "load-strided",
+      "templates": [
+        "WriteVLSSEG*",
+        "WriteVLUXSEG*",
+        "WriteVLOXSEG*"
+      ],
+      "subset": {
+        "NF": [
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ]
+      },
+      "latency": "3 + (vlen * LMUL) // (8 * EEW) * cdiv(EEW * NF, vlen // 2)",
+      "release_hi": "1 + (vlen * LMUL) // (8 * EEW) * cdiv(EEW * NF, vlen // 2)",
+      "resources": [
+        "VCQ",
+        "VL"
+      ],
+      "source": "RISCVSchedSiFive7.td:700-712 (nf=2 also uses GetCyclesSegmented)"
+    },
+    {
+      "name": "store-unit-nf2",
+      "templates": [
+        "WriteVSSEG*"
+      ],
+      "subset": {
+        "NF": [
+          "2"
+        ]
+      },
+      "latency": "1",
+      "release_hi": "1 + max(1, LMUL // 2)",
+      "resources": [
+        "VCQ",
+        "VS"
+      ],
+      "source": "RISCVSchedSiFive7.td:686"
+    },
+    {
+      "name": "store-unit-nfN",
+      "templates": [
+        "WriteVSSEG*"
+      ],
+      "subset": {
+        "NF": [
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ]
+      },
+      "latency": "1",
+      "release_hi": "1 + (vlen * LMUL) // (8 * EEW) * cdiv(EEW * NF, vlen // 2)",
+      "resources": [
+        "VCQ",
+        "VS"
+      ],
+      "source": "RISCVSchedSiFive7.td:697"
+    },
+    {
+      "name": "store-strided",
+      "templates": [
+        "WriteVSSSEG*",
+        "WriteVSUXSEG*",
+        "WriteVSOXSEG*"
+      ],
+      "subset": {
+        "NF": [
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ]
+      },
+      "latency": "1",
+      "release_hi": "1 + (vlen * LMUL) // (8 * EEW) * cdiv(EEW * NF, vlen // 2)",
+      "resources": [
+        "VCQ",
+        "VS"
+      ],
+      "source": "RISCVSchedSiFive7.td:713-720"
+    }
+  ]
+}

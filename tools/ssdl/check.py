@@ -30,6 +30,7 @@ from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
 from ssdl import family_expand as family_mod  # noqa: E402
+from ssdl import family_mine as family_mine_mod  # noqa: E402
 from ssdl import family_tables as family_tables_mod  # noqa: E402
 from ssdl import from_records as from_records_mod  # noqa: E402
 from ssdl import record_ir as record_ir_mod  # noqa: E402
@@ -1973,6 +1974,37 @@ machine m {
 }
 """
     expect_expand_error(source, "unsupported syntax")
+
+
+@test
+def family_catalogue_explains_every_segmented_family():
+    """The catalogued SEG formulas must cover all nine templates exactly.
+
+    Nine segmented templates, 224 members each (NF x EEW x LMUL), are 2016 of
+    the 3772 explicit records.  If a formula and the records disagree, this
+    test names the member instead of leaving a silent residue.
+    """
+    upstream_path = Path("/tmp/riscv.rec")
+    if not upstream_path.is_file():
+        return
+    recs = records_mod.load(str(upstream_path))
+    bases, _total = family_mine_mod.collect(recs, "SiFive7VLEN512Model", family_mine_mod.DEFAULT_LMUL)
+    catalogue = json.loads((ROOT / "data/riscv-sched-formulas.json").read_text())["formulas"]
+    seg = {name: base for name, base in bases.items() if "SEG" in name}
+    assert_true(len(seg) == 9, f"expected 9 segmented templates, got {sorted(seg)}")
+    explained = 0
+    for name, base in seg.items():
+        covered: set = set()
+        for entry in catalogue:
+            got, failures = family_mine_mod.match_formula(base, entry, 512)
+            assert_true(not failures, f"{name} / {entry['name']}: {failures[:2]}")
+            covered.update(got)
+        assert_true(
+            covered == set(base.members),
+            f"{name}: {len(base.members) - len(covered)} members unexplained",
+        )
+        explained += len(base.members)
+    assert_true(explained == 2016, f"segmented records: {explained}")
 
 
 def main() -> int:
