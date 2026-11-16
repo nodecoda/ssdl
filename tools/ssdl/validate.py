@@ -23,8 +23,10 @@ import argparse
 import sys
 
 if __package__ in (None, ""):
+    from diagnose import ERROR, NOTE, diagnose  # type: ignore
     from parser import MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, parse_file  # type: ignore
 else:
+    from .diagnose import ERROR, NOTE, diagnose
     from .parser import (
         ItinerariesDecl,
         MachineDecl,
@@ -299,22 +301,46 @@ class SortChecker:
             seen.add(name)
 
 
+def validate_all(program: Program) -> tuple[list[str], list]:
+    """Sort errors plus effect findings.
+
+    ``validate`` keeps its historical list-of-strings contract; this entry
+    point is for callers that also want warnings and notes.
+    """
+    errors = SortChecker(program).run()
+    findings = diagnose(program)
+    errors.extend(f.render() for f in findings if f.level == ERROR)
+    return errors, findings
+
+
 def validate(program: Program) -> list[str]:
-    return SortChecker(program).run()
+    errors, _ = validate_all(program)
+    return errors
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("input", help="SSDL source file")
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="also print notes (semantic context, not a problem)",
+    )
     args = ap.parse_args(argv)
     try:
         program = parse_file(args.input)
     except Exception as exc:
         print(f"{args.input}: {exc}", file=sys.stderr)
         return 2
-    errors = validate(program)
+    errors, findings = validate_all(program)
     for error in errors:
         print(error, file=sys.stderr)
+    for finding in findings:
+        if finding.level == ERROR:
+            continue
+        if finding.level == NOTE and not args.verbose:
+            continue
+        print(finding.render(), file=sys.stderr)
     return 1 if errors else 0
 
 

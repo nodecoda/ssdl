@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import census_riscv as census_mod  # noqa: E402
 from ssdl import compare as compare_mod  # noqa: E402
+from ssdl import diagnose as diagnose_mod  # noqa: E402
 from ssdl import effects as effects_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
@@ -1498,6 +1499,171 @@ def schema_json_carries_consumer_semantics():
         "LoopMicroOpBufferSize"
     ]["effect"]
     assert_true(tti["consumers"] == ["tti"], f"LoopMicroOpBufferSize: {tti}")
+
+
+@test
+def effect_diagnostics_name_the_real_consumer():
+    """A misleading knob produces a warning that names the subsystem.
+
+    ``loop_micro_op_buffer`` sits in the scheduling block but only feeds the
+    TTI unroll threshold; ``retire_ooo`` looks like a scheduling property but
+    only llvm-mca reads it.
+    """
+    source = """
+machine M {
+  loop_micro_op_buffer = 8;
+  resource P;
+  write W;
+  read R;
+  bind W -> [P], latency = 3, retire_ooo = true;
+  advance R : cycles = 1;
+}
+"""
+    findings = diagnose_mod.diagnose(parser.parse(source))
+    warnings = [f for f in findings if f.level == diagnose_mod.WARNING]
+    notes = [f for f in findings if f.level == diagnose_mod.NOTE]
+    text = "\n".join(f.render() for f in warnings)
+    assert_in("TTI unroll threshold", text)
+    assert_in("retire_ooo", text)
+    assert_true(
+        any("ReleaseAtCycles defaults" in f.message for f in notes),
+        "latency without release should explain the default: "
+        + "\n".join(f.render() for f in notes),
+    )
+    assert_true(
+        not [f for f in findings if f.level == diagnose_mod.ERROR],
+        "unexpected errors: " + "\n".join(f.render() for f in findings),
+    )
+
+
+@test
+def effect_diagnostics_warn_about_dead_inst_rw_unsupported():
+    """``map ... : unsupported = true`` asks for an effect that does not exist.
+
+    The lowering is still exercised (SSDL 1.0 defines it), but the author is
+    told that InstRW.Unsupported has no consumer.
+    """
+    source = """
+machine M {
+  write W;
+  map [ADD] -> [W] : unsupported = true;
+}
+"""
+    findings = diagnose_mod.diagnose(parser.parse(source))
+    warnings = [f for f in findings if f.level == diagnose_mod.WARNING]
+    assert_true(len(warnings) == 1, f"expected one warning, got {findings}")
+    assert_in("dead field", warnings[0].message)
+    assert_true(warnings[0].effect == "InstRW.Unsupported", warnings[0])
+
+    text, skips = emit_source(source)
+    assert_true(skips == [], skips)
+    assert_in("InstRW", text)
+
+
+@test
+def effect_diagnostics_flag_non_portable_sti_predicates():
+    """A default ``expand_for_mc`` silently turns pseudo/non_portable into false."""
+    source = """
+machine M { }
+sti_decl X { }
+sti_function F : X {
+  sched_model = M;
+  dep_breaking_class C([ADD], non_portable([{ true }]), [1]);
+}
+"""
+    findings = diagnose_mod.diagnose(parser.parse(source))
+    warnings = [f for f in findings if f.level == diagnose_mod.WARNING]
+    text = "\n".join(f.render() for f in warnings)
+    assert_in("non_portable", text)
+    assert_in("MC version expands", text)
+
+    quiet = """
+machine M { }
+sti_decl X { expand_for_mc = false; }
+sti_function F : X {
+  sched_model = M;
+  dep_breaking_class C([ADD], non_portable([{ true }]), [1]);
+}
+"""
+    quiet_findings = diagnose_mod.diagnose(parser.parse(quiet))
+    assert_true(
+        not [f for f in quiet_findings if f.level == diagnose_mod.WARNING],
+        "expand_for_mc = false should silence the portability warning: "
+        + "\n".join(f.render() for f in quiet_findings),
+    )
+
+
+@test
+def effect_diagnostics_explain_itineraries_to_mca_users():
+    """Itinerary-only CPUs are rejected by llvm-mca; both means MCA ignores them."""
+    only_itin = """
+machine M {
+  itineraries {
+    func_units = [FU];
+    itin I { stages = [stage(1, [FU])]; }
+  }
+}
+"""
+    findings = diagnose_mod.diagnose(parser.parse(only_itin))
+    warnings = [f for f in findings if f.level == diagnose_mod.WARNING]
+    assert_true(
+        any("rejects CPUs that provide only itineraries" in f.message for f in warnings),
+        "expected an itinerary-only warning: " + "\n".join(f.render() for f in findings),
+    )
+
+    both = """
+machine M {
+  resource P;
+  write W;
+  bind W -> [P], latency = 1;
+  itineraries {
+    func_units = [FU];
+    itin I { stages = [stage(1, [FU])]; }
+  }
+}
+"""
+    both_findings = diagnose_mod.diagnose(parser.parse(both))
+    notes = [f for f in both_findings if f.level == diagnose_mod.NOTE]
+    assert_true(
+        any("consults them before the sched model" in f.message for f in notes),
+        "expected the CodeGen-before-MCA note: "
+        + "\n".join(f.render() for f in both_findings),
+    )
+
+
+@test
+def effect_diagnostics_are_quiet_on_a_clean_model():
+    """The shipped example is clean at warning/error level."""
+    program = parser.parse_file(str(ROOT / "tests/ssdl/sifive7-mini.ssdl"))
+    findings = diagnose_mod.diagnose(program)
+    loud = [f for f in findings if f.level != diagnose_mod.NOTE]
+    assert_true(
+        loud == [],
+        "unexpected diagnostics: " + "\n".join(f.render() for f in loud),
+    )
+    assert_true(
+        any("RISCVISAInfo" in f.message for f in findings),
+        "extension metadata should still be explained as a note",
+    )
+
+
+@test
+def validate_all_merges_sort_errors_and_effect_findings():
+    """The validate entry point exposes both kinds of diagnostic."""
+    source = """
+predicate P = feature(F);
+tii_predicate T = return P;
+machine M {
+  write W;
+  map [ADD] -> [W] : unsupported = true;
+}
+"""
+    errors, findings = validate_mod.validate_all(parser.parse(source))
+    assert_true(any("requires an MC predicate" in e for e in errors), errors)
+    assert_true(
+        any(f.level == diagnose_mod.WARNING and "dead field" in f.message for f in findings),
+        findings,
+    )
 
 
 @test

@@ -53,6 +53,7 @@ else:
     from .tdutil import join_list, td_def_name, td_str
 
 if __package__ in (None, ""):
+    from diagnose import ERROR as FINDING_ERROR, NOTE as FINDING_NOTE, diagnose as diagnose_program  # type: ignore
     from parser import (  # type: ignore
         FeatureDecl,
         ItinerariesDecl,
@@ -67,6 +68,7 @@ if __package__ in (None, ""):
         parse_file,
     )
 else:
+    from .diagnose import ERROR as FINDING_ERROR, NOTE as FINDING_NOTE, diagnose as diagnose_program
     from .parser import (
         FeatureDecl,
         ItinerariesDecl,
@@ -184,6 +186,9 @@ class Emitter:
         self.sorts = sorts
         self.errors: list[Diagnostic] = []
         self.skips: list[Diagnostic] = []
+        # Effect-aware findings from ``diagnose.py``.  Error findings are
+        # folded into ``errors``; warnings and notes are advisory.
+        self.findings: list = []
         self.features: dict[str, FeatureInfo] = {}
         self.machines: dict[str, MachineInfo] = {}
         # ProcessorItineraries emitted for a top-level block, keyed by the
@@ -261,6 +266,11 @@ class Emitter:
 
     # -- driver ----------------------------------------------------------
     def run(self) -> str:
+        self.findings = diagnose_program(self.program)
+        for finding in self.findings:
+            if finding.level == FINDING_ERROR:
+                self.error(finding.where, finding.message)
+
         self.collect_features()
         self.declare_machines()
         self.collect_global_vocabulary()
@@ -1550,6 +1560,7 @@ def emit(
     sorts: dict[str, str] | None = None,
     target_include: str = "RISCV.td",
     records: RecordSet | None = None,
+    findings: list | None = None,
 ) -> tuple[str, list[Diagnostic]]:
     """Lower ``program`` and prepend the includes the output needs to load.
 
@@ -1562,6 +1573,10 @@ def emit(
     if records is not None:
         records.records.extend(emitter.records.records)
         records.by_name.update(emitter.records.by_name)
+    if findings is not None:
+        findings.extend(
+            f for f in emitter.findings if f.level != FINDING_ERROR
+        )
     header = []
     if header_comment:
         header.append(header_comment)
@@ -1602,6 +1617,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="write the record table this lowering denotes (see record_ir.py)",
     )
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="also print notes (semantic context, not a problem)",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -1615,6 +1635,16 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # parse errors carry line/column
         print(f"{args.input}: {exc}", file=sys.stderr)
         return 2
+
+    # Diagnose before lowering: a dead-field error should stop emission even
+    # if the rest of the model is well formed, and warnings should survive an
+    # unrelated lowering failure.
+    findings = diagnose_program(program)
+    if any(f.level == FINDING_ERROR for f in findings):
+        for finding in findings:
+            if finding.level == FINDING_ERROR:
+                print(finding.render(), file=sys.stderr)
+        return 1
 
     records = RecordSet()
     try:
@@ -1634,6 +1664,10 @@ def main(argv: list[str] | None = None) -> int:
 
     for diag in skips:
         print(diag.render(), file=sys.stderr)
+    for finding in findings:
+        if finding.level == FINDING_NOTE and not args.verbose:
+            continue
+        print(finding.render(), file=sys.stderr)
 
     if args.records_json:
         with open(args.records_json, "w", encoding="utf-8") as f:
