@@ -62,7 +62,8 @@ Record(
 
 `--records-json` 里存的就是这棵树，不是字符串：`{"kind": "int", "value": 1}`、
 `{"kind": "list", "items": [{"kind": "ident", "name": "PipeA"}]}`。
-所以宿主（或未来的 tblgen 加载器）拿到表就能直接用，不需要再实现一遍 TD 表达式解析。
+所以宿主拿到表就能直接用，不需要再实现一遍 TD 表达式解析；`llvm-tblgen
+-load-records` 就是这么读它的（见 `2026-11-16-ssdl-record-loader-design.md`）。
 
 ```text
 $ python3 tools/ssdl/td_types.py /tmp/v512.json \
@@ -237,9 +238,10 @@ python3 tools/ssdl/td_schema.py --census   # 逐条列出 name -> 声明位置
 
 ## 7. 边界（明确没做的）
 
-- **llvm-tblgen 不读 JSON**。本轮的证明是"表能重建同样的 dump"，不是"宿主已直连"。
-  真要直连，需要在 `llvm-tblgen` 加一个 record 加载入口（`RecordKeeper::addDef` +
-  `Record::setValue`，约两三百行），那是唯一剩下的、属于宿主的改动。
+- **宿主直连已落地，但仍是工作区补丁**。`llvm-tblgen -load-records=<json>` 已在
+  `patches/2026-11-16-tablegen-load-records.patch` 实现并验证（stub 与三个
+  SiFive7 模型，文本路径与加载路径逐字节相同）；它还没有进上游树，所以本仓库的
+  `check.py` 仍以"表重放文本"作为回归基线。
 - **类型检查只看声明**。`code`、`dag` 的内容不做语义检查（`[{...}]` 里的 C++
   与 `(instrs ...)` 的操作数列表只校验外壳）；它们属于宿主的知识。
 - **关键字参考只覆盖这 8 个 emitter**。`GIsel`、`DAGISel`、`Intrinsic` 等其它
@@ -264,4 +266,6 @@ python3 tools/ssdl/td_schema.py --census   # 逐条列出 name -> 声明位置
 
 我们绕道 `.td` 的原因只是 `llvm-tblgen` 的正门是 TD 文本；`record_ir.py` 证明了
 这条绕道是可逆的——三个模型的 12k 条记录，只用 JSON 表就能重建出逐字节相同的
-`-print-records` dump。剩下要做的不是语言，而是给宿主开一扇读 record 表的门。
+`-print-records` dump。宿主那扇门也已经打开（`-load-records`）：同一个表不做文本
+往返，直接进 `RecordKeeper`，`-gen-subtarget` / `-gen-instr-info` 的输出与文本路径
+逐字节相同。
