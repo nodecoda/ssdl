@@ -45,9 +45,9 @@
 | `SeparatorCharacters` | `AsmParserVariant`：`string` = `" \t,"` | AsmMatcherEmitter.cpp:1612 |
 | `TokenizingCharacters` | `AsmParserVariant`：`string` = `"[]*!"` | AsmMatcherEmitter.cpp:1610 |
 | `Variant` | `AsmParserVariant`、`AsmWriter`：`int` = `0` | AsmMatcherEmitter.cpp:1615, 3128, 3396 …（共 6 处） |
-| `AssemblerCondDag` | `AssemblerPredicate`：`dag` = `cond` | SubtargetFeatureInfo.cpp:181, 203, 224 |
+| `AssemblerCondDag` | `AssemblerPredicate`、`Predicate`：`dag`（默认值不同） | SubtargetFeatureInfo.cpp:181, 203, 224 |
 | `AssemblerMatcherPredicate` | `AssemblerPredicate`、`Predicate`：`bit`（默认值不同） | SubtargetFeatureInfo.cpp:32, 169, 220 |
-| `PredicateName` | `AssemblerPredicate` `string` = `name`；`Predicate` `dag AssemblerCondDag ; string` = `""` | AsmMatcherEmitter.cpp:3004 |
+| `PredicateName` | `AssemblerPredicate`、`Predicate`：`string`（默认值不同） | AsmMatcherEmitter.cpp:3004 |
 | `MCInstFnName` | `CheckFunctionPredicate`、`CheckFunctionPredicateWithTII`：`string` = `MCInstFn` | PredicateExpander.cpp:458, 464 |
 | `MachineInstrFnName` | `CheckFunctionPredicate`、`CheckFunctionPredicateWithTII`：`string` = `MachineInstrFn` | PredicateExpander.cpp:459, 465 |
 | `TIIPtrName` | `CheckFunctionPredicateWithTII`：`string` = `TIIPointer` | PredicateExpander.cpp:466 |
@@ -81,7 +81,7 @@
 | `OperandCycles` | `InstrItinData`：`list<int>` = `operandcycles` | SubtargetEmitter.cpp:471 |
 | `Stages` | `InstrItinData`：`list<InstrStage>` = `stages` | SubtargetEmitter.cpp:426；DFAPacketizerEmitter.cpp:183 |
 | `TheClass` | `InstrItinData`：`InstrItinClass` = `Class` | CodeGenSchedule.cpp:1121 |
-| `Cycles` | `InstrStage` `int` = `cycles`；`ProcReadAdvance` `assert !le ( !size ( tunables ) , !size ( writes ) ) , "cannot have more `tunables' than `writes'" ; int` = `cycles` | SubtargetEmitter.cpp:435, 1350 |
+| `Cycles` | `InstrStage`、`ProcReadAdvance`：`int` = `cycles` | SubtargetEmitter.cpp:435, 1350 |
 | `Kind` | `InstrStage` `int` = `kind . Value`；`ProcResourceUnits` `ProcResourceKind` = `kind` | SubtargetEmitter.cpp:452；CodeGenSchedule.cpp:2052 |
 | `TimeInc` | `InstrStage`：`int` = `timeinc` | SubtargetEmitter.cpp:449 |
 | `Units` | `InstrStage`：`list<FuncUnit>` = `units` | SubtargetEmitter.cpp:439；DFAPacketizerEmitter.cpp:185 |
@@ -89,7 +89,8 @@
 | `HasPositionOrder` | `Instruction`：`bit` = `false` | AsmMatcherEmitter.cpp:669, 671 |
 | `Itinerary` | `Instruction`：`InstrItinClass` = `NoItinerary` | CodeGenSchedule.cpp:838 |
 | `Namespace` | `Instruction`、`RegAltNameIndex`、`Register`、`RegisterClass`、`SubRegIndex`、`ValueType`：`string`（默认值不同） | SubtargetEmitter.cpp:807, 808；PredicateExpander.cpp:120 …（共 9 处） |
-| `Size` | `Instruction` `int` = `0`；`RegisterClass` `assert !not ( !empty ( RegTypes ) ) , "RegTypes list must not be empty" ; int` = `0`；`SubRegIndex` `SubRegRangeByHwMode SubRegRanges ; int` = `size`；`SubRegRange` `int` = `size`；`ValueType` `int` = `size` | AsmMatcherEmitter.cpp:572, 577 |
+| `SchedRW` | `Instruction`、`Sched`：`list<SchedReadWrite>`（默认值不同） | CodeGenSchedule.cpp:593, 841 |
+| `Size` | `Instruction`、`InstructionEncoding`、`RegisterClass`、`SubRegIndex`、`SubRegRange`、`ValueType`：`int`（默认值不同） | AsmMatcherEmitter.cpp:572, 577 |
 | `TwoOperandAliasConstraint` | `Instruction`：`string` = `""` | AsmMatcherEmitter.cpp:1726 |
 | `Opcodes` | `InstructionEquivalenceClass`、`MCOpcodeSwitchCase`：`list<Instruction>` = `opcodes` | CodeGenSchedule.cpp:269, 314, 344 …（共 4 处） |
 | `OperandIndices` | `InstructionEquivalenceClass`：`list<int>` = `operands` | CodeGenSchedule.cpp:347 |
@@ -102,7 +103,7 @@
 | `QueueDescriptor` | `MemoryQueue`：`ProcResourceKind` = `PR` | SubtargetEmitter.cpp:842, 851 |
 | `FromMnemonic` | `MnemonicAlias`：`string` = `From` | AsmMatcherEmitter.cpp:3046 |
 | `ToMnemonic` | `MnemonicAlias`：`string` = `To` | AsmMatcherEmitter.cpp:3070, 3071, 3083 …（共 5 处） |
-| `ParserMatchClass` | `Operand`：`code MCOperandPredicate ; AsmOperandClass` = `ImmAsmOperand` | AsmMatcherEmitter.cpp:1217, 1251, 1796 …（共 4 处） |
+| `ParserMatchClass` | `Operand`、`RegisterOperand`：`AsmOperandClass`（默认值不同） | AsmMatcherEmitter.cpp:1217, 1251, 1796 …（共 4 处） |
 | `CondString` | `Predicate`：`code` = `cond` | SubtargetFeatureInfo.cpp:39, 113, 158 |
 | `RecomputePerFunction` | `Predicate`：`bit` = `false` | SubtargetFeatureInfo.h:51 |
 | `CycleTunables` | `ProcReadAdvance`：`list<int>` = `tunables` | SubtargetEmitter.cpp:1331 |
@@ -130,7 +131,7 @@
 | `ReadType` | `ReadAdvance`：`SchedRead` = `read` | CodeGenSchedule.cpp:1899, 2147 |
 | `AltNames` | `Register`：`list<string>` = `altNames` | AsmMatcherEmitter.cpp:2935 |
 | `AsmName` | `Register`：`string` = `n` | AsmMatcherEmitter.cpp:2901 |
-| `RegAltNameIndices` | `Register`：`assert !eq ( !size ( SubRegs ) , !size ( SubRegIndices ) ) , "SubRegs and SubRegIndices must have the same size" ; list<RegAltNameIndex>` = `[ ]` | AsmMatcherEmitter.cpp:2936 |
+| `RegAltNameIndices` | `Register`：`list<RegAltNameIndex>` = `[ ]` | AsmMatcherEmitter.cpp:2936 |
 | `Classes` | `RegisterCategory` `list<RegisterClass>` = `classes`；`STIPredicate` `list<InstructionEquivalenceClass>` = `classes` | CodeGenSchedule.cpp:308, 337 |
 | `AllowMoveElimination` | `RegisterFile`：`list<bit>` = `AllowMoveElim` | CodeGenSchedule.cpp:1804 |
 | `AllowZeroMoveEliminationOnly` | `RegisterFile`：`bit` = `AllowZeroMoveElimOnly` | CodeGenSchedule.cpp:1791 |
@@ -148,7 +149,6 @@
 | `ExpandForMC` | `STIPredicateDecl`：`bit` = `expandForMC` | PredicateExpander.cpp:607 |
 | `OverridesBaseClassMember` | `STIPredicateDecl`：`bit` = `overrides` | PredicateExpander.cpp:499 |
 | `UpdatesOpcodeMask` | `STIPredicateDecl`：`bit` = `updatesOpcodeMask` | PredicateExpander.cpp:491, 507, 568 |
-| `SchedRW` | `Sched`：`list<SchedReadWrite>` = `schedrw` | CodeGenSchedule.cpp:593, 841 |
 | `AliasRW` | `SchedAlias`：`SchedReadWrite` = `alias` | SubtargetEmitter.cpp:948, 1007；CodeGenSchedule.cpp:635 …（共 7 处） |
 | `MatchRW` | `SchedAlias`：`SchedReadWrite` = `match` | CodeGenSchedule.cpp:634, 672 |
 | `CompleteModel` | `SchedMachineModel`：`bit` = `true` | SubtargetEmitter.cpp:1556；CodeGenSchedule.cpp:1921 |
@@ -176,6 +176,130 @@
 | `WriteType` | `WriteRes`：`SchedWrite` = `write` | CodeGenSchedule.cpp:1892, 2112 |
 | `Repeat` | `WriteSequence`：`int` = `rep` | CodeGenSchedule.cpp:756, 796 |
 | `Writes` | `WriteSequence`：`list<SchedWrite>` = `writes` | CodeGenSchedule.cpp:566, 665 |
+
+## 字段消费者语义
+
+> 来源：`tools/ssdl/effects.py`。`check.py` 的 `effect_*` 检查校验键、证据行和角色一致性；全部条目审计于 commit `700e551714cc`。
+
+- **层**：`sched` / `predicate` / `feature` / `itinerary`。
+- **角色**：`effect` 运行时可见；`selector` 只选择记录；`validation` 仅 TableGen 期；`dead` 无消费者；`declaration` 只改生成代码形状。
+- **后端读取**：该字段名是否出现在 emitter 的字符串绑定里（`否` 即死字段候选）。
+
+| 字段 | 层 | 角色 | 运行时消费者 | 后端读取 | 默认语义 | 证据 |
+|---|---|---|---|---|---|---|
+| `Processor.Features` | feature | effect | codegen, targetparser | 是 | required | llvm/utils/TableGen/SubtargetEmitter.cpp:388 |
+| `Processor.Name` | feature | effect | asm, codegen, targetparser | 是 | required; the -mcpu name | llvm/utils/TableGen/SubtargetEmitter.cpp:388 |
+| `Processor.ProcItin` | feature | effect | codegen | 是 | NoItineraries unless supplied | llvm/utils/TableGen/SubtargetEmitter.cpp:1050 |
+| `Processor.SchedModel` | feature | selector | — | 是 | NoSchedModel unless supplied | llvm/utils/TableGen/SubtargetEmitter.cpp:388 |
+| `Processor.TuneFeatures` | feature | effect | codegen, targetparser | 是 | [] | llvm/utils/TableGen/SubtargetEmitter.cpp:388 |
+| `ProcessorAlias.Alias` | feature | effect | codegen, targetparser | 是 | required; the canonical CPU name | llvm/utils/TableGen/SubtargetEmitter.cpp:315 |
+| `ProcessorAlias.Name` | feature | effect | codegen, targetparser | 是 | required; the alternate -mcpu name | llvm/utils/TableGen/SubtargetEmitter.cpp:315 |
+| `RISCVExtension.Experimental` | feature | effect | targetparser | 否 | false; true requires -menable-experimental-extensions and an explicit version | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:41 |
+| `RISCVExtension.MajorVersion` | feature | effect | targetparser | 否 | required; part of the TargetParser extension table | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:45 |
+| `RISCVExtension.MinorVersion` | feature | effect | targetparser | 否 | required; part of the TargetParser extension table | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:45 |
+| `RISCVExtensionBitmask.BitPos` | feature | effect | targetparser | 否 | required; selects the bit inside the group | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:250 |
+| `RISCVExtensionBitmask.GroupID` | feature | effect | targetparser | 否 | required; selects the __riscv_feature_bits group | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:249 |
+| `RISCVProcessorModel.ConfigurableTuneFeatures` | feature | effect | targetparser | 否 | []; tune features the driver may toggle | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:357 |
+| `RISCVProcessorModel.DefaultMarch` | feature | effect | targetparser | 否 | empty; synthesized from Features when absent | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:196 |
+| `RISCVTuneFeature.NegativeDirectiveName` | feature | effect | targetparser | 否 | required; accepted by -mtune | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:290 |
+| `RISCVTuneFeature.PositiveDirectiveName` | feature | effect | targetparser | 否 | required; accepted by -mtune | llvm/utils/TableGen/Basic/RISCVTargetDefEmitter.cpp:289 |
+| `SubtargetFeature.Desc` | feature | declaration | — | 是 | required; help text only | llvm/lib/MC/MCSubtargetInfo.cpp:113 |
+| `SubtargetFeature.FieldName` | feature | effect | codegen | 是 | required; maps the feature to a Subtarget field | llvm/utils/TableGen/SubtargetEmitter.cpp:2107 |
+| `SubtargetFeature.Implies` | feature | effect | codegen, targetparser | 是 | []; emitted as a direct list, not transitively unrolled | llvm/utils/TableGen/SubtargetEmitter.cpp:252 |
+| `SubtargetFeature.InlineBehavior` | feature | effect | tti | 是 | InlineDefault for plain features; RISCVTuneFeature defaults to InlineIgnore | llvm/utils/TableGen/SubtargetEmitter.cpp:2126 |
+| `SubtargetFeature.Name` | feature | effect | asm, codegen, targetparser | 是 | required; the -mattr name and the key in SubtargetFeatureKV | llvm/utils/TableGen/SubtargetEmitter.cpp:206 |
+| `SubtargetFeature.Value` | feature | effect | codegen | 是 | required; non-bool values become enum/int with max-wins codegen | llvm/utils/TableGen/SubtargetEmitter.cpp:2107 |
+| `ComboFuncData.FuncList` | itinerary | effect | codegen | 是 | required; members of the combination | llvm/utils/TableGen/DFAPacketizerEmitter.cpp:156 |
+| `ComboFuncData.TheComboFunc` | itinerary | effect | codegen | 是 | required; combined unit identity | llvm/utils/TableGen/DFAPacketizerEmitter.cpp:154 |
+| `ComboFuncUnits.CFD` | itinerary | effect | codegen | 是 | required; combination table | llvm/utils/TableGen/DFAPacketizerEmitter.cpp:144 |
+| `InstrItinData.Bypasses` | itinerary | effect | codegen | 是 | []; per-operand forwarding paths | llvm/utils/TableGen/SubtargetEmitter.cpp:487 |
+| `InstrItinData.NumMicroOps` | itinerary | effect | codegen | 是 | 1; 0 means a dynamically determined number | llvm/utils/TableGen/SubtargetEmitter.cpp:640 |
+| `InstrItinData.OperandCycles` | itinerary | effect | codegen | 是 | []; per-operand cycle counts | llvm/utils/TableGen/SubtargetEmitter.cpp:471 |
+| `InstrItinData.Stages` | itinerary | effect | codegen | 是 | required; reservation stages | llvm/utils/TableGen/SubtargetEmitter.cpp:426 |
+| `InstrItinData.TheClass` | itinerary | selector | — | 是 | required; the InstrItinClass being described | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1121 |
+| `InstrStage.Cycles` | itinerary | effect | codegen | 是 | required; stage length in cycles | llvm/utils/TableGen/SubtargetEmitter.cpp:435 |
+| `InstrStage.Kind` | itinerary | effect | codegen | 是 | Required (0); Reserved (1) | llvm/utils/TableGen/SubtargetEmitter.cpp:452 |
+| `InstrStage.TimeInc` | itinerary | effect | codegen | 是 | -1 -> Cycles | llvm/utils/TableGen/SubtargetEmitter.cpp:449 |
+| `InstrStage.Units` | itinerary | effect | codegen | 是 | required; functional units usable by the stage | llvm/utils/TableGen/SubtargetEmitter.cpp:440 |
+| `ProcessorItineraries.BP` | itinerary | effect | codegen | 是 | required; bypass table | llvm/utils/TableGen/SubtargetEmitter.cpp:530 |
+| `ProcessorItineraries.FU` | itinerary | effect | codegen | 是 | required; functional unit table | llvm/utils/TableGen/SubtargetEmitter.cpp:516 |
+| `ProcessorItineraries.IID` | itinerary | effect | codegen | 是 | required; per-class itinerary data | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1112 |
+| `ProcessorItineraries.PacketizerNamespace` | itinerary | effect | codegen | 是 | empty; one shared packetizer automaton | llvm/utils/TableGen/DFAPacketizerEmitter.cpp:223 |
+| `AssemblerPredicate.AssemblerCondDag` | predicate | effect | asm | 是 | required; all_of/any_of/none_of over features | llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp:187 |
+| `AssemblerPredicate.AssemblerMatcherPredicate` | predicate | declaration | — | 是 | true | llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp:25 |
+| `AssemblerPredicate.PredicateName` | predicate | effect | asm | 是 | empty; diagnostics text | llvm/utils/TableGen/AsmMatcherEmitter.cpp:3004 |
+| `InstructionEquivalenceClass.Opcodes` | predicate | effect | codegen, mca | 是 | required; a switch case per opcode | llvm/utils/TableGen/Common/PredicateExpander.cpp:527 |
+| `InstructionEquivalenceClass.OperandIndices` | predicate | effect | mca | 是 | [] -> zero-width mask, meaning all explicit uses are independent | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:282 |
+| `InstructionEquivalenceClass.Predicate` | predicate | effect | codegen, mca | 是 | required; the body of the opcode case | llvm/utils/TableGen/Common/PredicateExpander.cpp:527 |
+| `Predicate.AssemblerCondDag` | predicate | effect | asm | 是 | required when used as an assembler predicate | llvm/utils/TableGen/AsmMatcherEmitter.cpp:4013 |
+| `Predicate.AssemblerMatcherPredicate` | predicate | declaration | — | 是 | false; true opts the predicate into the asm matcher | llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp:25 |
+| `Predicate.CondString` | predicate | effect | isel | 是 | required; raw C++ expression in DAGISel scope | llvm/utils/TableGen/DAGISelMatcherEmitter.cpp:1347 |
+| `Predicate.PredicateName` | predicate | effect | asm | 是 | empty; diagnostics text | llvm/utils/TableGen/AsmMatcherEmitter.cpp:3004 |
+| `Predicate.RecomputePerFunction` | predicate | effect | isel | 是 | false; SelectionDAG ignores it, GlobalISel honors it | llvm/utils/TableGen/Common/GlobalISel/GlobalISelMatchTableExecutorEmitter.cpp:36 |
+| `PredicateProlog.Code` | predicate | effect | codegen | 是 | required; spliced into resolveSchedClass only | llvm/utils/TableGen/SubtargetEmitter.cpp:1949 |
+| `STIPredicateDecl.DefaultReturnValue` | predicate | effect | codegen, mca | 是 | FalsePred (unmatched opcode returns false) | llvm/utils/TableGen/Common/PredicateExpander.cpp:565 |
+| `STIPredicateDecl.Delegates` | predicate | effect | codegen, mca | 是 | []; delegated predicates run first and may set the mask | llvm/utils/TableGen/Common/PredicateExpander.cpp:504 |
+| `STIPredicateDecl.ExpandForMC` | predicate | declaration | — | 是 | true; emits an MC-layer equivalent | llvm/utils/TableGen/Common/PredicateExpander.cpp:489 |
+| `STIPredicateDecl.Name` | predicate | declaration | — | 是 | required; names the generated function | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:294 |
+| `STIPredicateDecl.OverridesBaseClassMember` | predicate | declaration | — | 是 | true; declares a virtual override in TargetSubtargetInfo | llvm/include/llvm/Target/TargetInstrPredicate.td:395 |
+| `STIPredicateDecl.UpdatesOpcodeMask` | predicate | declaration | — | 是 | false; adds an in/out APInt mask to the generated signature | llvm/utils/TableGen/Common/PredicateExpander.cpp:489 |
+| `TIIPredicate.Body` | predicate | effect | codegen, mca | 否 | required; expanded into both MachineInstr and MCInst helpers | llvm/utils/TableGen/InstrInfoEmitter.cpp:662 |
+| `InstRW.Instrs` | sched | effect | codegen, mca | 是 | required; opcode or regex DAG expanded at emit | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:186 |
+| `InstRW.OperandReadWrites` | sched | effect | codegen, mca | 是 | required; replaces the instruction's SchedRW for that CPU | llvm/utils/TableGen/SubtargetEmitter.cpp:1150 |
+| `InstRW.SchedModel` | sched | selector | — | 是 | unset -> applies to every model | llvm/utils/TableGen/SubtargetEmitter.cpp:1150 |
+| `InstRW.Unsupported` | sched | dead | — | 是 | false; no consumer | llvm/include/llvm/Target/TargetSchedule.td:469 |
+| `ItinRW.MatchedItinClasses` | sched | effect | codegen, mca | 是 | required; only consulted when the class has no Writes | llvm/utils/TableGen/SubtargetEmitter.cpp:1178 |
+| `ItinRW.OperandReadWrites` | sched | effect | codegen, mca | 是 | required; same expansion as InstRW once matched | llvm/utils/TableGen/SubtargetEmitter.cpp:1178 |
+| `ItinRW.SchedModel` | sched | selector | — | 是 | unset -> applies to every model | llvm/utils/TableGen/SubtargetEmitter.cpp:1178 |
+| `ProcReadAdvance.CycleTunables` | sched | effect | codegen, mca | 是 | []; folded into Cycles at emit time (Cycles + tunable) | llvm/utils/TableGen/SubtargetEmitter.cpp:1337 |
+| `ProcReadAdvance.Cycles` | sched | effect | codegen, mca | 是 | required; negative values increase latency | llvm/utils/TableGen/SubtargetEmitter.cpp:1345 |
+| `ProcReadAdvance.SchedModel` | sched | selector | — | 是 | unset -> applies to every model | llvm/utils/TableGen/SubtargetEmitter.cpp:1319 |
+| `ProcReadAdvance.Unsupported` | sched | effect | codegen, mca | 是 | false; true invalidates the whole sched class | llvm/utils/TableGen/SubtargetEmitter.cpp:1324 |
+| `ProcReadAdvance.ValidWrites` | sched | effect | codegen, mca | 是 | [] -> WriteResourceID 0, applies to every write (no bypass) | llvm/utils/TableGen/SubtargetEmitter.cpp:1329 |
+| `ProcResGroup.BufferSize` | sched | effect | codegen, mca | 是 | -1 -> same semantics as ProcResourceUnits.BufferSize | llvm/utils/TableGen/SubtargetEmitter.cpp:919 |
+| `ProcResGroup.Resources` | sched | effect | codegen, mca | 是 | required; group NumUnits is derived by summing members | llvm/utils/TableGen/SubtargetEmitter.cpp:735 |
+| `ProcResGroup.SchedModel` | sched | selector | — | 是 | unset -> applies to every model | llvm/utils/TableGen/SubtargetEmitter.cpp:937 |
+| `ProcResourceUnits.BufferSize` | sched | effect | codegen, mca | 是 | -1 -> OoO port (no dispatch hazard); 0 barrier; 1 in-order; >1 station | llvm/utils/TableGen/SubtargetEmitter.cpp:900 |
+| `ProcResourceUnits.Kind` | sched | selector | — | 是 | required; also the name base of ProcResource<num> | llvm/utils/TableGen/SubtargetEmitter.cpp:908 |
+| `ProcResourceUnits.NumUnits` | sched | effect | codegen, mca | 是 | required; 0 yields a zero resource factor | llvm/utils/TableGen/SubtargetEmitter.cpp:913 |
+| `ProcResourceUnits.SchedModel` | sched | selector | — | 是 | unset -> applies to every model | llvm/utils/TableGen/SubtargetEmitter.cpp:937 |
+| `ProcResourceUnits.Super` | sched | effect | codegen, mca | 是 | unset -> SuperIdx 0 (no super-resource) | llvm/utils/TableGen/SubtargetEmitter.cpp:896 |
+| `ProcWriteResources.AcquireAtCycles` | sched | effect | codegen | 是 | [] -> 0 | llvm/utils/TableGen/SubtargetEmitter.cpp:1259 |
+| `ProcWriteResources.BeginGroup` | sched | effect | codegen, mca | 是 | false; OR-reduced over all writes of the class | llvm/utils/TableGen/SubtargetEmitter.cpp:1212 |
+| `ProcWriteResources.EndGroup` | sched | effect | codegen, mca | 是 | false; OR-reduced over all writes of the class | llvm/utils/TableGen/SubtargetEmitter.cpp:1213 |
+| `ProcWriteResources.Latency` | sched | effect | codegen, mca | 是 | 1; summed across a WriteSequence; -1 means invalid/infinite | llvm/utils/TableGen/SubtargetEmitter.cpp:1210 |
+| `ProcWriteResources.NumMicroOps` | sched | effect | codegen, mca | 是 | 1; summed over every write in the class | llvm/utils/TableGen/SubtargetEmitter.cpp:1211 |
+| `ProcWriteResources.ReleaseAtCycles` | sched | effect | codegen, mca | 是 | [] -> 1 cycle per resource, NOT Latency | llvm/utils/TableGen/SubtargetEmitter.cpp:1254 |
+| `ProcWriteResources.RetireOOO` | sched | effect | mca | 是 | false | llvm/utils/TableGen/SubtargetEmitter.cpp:1216 |
+| `ProcWriteResources.SchedModel` | sched | selector | — | 是 | unset -> applies to every model | llvm/utils/TableGen/SubtargetEmitter.cpp:937 |
+| `ProcWriteResources.SingleIssue` | sched | effect | codegen, mca | 是 | false; syntactic sugar for BeginGroup\|EndGroup | llvm/utils/TableGen/SubtargetEmitter.cpp:1214 |
+| `ProcWriteResources.Unsupported` | sched | effect | codegen, mca | 是 | false; true emits InvalidNumMicroOps instead of deleting the class | llvm/utils/TableGen/SubtargetEmitter.cpp:1206 |
+| `ReadAdvance.ReadType` | sched | selector | — | 是 | required when used as ReadAdvance | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:2145 |
+| `SchedAlias.AliasRW` | sched | selector | — | 是 | required; the replacement (sequence or variant allowed) | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:661 |
+| `SchedAlias.MatchRW` | sched | selector | — | 是 | required; the SchedReadWrite being replaced | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:628 |
+| `SchedAlias.SchedModel` | sched | selector | — | 是 | unset -> generic alias for every model | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:628 |
+| `SchedMachineModel.CompleteModel` | sched | validation | — | 是 | true; TableGen completeness gate, runtime check is debug-only | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1919 |
+| `SchedMachineModel.EnableIntervals` | sched | effect | codegen | 是 | false; ForceEnableIntervals overrides it | llvm/lib/CodeGen/MachineScheduler.cpp:2907 |
+| `SchedMachineModel.FullInstRWOverlapCheck` | sched | validation | — | 是 | true; only downgrades a TableGen error | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1040 |
+| `SchedMachineModel.HighLatency` | sched | effect | codegen | 是 | -1 -> DefaultHighLatency (10) | llvm/lib/CodeGen/TargetInstrInfo.cpp:1815 |
+| `SchedMachineModel.IssueWidth` | sched | effect | codegen, mca | 是 | -1 -> DefaultIssueWidth (1); 0 is a real value and divides by zero | llvm/utils/TableGen/SubtargetEmitter.cpp:1542 |
+| `SchedMachineModel.Itineraries` | sched | effect | codegen | 是 | NoItineraries -> null; a second, legacy scheduling mechanism | llvm/utils/TableGen/SubtargetEmitter.cpp:1050 |
+| `SchedMachineModel.LoadLatency` | sched | effect | codegen | 是 | -1 -> DefaultLoadLatency (4); fallback when the sched class has no latency | llvm/lib/CodeGen/TargetInstrInfo.cpp:1813 |
+| `SchedMachineModel.LoopMicroOpBufferSize` | sched | effect | tti | 是 | -1 -> DefaultLoopMicroOpBufferSize (0) | llvm/include/llvm/CodeGen/BasicTTIImpl.h:755 |
+| `SchedMachineModel.MicroOpBufferSize` | sched | effect | codegen, mca | 是 | -1 -> DefaultMicroOpBufferSize (0, in-order); 0/1/>1 are distinct modes | llvm/utils/TableGen/SubtargetEmitter.cpp:1543 |
+| `SchedMachineModel.MispredictPenalty` | sched | effect | codegen | 是 | -1 -> DefaultMispredictPenalty (10) | llvm/lib/CodeGen/EarlyIfConversion.cpp:1249 |
+| `SchedMachineModel.NoModel` | sched | selector | — | 是 | false; TableGen bookkeeping for the synthetic NoSchedModel | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:525 |
+| `SchedMachineModel.PostRAScheduler` | sched | effect | codegen | 是 | false | llvm/lib/CodeGen/TargetSubtargetInfo.cpp:65 |
+| `SchedMachineModel.UnsupportedFeatures` | sched | validation | — | 是 | []; filters instructions out of the completeness check only | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1165 |
+| `SchedVar.Predicate` | sched | effect | codegen, mca | 是 | required | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1679 |
+| `SchedVar.SchedModel` | sched | dead | — | 是 | ignored | llvm/include/llvm/Target/TargetSchedule.td:430 |
+| `SchedVar.Selected` | sched | effect | codegen, mca | 是 | required | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1679 |
+| `SchedVariant.SchedModel` | sched | dead | — | 是 | ignored | llvm/include/llvm/Target/TargetSchedule.td:437 |
+| `SchedVariant.Variadic` | sched | effect | codegen, mca | 是 | false; true distributes writes over variadic operands, latency not additive | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1486 |
+| `SchedVariant.Variants` | sched | effect | codegen, mca | 是 | required | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:1679 |
+| `WriteSequence.Repeat` | sched | effect | codegen, mca | 是 | 1; re-emits the whole list N times | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:749 |
+| `WriteSequence.SchedModel` | sched | dead | — | 是 | ignored | llvm/include/llvm/Target/TargetSchedule.td:244 |
+| `WriteSequence.Writes` | sched | effect | codegen, mca | 是 | required; expanded and summed into the class | llvm/utils/TableGen/Common/CodeGenSchedule.cpp:749 |
 
 ## 类与记录
 

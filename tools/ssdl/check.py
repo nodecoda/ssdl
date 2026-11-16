@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import census_riscv as census_mod  # noqa: E402
 from ssdl import compare as compare_mod  # noqa: E402
+from ssdl import effects as effects_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
 from ssdl import family_expand as family_mod  # noqa: E402
@@ -1381,6 +1382,125 @@ def keyword_reference_is_up_to_date():
 
 
 @test
+def effect_keys_resolve_in_the_schema():
+    """Every consumer-semantics key names a field the TD schema declares.
+
+    ``effects.py`` is curated.  If upstream renames a field, the table must be
+    re-audited; silently documenting a field that no longer exists is exactly
+    the folklore this module is supposed to replace.
+    """
+    if not has_llvm_source():
+        return
+    src = Path(
+        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    )
+    extra = [
+        str(src / "lib/Target/RISCV/RISCVFeatures.td"),
+        str(src / "lib/Target/RISCV/RISCVProcessors.td"),
+    ]
+    schema = llvm_schema(*extra)
+    missing = []
+    for key in effects_mod.FIELD_EFFECTS:
+        cls, fld = effects_mod.key_parts(key)
+        if not schema.has_field(cls, fld):
+            missing.append(key)
+    assert_true(
+        missing == [],
+        "effects name fields the schema does not declare: " + ", ".join(missing),
+    )
+
+
+@test
+def effect_evidence_is_live():
+    """Each claim points at a real file and a line that still exists.
+
+    This is deliberately weaker than matching the line's text: comments and
+    code move independently, but a missing file or an out-of-range line is a
+    definite stale audit.
+    """
+    if not has_llvm_source():
+        return
+    root = Path(
+        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    ).parent
+    problems = []
+    for key, effect in effects_mod.FIELD_EFFECTS.items():
+        if not effect.evidence:
+            problems.append(f"{key}: no evidence")
+            continue
+        for item in effect.evidence:
+            path, _, line = item.rpartition(":")
+            source = root / path
+            if not source.is_file():
+                problems.append(f"{key}: missing {path}")
+                continue
+            if not line.isdigit():
+                problems.append(f"{key}: bad line reference {item}")
+                continue
+            count = sum(1 for _ in source.open("rb"))
+            if not 1 <= int(line) <= count:
+                problems.append(f"{key}: line {line} > {count} in {path}")
+    assert_true(
+        problems == [],
+        "stale effect evidence:\n  " + "\n  ".join(problems),
+    )
+
+
+@test
+def effect_roles_are_consistent():
+    """Role, consumers, and emission flags cannot contradict each other."""
+    problems = []
+    for key, effect in effects_mod.FIELD_EFFECTS.items():
+        if effect.role not in effects_mod.ROLES:
+            problems.append(f"{key}: unknown role {effect.role!r}")
+        if effect.role == effects_mod.ROLE_EFFECT and not effect.consumers:
+            problems.append(f"{key}: effect with no consumer")
+        if effect.role != effects_mod.ROLE_EFFECT and effect.consumers:
+            problems.append(
+                f"{key}: {effect.role} claims consumers {sorted(effect.consumers)}"
+            )
+        if effect.role == effects_mod.ROLE_DEAD and effect.emitted:
+            problems.append(f"{key}: dead field is emitted")
+        unknown = set(effect.consumers) - effects_mod.RUNTIME_CONSUMERS
+        if unknown:
+            problems.append(f"{key}: unknown consumers {sorted(unknown)}")
+        if not effect.default_expansion:
+            problems.append(f"{key}: no default_expansion")
+    assert_true(
+        problems == [],
+        "inconsistent effects:\n  " + "\n  ".join(problems),
+    )
+
+
+@test
+def schema_json_carries_consumer_semantics():
+    """``--json`` is the machine-readable contract, not just field types.
+
+    Spot-check the three categories the audit established: MCA-only,
+    CodeGen-only, and dead.
+    """
+    if not has_llvm_source():
+        return
+    data = llvm_schema().to_json()
+    fields = data["classes"]["ProcWriteResources"]["fields"]
+    assert_true(
+        fields["RetireOOO"]["effect"]["consumers"] == ["mca"],
+        f"RetireOOO should be MCA-only: {fields['RetireOOO'].get('effect')}",
+    )
+    assert_true(
+        fields["AcquireAtCycles"]["effect"]["consumers"] == ["codegen"],
+        "AcquireAtCycles should be CodeGen-only: "
+        f"{fields['AcquireAtCycles'].get('effect')}",
+    )
+    dead = data["classes"]["InstRW"]["fields"]["Unsupported"]["effect"]
+    assert_true(dead["role"] == "dead", f"InstRW.Unsupported should be dead: {dead}")
+    tti = data["classes"]["SchedMachineModel"]["fields"][
+        "LoopMicroOpBufferSize"
+    ]["effect"]
+    assert_true(tti["consumers"] == ["tti"], f"LoopMicroOpBufferSize: {tti}")
+
+
+@test
 def record_values_match_the_declared_types():
     """Values are typed against the TD declarations, not just carried as text.
 
@@ -1565,7 +1685,9 @@ def riscv_census_matches_the_committed_table():
     schema test; the committed CSV carries the LLVM commit it was taken from.
     """
     dump = Path("/tmp/riscv.rec")
-    src = Path(os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"))
+    src = Path(
+        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    )
     table = ROOT / "data/riscv-sched-census.csv"
     if not dump.is_file() or not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
         return
@@ -1648,7 +1770,9 @@ def sifive7_family_table_records_the_sparse_shape():
 @test
 def riscv_family_table_matches_the_sources():
     """Regenerating the family table from the pinned sources must be a no-op."""
-    src = Path(os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"))
+    src = Path(
+        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    )
     table = ROOT / "data/riscv-sched-families.json"
     if not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
         return

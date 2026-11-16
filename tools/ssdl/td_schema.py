@@ -26,6 +26,11 @@ import sys
 from dataclasses import dataclass, field
 from typing import Iterable
 
+try:  # imported as ``ssdl.td_schema``
+    from . import effects as effects_mod
+except ImportError:  # run as ``python3 tools/ssdl/td_schema.py``
+    import effects as effects_mod
+
 # The target-independent headers that define the scheduling/subtarget domain.
 DEFAULT_SOURCES = (
     "include/llvm/Target/TargetSchedule.td",
@@ -107,6 +112,32 @@ class Schema:
     def has_field(self, class_name: str, field_name: str) -> bool:
         return field_name in self.fields_of(class_name)
 
+    def effect_of(
+        self, class_name: str, field_name: str, _seen: set[str] | None = None
+    ) -> "effects_mod.Effect | None":
+        """Consumer semantics for a field, walking base classes.
+
+        An exact ``Class.Field`` entry wins; otherwise the first base that
+        declares the field supplies the effect.  This keeps shared fields (for
+        example ``SubtargetFeature.Name``) defined once while still allowing a
+        subclass to override a surprising default (``RISCVTuneFeature``).
+        """
+        seen = set() if _seen is None else _seen
+        if class_name in seen:
+            return None
+        seen.add(class_name)
+        exact = effects_mod.lookup(class_name, field_name)
+        if exact is not None:
+            return exact
+        cls = self.classes.get(class_name)
+        if cls is None:
+            return None
+        for base in cls.bases:
+            found = self.effect_of(base.name, field_name, seen)
+            if found is not None:
+                return found
+        return None
+
     def class_names(self) -> set[str]:
         return set(self.classes)
 
@@ -115,10 +146,17 @@ class Schema:
 
     def to_json(self) -> dict:
         def one_class(c: ClassDef) -> dict:
+            fields: dict[str, dict] = {}
+            for name, info in c.fields.items():
+                entry: dict = dict(info)
+                effect = self.effect_of(c.name, name)
+                if effect is not None:
+                    entry["effect"] = effect.to_json()
+                fields[name] = entry
             return {
                 "params": [vars(p) for p in c.params],
                 "bases": [vars(b) for b in c.bases],
-                "fields": c.fields,
+                "fields": fields,
                 "lets": c.lets,
             }
 
@@ -376,7 +414,7 @@ def parse_body(p: Parser) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
         depth = 0
         while True:
             t = p.peek()
-            if t[0] == "eof" or (depth == 0 and t[1] == "="):
+            if t[0] == "eof" or (depth == 0 and t[1] in ("=", ";")):
                 break
             if t[1] in ("<", "[", "(", "{"):
                 depth += 1
@@ -384,10 +422,28 @@ def parse_body(p: Parser) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
                 depth -= 1
             p.next()
         if not p.at("="):
+            # A declaration without an initialiser: ``dag AssemblerCondDag;``.
+            # These are real schema fields (e.g. Instruction.SchedRW), not
+            # statements, so keep them with an empty initialiser.
+            toks = list(p.toks[start : p.i])
             while not p.at(";") and not p.at("}") and p.peek()[0] != "eof":
                 p.next()
             if p.at(";"):
                 p.next()
+            name = None
+            for k in range(len(toks) - 1, -1, -1):
+                if toks[k][0] == "id":
+                    name = toks[k][1]
+                    toks = toks[:k]
+                    break
+            if name and toks:
+                first = toks[0][1]
+                builtin = {"bit", "int", "string", "dag", "code", "list", "bits"}
+                if first in builtin or first[:1].isupper():
+                    fields[name] = {
+                        "type": " ".join(t[1] for t in toks),
+                        "init": "",
+                    }
             continue
         toks = p.toks[start : p.i]
         name = None
@@ -470,9 +526,16 @@ def parse_text(text: str) -> Schema:
                 else:
                     p.expect(";")
             elif tok[1] == "foreach":
+                # ``foreach i = { 6-16 } in { ... }``: the first brace pair is
+                # the range, not the body.  Walk to ``in`` before skipping.
+                while not p.at("in") and p.peek()[0] != "eof":
+                    p.next()
+                if p.at("in"):
+                    p.next()
                 while not p.at("{") and p.peek()[0] != "eof":
                     p.next()
-                p.skip_balanced("{", "}")
+                if p.at("{"):
+                    p.skip_balanced("{", "}")
             elif tok[1] in ("defm", "multiclass"):
                 while not p.at("{") and not p.at(";") and p.peek()[0] != "eof":
                     p.next()
@@ -695,6 +758,48 @@ def render_reference(
         lines.append(f"| `{name}` | {decl} | {at} |")
     lines.append("")
 
+    lines.append("## 字段消费者语义")
+    lines.append("")
+    lines.append(
+        "> 来源：`tools/ssdl/effects.py`。`check.py` 的 `effect_*` 检查校验键、"
+        "证据行和角色一致性；全部条目审计于 commit "
+        f"`{effects_mod.VERIFIED_AT}`。"
+    )
+    lines.append("")
+    lines.append(
+        "- **层**：`sched` / `predicate` / `feature` / `itinerary`。"
+    )
+    lines.append(
+        "- **角色**：`effect` 运行时可见；`selector` 只选择记录；"
+        "`validation` 仅 TableGen 期；`dead` 无消费者；`declaration` 只改生成代码形状。"
+    )
+    lines.append(
+        "- **后端读取**：该字段名是否出现在 emitter 的字符串绑定里（`否` 即死字段候选）。"
+    )
+    lines.append("")
+
+    def md_cell(text: str) -> str:
+        return str(text).replace("|", "\\|").replace("\n", " ")
+
+    lines.append(
+        "| 字段 | 层 | 角色 | 运行时消费者 | 后端读取 | 默认语义 | 证据 |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
+    for key in sorted(
+        effects_mod.FIELD_EFFECTS,
+        key=lambda k: (effects_mod.FIELD_EFFECTS[k].layer, k),
+    ):
+        effect = effects_mod.FIELD_EFFECTS[key]
+        field_name = key.split(".", 1)[1]
+        bound = "是" if ("field", field_name) in sites else "否"
+        consumers = ", ".join(sorted(effect.consumers)) or "—"
+        evidence = effect.evidence[0] if effect.evidence else "—"
+        lines.append(
+            f"| `{key}` | {effect.layer} | {effect.role} | {consumers} | "
+            f"{bound} | {md_cell(effect.default_expansion)} | {md_cell(evidence)} |"
+        )
+    lines.append("")
+
     lines.append("## 类与记录")
     lines.append("")
     lines.append("| 名字 | 形态 | 声明 | 读取点 |")
@@ -773,6 +878,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{args.field}: not declared", file=sys.stderr)
             return 1
         print(f"{args.field}: {info['type']} = {info['init']}")
+        effect = schema.effect_of(cls, field)
+        if effect is not None:
+            consumers = ", ".join(sorted(effect.consumers)) or "-"
+            print(f"  role: {effect.role}; consumers: {consumers}; "
+                  f"emitted: {str(effect.emitted).lower()}")
+            print(f"  default: {effect.default_expansion}")
+            for item in effect.evidence:
+                print(f"  evidence: {item}")
+            if effect.note:
+                print(f"  note: {effect.note}")
+            print(f"  verified_at: {effects_mod.VERIFIED_AT}")
     elif args.list_classes:
         for name in sorted(schema.classes):
             print(name)
