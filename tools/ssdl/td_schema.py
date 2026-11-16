@@ -565,6 +565,178 @@ def census(llvm_src: str | pathlib.Path) -> tuple[list[Binding], list[pathlib.Pa
     return bindings, scanned
 
 
+def render_reference(
+    schema: Schema,
+    bindings: list[Binding],
+    scanned: list[pathlib.Path] | None = None,
+    *,
+    sites_per_row: int = 3,
+) -> str:
+    """Render the census as the keyword reference (Markdown, deterministic)."""
+    sites: dict[tuple[str, str], list[str]] = {}
+    for binding in bindings:
+        key = (binding.kind, binding.name)
+        sites.setdefault(key, []).append(
+            f"{pathlib.Path(binding.file).name}:{binding.line}"
+        )
+
+    def where(key: tuple[str, str]) -> str:
+        """`File.cpp:12, 34` — grouped by file, capped at ``sites_per_row``."""
+        groups: dict[str, list[str]] = {}
+        for item in sites[key]:
+            file, _, line = item.rpartition(":")
+            groups.setdefault(file, []).append(line)
+        parts: list[str] = []
+        shown = 0
+        for file, lines in groups.items():
+            take = lines[: max(0, sites_per_row - shown)]
+            if not take:
+                break
+            parts.append(f"{file}:{', '.join(take)}")
+            shown += len(take)
+        text = "；".join(parts)
+        if len(sites[key]) > shown:
+            text += f" …（共 {len(sites[key])} 处）"
+        return text
+
+    def compact_type(text: str) -> str:
+        return re.sub(r"\s*([<>])\s*", r"\1", text)
+
+    def clean_init(text: str) -> str:
+        # `- 1` is how the tokenizer prints a negative default.
+        return re.sub(r"^-\s+", "-", text.strip()) or "?"
+
+    def field_decl(name: str) -> tuple[str, str]:
+        owners = schema.declaring_classes(name)
+        if not owners:
+            return "未声明", "~"
+        infos = [
+            (cls,
+             compact_type(schema.fields_of(cls)[name]["type"]),
+             schema.fields_of(cls)[name]["init"])
+            for cls in owners
+        ]
+        if len(infos) == 1:
+            cls, type_text, init = infos[0]
+            return f"`{cls}`：`{type_text}` = `{clean_init(init)}`", cls
+        types = {type_text for _, type_text, _ in infos}
+        inits = {init for _, _, init in infos}
+        names = "、".join(f"`{cls}`" for cls, _, _ in infos)
+        if len(types) == 1:
+            type_text = next(iter(types))
+            if len(inits) == 1:
+                return f"{names}：`{type_text}` = `{next(iter(inits))}`", owners[0]
+            return f"{names}：`{type_text}`（默认值不同）", owners[0]
+        per_class = "；".join(
+            f"`{cls}` `{type_text}` = `{init}`" for cls, type_text, init in infos
+        )
+        return per_class, owners[0]
+
+    by_kind: dict[str, int] = {}
+    for kind, _ in sites:
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+    total = sum(len(items) for items in sites.values())
+
+    lines: list[str] = []
+    lines.append("# 后端 TD 关键字参考（调度 / 子目标 / 汇编匹配）")
+    lines.append("")
+    lines.append("> 自动生成，勿手改。重新生成：")
+    lines.append(">")
+    lines.append("> ```bash")
+    lines.append(
+        "> python3 tools/ssdl/td_schema.py --reference > "
+        "docs/dsl/2026-11-16-ssdl-keyword-reference.md"
+    )
+    lines.append("> ```")
+    lines.append(">")
+    lines.append(
+        "> `check.py` 的 `keyword_reference_is_up_to_date` 比对这份文件与生成结果，"
+        "所以后端改了绑定而没重新生成会直接变红。"
+    )
+    lines.append("")
+    lines.append(
+        f"统计：{len(scanned or [])} 个 emitter 源文件、{total} 处绑定、"
+        f"{len(sites)} 个不同的 `(形态, 名字)`（"
+        + "，".join(f"{kind} {count}" for kind, count in sorted(by_kind.items()))
+        + "）。"
+    )
+    lines.append("")
+    lines.append("## 怎么读")
+    lines.append("")
+    lines.append(
+        "后端不认识 TD 语法，只按字符串去 record 里取值。每一行就是一个这样的关键字："
+    )
+    lines.append("")
+    lines.append(
+        '- **形态**：`field` = `getValueAs*("…")` / `emitProcessorProp` / '
+        "`addFieldExpander` / `getValue`；`class` = `isSubClassOf`；"
+        "`record` = `getAllDerivedDefinitions`；`def` = `getDef`。"
+    )
+    lines.append("- **声明**：该名字在 TD 里由谁提供；字段带类型与默认值。")
+    lines.append("- **读取点**：C++ 里的 `文件:行`（最多列 3 处，全量用 `--census`）。")
+    lines.append("")
+
+    lines.append("## 字段")
+    lines.append("")
+    lines.append(
+        "同一字段名可能被多个类声明（如 `Name`）；声明列会给出所有声明类，"
+        "类型一致时只写一次。"
+    )
+    lines.append("")
+    lines.append("| 字段 | 声明 | 读取点 |")
+    lines.append("|---|---|---|")
+    field_rows = []
+    for (kind, name), items in sites.items():
+        if kind != "field":
+            continue
+        decl, owner = field_decl(name)
+        field_rows.append((owner, name, decl, where((kind, name))))
+    for _, name, decl, at in sorted(field_rows):
+        lines.append(f"| `{name}` | {decl} | {at} |")
+    lines.append("")
+
+    lines.append("## 类与记录")
+    lines.append("")
+    lines.append("| 名字 | 形态 | 声明 | 读取点 |")
+    lines.append("|---|---|---|---|")
+    class_rows = []
+    for (kind, name), items in sites.items():
+        if kind not in ("class", "record"):
+            continue
+        if name in schema.classes:
+            info = schema.classes[name]
+            bases = ", ".join(base.name for base in info.bases) or "—"
+            decl = f"`class {name} : {bases}`"
+        elif name in schema.defs:
+            bases = ", ".join(base.name for base in schema.defs[name].bases) or "—"
+            decl = f"`def {name} : {bases}`"
+        else:
+            decl = "未声明"
+        class_rows.append((name, kind, decl, where((kind, name))))
+    for name, kind, decl, at in sorted(class_rows):
+        lines.append(f"| `{name}` | {kind} | {decl} | {at} |")
+    lines.append("")
+
+    lines.append("## def")
+    lines.append("")
+    lines.append("| 名字 | 声明 | 读取点 |")
+    lines.append("|---|---|---|")
+    def_rows = []
+    for (kind, name), items in sites.items():
+        if kind != "def":
+            continue
+        if name in schema.defs:
+            bases = ", ".join(base.name for base in schema.defs[name].bases) or "—"
+            decl = f"`def {name} : {bases}`"
+        else:
+            decl = "未声明"
+        def_rows.append((name, decl, where((kind, name))))
+    for name, decl, at in sorted(def_rows):
+        lines.append(f"| `{name}` | {decl} | {at} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--llvm-src", default="/home/ubuntu/llvm/trees/explore/llvm")
@@ -580,6 +752,11 @@ def main(argv: list[str] | None = None) -> int:
         "--check",
         action="store_true",
         help="like --census, but exit non-zero when a binding is undeclared",
+    )
+    ap.add_argument(
+        "--reference",
+        action="store_true",
+        help="print the keyword reference (Markdown) from the census",
     )
     args = ap.parse_args(argv)
 
@@ -599,6 +776,17 @@ def main(argv: list[str] | None = None) -> int:
     elif args.list_classes:
         for name in sorted(schema.classes):
             print(name)
+    elif args.reference:
+        bindings, scanned = census(args.llvm_src)
+        undeclared = [b for b in bindings if not schema.resolve(b)]
+        if undeclared:
+            print(
+                f"{len(undeclared)} bindings are undeclared; the reference would "
+                "ship a hole",
+                file=sys.stderr,
+            )
+            return 1
+        sys.stdout.write(render_reference(schema, bindings, scanned))
     elif args.census or args.check:
         bindings, scanned = census(args.llvm_src)
         by_kind: dict[str, int] = {}

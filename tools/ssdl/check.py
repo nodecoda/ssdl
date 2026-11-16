@@ -1352,6 +1352,30 @@ def record_table_fields_are_declared_by_their_classes():
 
 
 @test
+def keyword_reference_is_up_to_date():
+    """The generated keyword reference must match the backend it documents.
+
+    This is the public spec of "which TD names the emitters understand": if a
+    binding is added, renamed, or read somewhere else, regenerating changes the
+    document and this check fails until the committed copy is refreshed.
+    """
+    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    if not Path(src, "utils/TableGen").is_dir():
+        return
+    schema = llvm_schema()
+    bindings, scanned = td_schema_mod.census(src)
+    expected = td_schema_mod.render_reference(schema, bindings, scanned)
+    path = ROOT / "docs/dsl/2026-11-16-ssdl-keyword-reference.md"
+    committed = path.read_text(encoding="utf-8")
+    assert_true(
+        committed == expected,
+        f"{path.name} is stale; regenerate with "
+        "`python3 tools/ssdl/td_schema.py --reference > "
+        f"docs/dsl/{path.name}`",
+    )
+
+
+@test
 def record_values_match_the_declared_types():
     """Values are typed against the TD declarations, not just carried as text.
 
@@ -1449,8 +1473,23 @@ def record_fields_survive_the_json_table_and_llvm_tblgen():
                     f"llvm-tblgen printed {printed!r}",
                 )
 
-        # 2. The JSON table alone reproduces the same records.
-        replay = record_ir_mod.RecordSet.from_json(json.loads(records.dumps()))
+        # 2. The table is typed: a consumer must not have to parse TableGen
+        #    expressions, so every value is a node with a `kind`.
+        table = json.loads(records.dumps())
+        for entry in table["records"]:
+            for base in entry["bases"]:
+                assert_true(
+                    all(isinstance(arg, dict) and "kind" in arg for arg in base["args"]),
+                    f"{entry['name']}: untyped class argument",
+                )
+            for _, value in entry["fields"]:
+                assert_true(
+                    isinstance(value, dict) and "kind" in value,
+                    f"{entry['name']}: untyped field value",
+                )
+
+        # 3. The JSON table alone reproduces the same records.
+        replay = record_ir_mod.RecordSet.from_json(table)
         replay_text = 'include "SSDLStub.td"\n\n' + replay.render()
         replayed = dump_records(replay_text, tmp, "table_replay", tblgen_include_dirs())
     assert_true(

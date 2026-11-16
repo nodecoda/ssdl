@@ -21,253 +21,44 @@ import json
 import pathlib
 import sys
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from typing import Sequence
 
 if __package__ in (None, ""):
     from record_ir import Record, RecordSet  # type: ignore
     from td_schema import DEFAULT_SOURCES, ClassDef, Schema, parse_files  # type: ignore
+    from td_value import (  # type: ignore
+        ApplyValue,
+        BitValue,
+        CodeValue,
+        DagValue,
+        IdentValue,
+        Init,
+        IntValue,
+        ListValue,
+        StringValue,
+        UnsetValue,
+        UnknownValue,
+        parse_value,
+        render,
+    )
 else:
     from .record_ir import Record, RecordSet
     from .td_schema import DEFAULT_SOURCES, ClassDef, Schema, parse_files
-
-
-# ---------------------------------------------------------------- Init tree
-@dataclass(frozen=True)
-class Init:
-    """A TableGen value expression."""
-
-
-@dataclass(frozen=True)
-class IntValue(Init):
-    value: int
-
-
-@dataclass(frozen=True)
-class BitValue(Init):
-    value: bool
-
-
-@dataclass(frozen=True)
-class StringValue(Init):
-    value: str
-
-
-@dataclass(frozen=True)
-class CodeValue(Init):
-    text: str
-
-
-@dataclass(frozen=True)
-class IdentValue(Init):
-    name: str
-
-
-@dataclass(frozen=True)
-class ListValue(Init):
-    items: tuple[Init, ...]
-
-
-@dataclass(frozen=True)
-class DagValue(Init):
-    op: str
-    args: tuple[Init, ...]
-
-
-@dataclass(frozen=True)
-class ApplyValue(Init):
-    name: str
-    args: tuple[Init, ...]
-
-
-@dataclass(frozen=True)
-class UnsetValue(Init):
-    pass
-
-
-@dataclass(frozen=True)
-class UnknownValue(Init):
-    text: str
-
-
-class ValueParseError(Exception):
-    pass
-
-
-class ValueParser:
-    def __init__(self, text: str):
-        self.text = text
-        self.i = 0
-
-    def error(self, message: str) -> ValueError:
-        return ValueParseError(f"{message} in {self.text!r} at {self.i}")
-
-    def skip_ws(self) -> None:
-        while self.i < len(self.text) and self.text[self.i].isspace():
-            self.i += 1
-
-    def at(self, ch: str) -> bool:
-        self.skip_ws()
-        return self.text.startswith(ch, self.i)
-
-    def take(self, ch: str) -> None:
-        if not self.at(ch):
-            raise self.error(f"expected {ch!r}")
-        self.i += 1
-
-    def ident(self) -> str:
-        self.skip_ws()
-        start = self.i
-        while self.i < len(self.text) and (
-            self.text[self.i].isalnum() or self.text[self.i] == "_"
-        ):
-            self.i += 1
-        if start == self.i:
-            raise self.error("expected an identifier")
-        return self.text[start:self.i]
-
-    def string(self) -> str:
-        self.take('"')
-        out: list[str] = []
-        while True:
-            if self.i >= len(self.text):
-                raise self.error("unterminated string")
-            ch = self.text[self.i]
-            self.i += 1
-            if ch == "\\" and self.i < len(self.text):
-                esc = self.text[self.i]
-                self.i += 1
-                out.append({"n": "\n", "t": "\t"}.get(esc, esc))
-            elif ch == '"':
-                return "".join(out)
-            else:
-                out.append(ch)
-
-    def code(self) -> str:
-        # [{} ... }] with nesting, as in predicates.py
-        self.take("[")
-        self.take("{")
-        depth = 1
-        start = self.i
-        while self.i < len(self.text):
-            if self.text.startswith("[{", self.i):
-                depth += 1
-                self.i += 2
-                continue
-            if self.text.startswith("}]", self.i):
-                depth -= 1
-                self.i += 2
-                if depth == 0:
-                    return self.text[start:self.i - 2]
-                continue
-            self.i += 1
-        raise self.error("unterminated code block")
-
-    def value(self) -> Init:
-        self.skip_ws()
-        if self.i >= len(self.text):
-            raise self.error("expected a value")
-        ch = self.text[self.i]
-        if ch == "?":
-            self.i += 1
-            return UnsetValue()
-        if ch == '"':
-            return StringValue(self.string())
-        if ch == "[":
-            if self.text.startswith("[{", self.i):
-                return CodeValue(self.code())
-            return self.list_value()
-        if ch == "(":
-            return self.dag()
-        if ch.isdigit() or (ch == "-" and self.i + 1 < len(self.text)):
-            start = self.i
-            self.i += 1
-            while self.i < len(self.text) and self.text[self.i].isdigit():
-                self.i += 1
-            return IntValue(int(self.text[start:self.i]))
-        if ch.isalpha() or ch == "_":
-            name = self.ident()
-            if name == "true":
-                return BitValue(True)
-            if name == "false":
-                return BitValue(False)
-            if self.at("<"):
-                return ApplyValue(name, self.type_args())
-            return IdentValue(name)
-        raise self.error(f"unsupported character {ch!r}")
-
-    def list_value(self) -> ListValue:
-        self.take("[")
-        items: list[Init] = []
-        while not self.at("]"):
-            items.append(self.value())
-            if self.at(","):
-                self.i += 1
-                continue
-            break
-        self.take("]")
-        return ListValue(tuple(items))
-
-    def dag(self) -> DagValue:
-        self.take("(")
-        op = self.ident()
-        args: list[Init] = []
-        while not self.at(")"):
-            args.append(self.value())
-            if self.at(","):
-                self.i += 1
-                continue
-            break
-        self.take(")")
-        return DagValue(op, tuple(args))
-
-    def type_args(self) -> tuple[Init, ...]:
-        self.take("<")
-        args: list[Init] = []
-        while not self.at(">"):
-            args.append(self.value())
-            if self.at(","):
-                self.i += 1
-                continue
-            break
-        self.take(">")
-        return tuple(args)
-
-
-def parse_value(text: str) -> Init:
-    text = text.strip()
-    if not text:
-        return UnknownValue(text)
-    parser = ValueParser(text)
-    try:
-        value = parser.value()
-    except ValueParseError:
-        return UnknownValue(text)
-    parser.skip_ws()
-    if parser.i != len(parser.text):
-        return UnknownValue(text)
-    return value
-
-
-def render(value: Init) -> str:
-    if isinstance(value, IntValue):
-        return str(value.value)
-    if isinstance(value, BitValue):
-        return "true" if value.value else "false"
-    if isinstance(value, StringValue):
-        return json.dumps(value.value)
-    if isinstance(value, CodeValue):
-        return "[{...}]"
-    if isinstance(value, IdentValue):
-        return value.name
-    if isinstance(value, ListValue):
-        return "[" + ", ".join(render(item) for item in value.items) + "]"
-    if isinstance(value, DagValue):
-        return "(" + " ".join([value.op] + [render(a) for a in value.args]) + ")"
-    if isinstance(value, ApplyValue):
-        return value.name + "<" + ", ".join(render(a) for a in value.args) + ">"
-    if isinstance(value, UnsetValue):
-        return "?"
-    return value.text  # type: ignore[attr-defined]
+    from .td_value import (
+        ApplyValue,
+        BitValue,
+        CodeValue,
+        DagValue,
+        IdentValue,
+        Init,
+        IntValue,
+        ListValue,
+        StringValue,
+        UnsetValue,
+        UnknownValue,
+        parse_value,
+        render,
+    )
 
 
 # ---------------------------------------------------------------- types

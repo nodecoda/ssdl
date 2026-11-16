@@ -27,6 +27,11 @@ import sys
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
+if __package__ in (None, ""):
+    from td_value import from_json_node, parse_value, render, to_json_node  # type: ignore
+else:
+    from .td_value import from_json_node, parse_value, render, to_json_node
+
 
 @dataclass(frozen=True)
 class Base:
@@ -41,11 +46,20 @@ class Base:
         return f"{self.name}<{', '.join(self.args)}>"
 
     def to_json(self) -> dict:
-        return {"class": self.name, "args": list(self.args)}
+        # Arguments are typed nodes, not strings: a host-side consumer should
+        # not have to re-implement TableGen expression parsing.
+        return {
+            "class": self.name,
+            "args": [to_json_node(parse_value(arg)) for arg in self.args],
+        }
 
     @classmethod
     def from_json(cls, obj: dict) -> "Base":
-        return cls(obj["class"], tuple(obj.get("args", ())))
+        args = tuple(
+            arg if isinstance(arg, str) else render(from_json_node(arg))
+            for arg in obj.get("args", ())
+        )
+        return cls(obj["class"], args)
 
     @classmethod
     def parse(cls, text: str) -> "Base":
@@ -131,7 +145,9 @@ class Record:
         obj: dict = {
             "name": self.name,
             "bases": [base.to_json() for base in self.bases],
-            "fields": [[name, value] for name, value in self.fields],
+            "fields": [
+                [name, to_json_node(parse_value(value))] for name, value in self.fields
+            ],
         }
         if self.scope is not None:
             obj["scope"] = self.scope
@@ -148,7 +164,13 @@ class Record:
         return cls(
             name=obj["name"],
             bases=tuple(Base.from_json(base) for base in obj["bases"]),
-            fields=tuple((name, value) for name, value in obj.get("fields", ())),
+            fields=tuple(
+                (
+                    name,
+                    value if isinstance(value, str) else render(from_json_node(value)),
+                )
+                for name, value in obj.get("fields", ())
+            ),
             scope=obj.get("scope"),
             style=obj.get("style", "block"),
             suffix=obj.get("suffix", ""),

@@ -60,6 +60,10 @@ Record(
 `RISCVExtension<int, int, string, list<SubtargetFeature>, ...>` 拒绝把字符串推进 implies 槽。
 标识符指向宿主记录（指令、目标自有谓词）时无法在此解析，计为 *external* 而不是猜。
 
+`--records-json` 里存的就是这棵树，不是字符串：`{"kind": "int", "value": 1}`、
+`{"kind": "list", "items": [{"kind": "ident", "name": "PipeA"}]}`。
+所以宿主（或未来的 tblgen 加载器）拿到表就能直接用，不需要再实现一遍 TD 表达式解析。
+
 ```text
 $ python3 tools/ssdl/td_types.py /tmp/v512.json \
       --source llvm/lib/Target/RISCV/{RISCVFeatures,RISCVProcessors}.td
@@ -103,8 +107,12 @@ out.append(self.define(where, name, "WriteRes", [write, resources_text], body))
 ```text
 ok   every_def_in_the_output_belongs_to_the_record_table
      # 文本里出现的 def 名集合 == 表里的 def 名集合
+ok   record_fields_survive_the_json_table_and_llvm_tblgen
+     # 表里每个值都是带 kind 的节点；重放后仍是同一份 dump
 ok   record_values_match_the_declared_types
      # 25 条 stub record、98 个值全部符合声明；两条负控制被拒绝
+ok   keyword_reference_is_up_to_date
+     # 生成的关键字参考与后端绑定一致
 ```
 
 ## 3. 证据：表能独立重建 llvm-tblgen 看到的记录
@@ -152,6 +160,24 @@ ok   record_table_fields_are_declared_by_their_classes
 `("latency", "Latency")`、`("uops", "NumMicroOps")` 之类仍是 Python 常量，
 但一旦字段名写错，record 表就会把一个该类没有声明的字段喂给 tblgen——测试在
 生成阶段就红。三个模型的 12063/12118/12130 条记录全部通过该检查。
+
+## 3.5 关键字参考表（生成的公开说明）
+
+`td_schema.py --reference` 把普查结果渲染成 Markdown，提交在
+`docs/dsl/2026-11-16-ssdl-keyword-reference.md`：245 行，每行一个关键字，
+给出**形态**（`field` / `class` / `record` / `def`）、**声明**（`Class.Field: type = default`）
+和 **读取点**（`文件:行`，最多 3 处）。例如：
+
+```text
+| `Latency`      | `ProcWriteResources`：`int` = `1` | SubtargetEmitter.cpp:1210 |
+| `IssueWidth`   | `SchedMachineModel`：`int` = `-1` | SubtargetEmitter.cpp:1542 |
+| `Unsupported`  | `InstRW`、`ProcReadAdvance`、`ProcWriteResources`：`bit` = `false` | SubtargetEmitter.cpp:1206, 1324 |
+| `NoSchedModel` | `def NoSchedModel : SchedMachineModel` | CodeGenSchedule.cpp:526 |
+```
+
+`check.py` 的 `keyword_reference_is_up_to_date` 比对提交的文档与生成结果，
+所以"后端加了绑定但文档没更新"会直接红。这就是最初那个问题的答案：
+关键字不再是"gen 代码里的 hardcode"，而是一张可读、可 diff、可回归的表。
 
 ## 4. 后端绑定普查：关键字确实都在 schema 里
 
@@ -214,9 +240,10 @@ python3 tools/ssdl/td_schema.py --census   # 逐条列出 name -> 声明位置
 - **llvm-tblgen 不读 JSON**。本轮的证明是"表能重建同样的 dump"，不是"宿主已直连"。
   真要直连，需要在 `llvm-tblgen` 加一个 record 加载入口（`RecordKeeper::addDef` +
   `Record::setValue`，约两三百行），那是唯一剩下的、属于宿主的改动。
-- **JSON 里存的是表达式文本**。`td_types.py` 会把它解析成 `Init` 树再检查，但
-  序列化格式没有变；如果宿主（或未来的 tblgen 加载器）要直接吃这张表，
-  值应该改成带类型的 JSON 节点（`{"kind":"int","value":1}`）。
+- **类型检查只看声明**。`code`、`dag` 的内容不做语义检查（`[{...}]` 里的 C++
+  与 `(instrs ...)` 的操作数列表只校验外壳）；它们属于宿主的知识。
+- **关键字参考只覆盖这 8 个 emitter**。`GIsel`、`DAGISel`、`Intrinsic` 等其它
+  TableGen 后端有各自的字符串绑定，不在本表里。
 - **位置参数按槽位检查，不按名字**。`RegisterFile<numPhys, ...>`、
   `RISCVExtension<maj, min, ...>` 的槽位顺序由 class 的形参表决定；`td_types.py`
   按位置对拍形参的类型，所以"顶错槽"（`parser-notes` §17.3 的 `RISCVExtension` 那一类）已经是

@@ -733,4 +733,12 @@ scope: writes, reads, variants, InstRW, resources, machine props,
 `RISCVExtension` 错位、int 收到字符串）。读真实目标头文件还暴露了 `td_schema.py`
 的两个盲点：形参默认值里 `!subst(...)` 的逗号、`def Name # I # b` 这种计算出的 def 名。
 
-细节见 `2026-11-16-ssdl-record-layer.md`。`check.py` 现在 40/40。
+**JSON 是带类型的**：`--records-json` 里的值和类参数都是 `{"kind": ...}` 节点
+（int/bit/string/code/ident/list/dag/apply/unset/unknown），三个模型 87604 个值
+`render(parse(x)) == x`，所以表可以脱离 TD 表达式解析直接消费。
+
+**关键字参考**：`td_schema.py --reference` 生成
+`docs/dsl/2026-11-16-ssdl-keyword-reference.md`（245 行：形态/声明/读取点），
+`check.py` 的 `keyword_reference_is_up_to_date` 防止文档与后端绑定漂移。
+
+细节见 `2026-11-16-ssdl-record-layer.md`。`check.py` 现在 41/41。
