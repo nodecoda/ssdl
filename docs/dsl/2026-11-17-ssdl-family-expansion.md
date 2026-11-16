@@ -3,7 +3,7 @@
 - date: 2026-11-17
 - status: **Implemented + pilot verified（全模型重生成待完成）**
 - 工具：`tools/ssdl/family_expand.py`
-- 测试：`check.py` 49/49
+- 测试：`check.py` 58/58
 - 源：LLVM `700e551714cc`
 
 ## 1. 实现了什么
@@ -14,12 +14,12 @@
 
 ```text
 set LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] :
-    kind = dimension, name_format = "_{value}";
+    kind = dimension, name_format = "_{value}", units = [1, 2, 4, 8, 16, 32, 64];
 set NF = 2..8 : kind = dimension, name_format = "{value}";
 
 machine siFive7(vlen: INT) {
     write  WriteVLDE[LMUL];
-    bind   WriteVLDE[LMUL] -> [VCQ, VL], latency = vlen / 128;
+    bind   WriteVLDE[LMUL] -> [VCQ, VL], latency = 3 + 2 * LMUL;   # 5,7,11,…,131
 }
 
 machine sifive-7-series : siFive7(512) {
@@ -39,9 +39,15 @@ machine sifive-7-series : siFive7(512) {
 | `W[D in [a]]` | **稀疏成员**：只展开列出的成员 |
 | `machine F(p: INT)` | 族声明；参数可用于数值表达式 |
 | `machine X : F(512)` | 实例化；族体 + 实例体合并展开 |
-| `latency = vlen / 128` | 有界整数表达式（`+ - * / // %`、括号、参数） |
+| `units = [1, 2, …]` | 成员的整数投影；LMUL 以八分之一为单位，避免浮点 |
+| `worst(D)` | 伪成员：名字为 `_WorstCase`，数值取最后一个（最宽）成员 |
+| `latency = 3 + 2 * LMUL` | 轴名在数值位即「当前成员的 units」 |
+| `release = [1, 1 + 2 * LMUL]` | 列表逐项求值，允许 `cdiv/max/min` |
+| `latency = vlen / 128` | 有界整数表达式（`+ - * // %`、括号、参数、`cdiv/max/min`） |
 
-**不支持**：字符串插值（`"W_" # mx`）、递归、自定义函数。维度必须保持可枚举，这是与 TableGen `defm` 的分界线。
+`/` 只在整除时报成功（非整除是错误，不会静默取整）；`//` 是 TableGen `!div` 的语义。`cdiv(a, b)` 是 `ceil(a/b)`。表达式节点上限 64。
+
+**不支持**：字符串插值（`"W_" # mx`）、`**`、递归、自定义函数、关键字参数。维度必须保持可枚举，这是与 TableGen `defm` 的分界线。
 
 ## 2. 覆盖性诊断（AC4）
 
@@ -106,23 +112,29 @@ machine vlde {
 
 ## 4. 压缩比的实际边界
 
-对 SiFive7VLEN512 的 4246 条 `bind` 做分组实测：
+对 `SiFive7VLEN512Model` 的 **3772 条显式** `WriteRes`（`Unsupported = 0`）做分组实测：
 
 | 分组 | 数量 |
 |---|---:|
-| 维度后缀 base（去掉 `_<LMUL>` / `_WorstCase`） | 463 |
-| 其中载荷在成员间**完全相同** | 69 个 base / 265 条记录 |
-| 载荷随成员变化（latency/release 是维度的函数） | 394 个 base / 3096 条记录 |
-| 无维度后缀（标量/原子，扁平绑定） | 885 条 |
+| 含 LMUL 成员 token（任意位置） | 3646 |
+| LMUL 在第 1 / 2 / 3 个 `_` 段 | 3167 / 303 / 176 |
+| 无任何轴 token（标量/原子，必须扁平） | 126 |
+| 组内载荷恒定 | 40 组 / 54 条 |
+| 组内载荷随成员变化 | 488 组 / 3592 条 |
+| 不同 `Latency` 向量 | 30 |
+| 不同 `ReleaseAtCycles` 向量 | 26 |
+| 折叠全部轴后的 canonical base | 355 |
 
-结论：**压缩的收益来自「公式一次、记录多次」，不是文本折叠**。265 条常量族可以一行压多行；3096 条变载荷族必须写成 `cycles(...)` 或成员表。仅靠字符串压缩无法达到计划里的 20×。
+早期按「后缀」统计会漏掉 `WriteVFMinMaxV_MF2_E32` 这类 LMUL 在中间的 479 条，因此旧表的 463/394 是低估。
+
+结论：**压缩的收益来自「公式一次、记录多次」，不是文本折叠**。载荷只在 40 个组里恒定，其余 3592 条必须写成表达式；但载荷只有 30 种形状，说明公式是少数（§1.4 的两条即覆盖 117 + 53 组）。仅靠字符串压缩无法达到计划里的 20×。
 
 ## 5. 剩余工作（Step 3 未完成项）
 
-1. **全模型压缩源**：把 SiFive7VLEN512 的 3772 条显式 WR 全部写成 ~128 条族语句（对应上游 128 个 `WriteRes<` 位置）。当前只完成了 `WriteVLDE` 子族。
-2. **公式库**：`cycles(VLEN, LMUL, SEW, NF)`、`worst(LMUL)`、`legal_sew(LMUL)` 需要成为可复用投影，而不是每个族手写表。
+1. **全模型压缩源**：把 SiFive7VLEN512 的 3772 条显式 WR 全部写成 ~355 条语句（含 126 条扁平）。当前只完成了 `WriteVLDE` 子族。
+2. ~~公式库~~ → 已收敛为 `units` + `cdiv/max/min`，不再是自由投影（上游 `!cond(mx)` 就是同一组整数运算）。
 3. **四组 `equiv.py`**：`SiFive7VLEN512/128X100/1024X300` + `Andes45Model` 全部 `records match`。当前只做了子族字段级比较。
-4. **`WorstCase` 语义**：当前把它塞进 `LMUL` 成员列表；v1.2 应写成 `worst(LMUL)` 投影，且不参与成员计数。
+4. ~~`WorstCase` 语义~~ → 已实现 `worst(D)`：伪成员、不参与计数、数值取最宽成员。
 
 这四项是 Step 4 定语法前必须回答的问题；第 3 项是 AC3 的唯一判据。
 
@@ -132,5 +144,5 @@ machine vlde {
 cd /home/ubuntu/llvm/llvm-dev
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
-python3 tools/ssdl/check.py   # 49/49
+python3 tools/ssdl/check.py   # 58/58
 ```

@@ -29,8 +29,15 @@ Rules
   instantiates it.  Parameters may appear in integer expressions
   (``latency = vlen / 128``) only; identifiers are not string-interpolated.
   That is deliberate: the axes have to stay enumerable.
-* No recursion, no user functions, no arbitrary expressions outside the
-  numeric fields (``latency``/``uops``/``cycles``).
+* ``units = [1, 2, 4, 8, ...]`` gives each member its integer projection; the
+  axis name then denotes *this member's* number inside a ``bind``
+  (``latency = 3 + 2 * LMUL``).  ``worst(AXIS)`` reuses the widest member's
+  number.  A naming-only axis stays out of numeric fields, and using it there
+  reports ``unknown parameter`` rather than inventing a value.
+* Numeric fields are ``latency``/``uops``/``cycles`` and the items of
+  ``release``/``acquire``.  The only kernels are ``cdiv`` (ceil), ``max`` and
+  ``min``; ``//`` is ``!div`` and ``/`` must divide exactly.  No recursion, no
+  user functions, no ``**``, no keyword arguments.
 
 ``--check-coverage`` expands and then requires every declared dimensioned
 write to be bound and every bound name to be declared.  ``--add-axis-value``
@@ -47,10 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
-SET_DIM_RE = re.compile(
-    rf"^set\s+({IDENT})\s*=\s*(.+?)\s*:\s*kind\s*=\s*dimension"
-    rf'(?:\s*,\s*name_format\s*=\s*"([^"]*)")?\s*;\s*$'
-)
+SET_DECL_RE = re.compile(rf"^set\s+({IDENT})\s*=\s*(.+?)\s*:\s*(.+?)\s*;?\s*$")
 RANGE_RE = re.compile(r"^(-?\d+)\s*\.\.\s*(-?\d+)$")
 ITEM_HEAD_RE = re.compile(rf"^(write|bind|advance)\s+({IDENT})\s*\[")
 DIM_USE_WORST_RE = re.compile(rf"^worst\(\s*({IDENT})\s*\)$")
@@ -70,11 +74,18 @@ class ExpandError(Exception):
 class Axis:
     values: list[str]
     name_format: str = "_{value}"
+    units: list[int] | None = None
 
     def name(self, member: str) -> str:
         if "{value}" not in self.name_format:
             raise ExpandError(f"name_format {self.name_format!r} has no {{value}} placeholder")
         return self.name_format.replace("{value}", member)
+
+    def unit_of(self, member: str | None) -> int:
+        """Integer projection of a member; ``None`` is the ``worst`` pseudo-member."""
+        if self.units is None:
+            raise ExpandError("axis is used in a numeric field but declares no `units`")
+        return self.units[-1] if member is None else self.units[self.values.index(member)]
 
 
 @dataclass
@@ -144,8 +155,22 @@ def _parse_items(text: str) -> list[str]:
     return [item for item in items if item]
 
 
+CALLS = {
+    "cdiv": lambda a, b: (a + b - 1) // b,
+    "max": max,
+    "min": min,
+}
+NODE_BUDGET = 64
+
+
 def _eval_expr(expr: str, env: dict[str, object]) -> int:
-    """Evaluate a bounded integer expression; no calls, no attributes."""
+    """Evaluate a bounded integer expression.
+
+    Only ``+ - * // %``, the three kernels ``cdiv/max/min`` and names bound in
+    ``env`` are allowed.  ``/`` is accepted only when it divides exactly: an
+    accidental fraction is an error, never a silent floor.  ``//`` is the
+    floor division that TableGen spells ``!div``.
+    """
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
@@ -156,6 +181,7 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
         ast.UnaryOp,
         ast.Constant,
         ast.Name,
+        ast.Call,
         ast.Add,
         ast.Sub,
         ast.Mult,
@@ -166,12 +192,29 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
         ast.UAdd,
         ast.Load,
     )
+    if sum(1 for _ in ast.walk(tree)) > NODE_BUDGET:
+        raise ExpandError(f"expression too large in {expr!r}")
+    call_functions = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     for node in ast.walk(tree):
         if not isinstance(node, allowed):
             raise ExpandError(f"unsupported syntax in {expr!r}: {type(node).__name__}")
-        if isinstance(node, ast.Name) and node.id not in env:
-            raise ExpandError(f"unknown parameter {node.id!r} in {expr!r}")
-    value = eval(compile(tree, "<expr>", "eval"), {"__builtins__": {}}, env)  # noqa: S307
+        if id(node) in call_functions:
+            continue
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in CALLS:
+                raise ExpandError(f"unknown function in {expr!r}")
+            if node.keywords:
+                raise ExpandError(f"keyword arguments are not allowed in {expr!r}")
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in env:
+            raise ExpandError(
+                f"unknown parameter {node.id!r} in {expr!r} "
+                f"(axis names need `units` to appear in numeric fields)"
+            )
+    value = eval(  # noqa: S307
+        compile(tree, "<expr>", "eval"),
+        {"__builtins__": {}, **CALLS},
+        env,
+    )
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, float):
@@ -181,12 +224,55 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
     return int(value)
 
 
-def _subst_fields(text: str, env: dict[str, object]) -> str:
-    def repl(match: re.Match[str]) -> str:
-        value = _eval_expr(match.group(2), env)
-        return f"{match.group(1)} = {value}"
+SCALAR_FIELD_RE = re.compile(r"^(latency|uops|cycles)\s*=\s*(.+)$")
+LIST_FIELD_RE = re.compile(r"^(release|acquire)\s*=\s*\[(.*)\]$")
 
-    return re.sub(r"\b(latency|uops|cycles)\s*=\s*([^,;]+)", repl, text)
+
+def _split_fields(text: str) -> list[str]:
+    """Split on commas that are neither inside ``[]`` nor inside ``()``."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for char in text:
+        if char in "[(":
+            depth += 1
+        elif char in "])":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return parts
+
+
+def _subst_fields(text: str, env: dict[str, object]) -> str:
+    """Evaluate the numeric fields of one statement.
+
+    Fields are split before evaluation so a kernel argument may contain a
+    comma (``cdiv(a, b)``); a regex would cut the call in half.
+    """
+    parts = _split_fields(text)
+    tail = ""
+    if parts and parts[-1].rstrip().endswith(";"):
+        parts[-1] = parts[-1].rstrip()[:-1]
+        tail = ";"
+    rendered: list[str] = []
+    for part in parts:
+        field = part.strip()
+        match = LIST_FIELD_RE.match(field)
+        if match:
+            items = [item.strip() for item in _split_fields(match.group(2)) if item.strip()]
+            values = ", ".join(str(_eval_expr(item, env)) for item in items)
+            rendered.append(f"{match.group(1)} = [{values}]")
+            continue
+        match = SCALAR_FIELD_RE.match(field)
+        if match:
+            rendered.append(f"{match.group(1)} = {_eval_expr(match.group(2), env)}")
+            continue
+        rendered.append(field)
+    return ", ".join(rendered) + tail
 
 
 def _logical_lines(text: str) -> list[tuple[int, str]]:
@@ -209,6 +295,41 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
+def _parse_props(text: str) -> dict[str, str]:
+    """Split ``kind = dimension, name_format = "...", units = [..]``."""
+    props: dict[str, str] = {}
+    for part in _split_top_level(text):
+        key, sep, value = part.partition("=")
+        if not sep:
+            raise ExpandError(f"bad property {part!r}")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1]
+        props[key.strip()] = value
+    return props
+
+
+def _axis_units(
+    name: str, values: list[str], raw: str | None, line_no: int
+) -> list[int] | None:
+    """Numeric projection for an axis: explicit `units`, else numeric members."""
+    if raw is None:
+        if all(re.fullmatch(r"-?\d+", value) for value in values):
+            return [int(value) for value in values]
+        return None
+    units = []
+    for item in _parse_items(raw):
+        try:
+            units.append(int(item))
+        except ValueError as exc:
+            raise ExpandError(f"line {line_no}: axis {name} has non-integer unit {item!r}") from exc
+    if len(units) != len(values):
+        raise ExpandError(
+            f"line {line_no}: axis {name} has {len(values)} members but {len(units)} units"
+        )
+    return units
+
+
 def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine]]:
     """Return (dimensions, machines) from the compressed source."""
     dimensions: dict[str, Axis] = {}
@@ -219,20 +340,31 @@ def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine]]:
         if not line:
             continue
         if current is None:
-            match = SET_DIM_RE.match(line)
+            match = SET_DECL_RE.match(line)
             if match:
-                name, rhs, name_format = match.group(1), match.group(2), match.group(3)
-                range_match = RANGE_RE.match(rhs.strip())
+                name, rhs = match.group(1), match.group(2).strip()
+                props = _parse_props(match.group(3))
+                if props.get("kind") != "dimension":
+                    raise ExpandError(
+                        f"line {line_no}: set {name} is not a dimension "
+                        f"(kind = {props.get('kind')!r})"
+                    )
+                range_match = RANGE_RE.match(rhs)
                 if range_match:
                     lo, hi = int(range_match.group(1)), int(range_match.group(2))
                     values = [str(v) for v in range(lo, hi + 1)]
                 else:
-                    if not rhs.strip().startswith("["):
+                    if not rhs.startswith("["):
                         raise ExpandError(f"line {line_no}: axis {name} expects a list or range")
                     values = _parse_items(rhs)
                 if not values:
                     raise ExpandError(f"line {line_no}: axis {name} is empty")
-                dimensions[name] = Axis(values=values, name_format=name_format or "_{value}")
+                units = _axis_units(name, values, props.get("units"), line_no)
+                dimensions[name] = Axis(
+                    values=values,
+                    name_format=props.get("name_format") or "_{value}",
+                    units=units,
+                )
                 continue
             match = FAMILY_RE.match(line)
             if match:
@@ -322,6 +454,7 @@ def _expand_body(
     origins: list[tuple[str, str, int]],
 ) -> list[str]:
     out: list[str] = []
+    emitted: dict[tuple[str, str], int] = {}
     for stmt in body:
         parsed = _parse_item(stmt.text)
         if parsed is None:
@@ -330,19 +463,51 @@ def _expand_body(
         keyword, base, index, rest = parsed
         try:
             uses = _parse_dim_uses(index, dimensions)
+            axes = [axis for axis, _members, _is_worst in uses]
+            if len(set(axes)) != len(axes):
+                raise ExpandError(f"axis repeated in index {index!r}")
+            for use_index in _product_index(uses):
+                suffix = "".join(
+                    "_WorstCase" if is_worst else dimensions[axis].name(member)
+                    for (axis, _members, is_worst), member in zip(uses, use_index)
+                )
+                name = f"{base}{suffix}"
+                key = (keyword, name)
+                if key in emitted:
+                    raise ExpandError(
+                        f"{keyword} {name} expanded twice "
+                        f"(lines {emitted[key]} and {stmt.line})"
+                    )
+                emitted[key] = stmt.line
+                origins.append((keyword, name, stmt.line))
+                tail = rest if rest.startswith(";") else " " + rest
+                text = f"{keyword} {name}{tail}".rstrip()
+                out.append(_subst_fields(text, _axis_env(uses, use_index, dimensions, env)))
         except ExpandError as exc:
             raise ExpandError(f"line {stmt.line}: {exc}") from exc
-        for use_index in _product_index(uses):
-            suffix = "".join(
-                "_WorstCase" if is_worst else dimensions[axis].name(member)
-                for (axis, _members, is_worst), member in zip(uses, use_index)
-            )
-            name = f"{base}{suffix}"
-            origins.append((keyword, name, stmt.line))
-            tail = rest if rest.startswith(";") else " " + rest
-            text = f"{keyword} {name}{tail}".rstrip()
-            out.append(_subst_fields(text, env))
     return out
+
+
+def _axis_env(
+    uses: list[tuple[str, list[str], bool]],
+    use_index: list[str],
+    dimensions: dict[str, Axis],
+    env: dict[str, object],
+) -> dict[str, object]:
+    """Bind each indexed axis to its member's integer units.
+
+    An axis without `units` stays unbound; using it in a numeric field then
+    reports ``unknown parameter`` instead of inventing a value.
+    """
+    merged = dict(env)
+    for (axis, _members, is_worst), member in zip(uses, use_index):
+        spec = dimensions[axis]
+        if spec.units is None:
+            continue
+        if axis in merged:
+            raise ExpandError(f"axis {axis} shadows a family parameter of the same name")
+        merged[axis] = spec.unit_of(None if is_worst else member)
+    return merged
 
 
 def _product_index(uses: list[tuple[str, list[str], bool]]):

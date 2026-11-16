@@ -1828,6 +1828,153 @@ machine f {
 
 
 
+def expect_expand_error(source: str, needle: str) -> None:
+    try:
+        family_mod.expand(source)
+    except family_mod.ExpandError as exc:
+        assert_in(needle, str(exc))
+        return
+    raise Failure(f"expected ExpandError for:\n{source}")
+
+
+@test
+def family_units_reproduce_the_observed_latency_shapes():
+    """`units` turns a member into the integer the upstream formula needs.
+
+    The two vectors are the two most common shapes in the SiFive7 record
+    table; here they are written as formulas instead of 16 literals.
+    """
+    source = """set LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] :
+    kind = dimension, name_format = "_{value}", units = [1, 2, 4, 8, 16, 32, 64];
+
+machine m {
+    resource P : units = 1;
+    write A[LMUL];
+    write B[LMUL];
+    write C[LMUL];
+    bind  A[LMUL] -> [P], latency = 3 + 2 * LMUL;
+    bind  B[LMUL] -> [P], latency = max(1, LMUL // 4);
+    bind  C[LMUL] -> [P], latency = cdiv(512 * LMUL, 4 * 64), release = [1, 1 + 2 * LMUL];
+}
+"""
+    flat = family_mod.expand(source)
+    rows = [
+        ("MF8", 5, 1, 2, 3),
+        ("MF4", 7, 1, 4, 5),
+        ("MF2", 11, 1, 8, 9),
+        ("M1", 19, 2, 16, 17),
+        ("M2", 35, 4, 32, 33),
+        ("M4", 67, 8, 64, 65),
+        ("M8", 131, 16, 128, 129),
+    ]
+    for member, a, b, c, release in rows:
+        assert_in(f"bind A_{member} -> [P], latency = {a};", flat)
+        assert_in(f"bind B_{member} -> [P], latency = {b};", flat)
+        assert_in(
+            f"bind C_{member} -> [P], latency = {c}, release = [1, {release}];", flat
+        )
+
+
+@test
+def family_worst_member_takes_the_widest_units():
+    """`worst(AXIS)` names `_WorstCase` and reuses the last member's number."""
+    source = """set LMUL = [MF8, M8] :
+    kind = dimension, name_format = "_{value}", units = [1, 64];
+
+machine m {
+    resource P : units = 1;
+    write W[LMUL];
+    write W[worst(LMUL)];
+    bind  W[LMUL] -> [P], latency = LMUL;
+    bind  W[worst(LMUL)] -> [P], latency = LMUL;
+}
+"""
+    flat = family_mod.expand(source)
+    assert_in("bind W_M8 -> [P], latency = 64;", flat)
+    assert_in("bind W_WorstCase -> [P], latency = 64;", flat)
+
+
+@test
+def family_numeric_members_become_units_without_declaration():
+    """A range axis is already numeric; no `units` list is needed."""
+    source = """set NF = 2..8 : kind = dimension, name_format = "{value}";
+
+machine m {
+    resource P : units = 1;
+    write V[NF];
+    bind  V[NF] -> [P], latency = NF * 2, release = [1, max(1, NF - 1)];
+}
+"""
+    flat = family_mod.expand(source)
+    assert_in("bind V2 -> [P], latency = 4, release = [1, 1];", flat)
+    assert_in("bind V8 -> [P], latency = 16, release = [1, 7];", flat)
+
+
+@test
+def family_numeric_axis_without_units_is_rejected():
+    """A naming-only axis cannot silently become a number."""
+    source = """set LMUL = [MF8, M1] : kind = dimension, name_format = "_{value}";
+
+machine m {
+    resource P : units = 1;
+    write W[LMUL];
+    bind  W[LMUL] -> [P], latency = LMUL;
+}
+"""
+    expect_expand_error(source, "unknown parameter 'LMUL'")
+
+
+@test
+def family_axis_units_must_match_the_member_count():
+    source = """set LMUL = [MF8, M1] :
+    kind = dimension, units = [1, 2, 4];
+
+machine m { }
+"""
+    expect_expand_error(source, "2 members but 3 units")
+
+
+@test
+def family_repeated_axis_in_one_index_is_rejected():
+    source = """set A = [X, Y] : kind = dimension;
+
+machine m {
+    resource P : units = 1;
+    write W[A, A];
+    bind  W[A, A] -> [P];
+}
+"""
+    expect_expand_error(source, "axis repeated")
+
+
+@test
+def family_colliding_expansions_are_rejected():
+    """Two statements must not mint the same record name."""
+    source = """set A = [X] : kind = dimension;
+
+machine m {
+    resource P : units = 1;
+    write W[A];
+    write W[A];
+    bind  W[A] -> [P];
+}
+"""
+    expect_expand_error(source, "expanded twice")
+
+
+@test
+def family_expression_kernel_stays_bounded():
+    source = """set A = [X] : kind = dimension;
+
+machine m {
+    resource P : units = 1;
+    write W[A];
+    bind  W[A] -> [P], latency = 2 ** 8;
+}
+"""
+    expect_expand_error(source, "unsupported syntax")
+
+
 def main() -> int:
     failures = 0
     for fn in TESTS:
