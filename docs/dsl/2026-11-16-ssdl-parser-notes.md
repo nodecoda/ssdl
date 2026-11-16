@@ -306,6 +306,8 @@ v1.1 的规范文本在 `2026-11-16-ssdl-v1.1-draft.md`。本轮只实现其中�
 tools/ssdl/sets.py        # set 求值器 + 宿主属性 schema（JSON）
 tools/ssdl/predicates.py  # 谓词/STI/TII lowering（MC/SCHED/SEL 三路）
 tools/ssdl/tdutil.py      # 共享的 TableGen 文本转义/命名工具
+tools/ssdl/compare.py     # -print-records 对拍
+tools/ssdl/schema.py      # 从 -print-records 导出属性 schema（--merge 叠宿主语义）
 tests/ssdl/attrs.json     # fixture 的属性 schema（inst/reg 顺序、属性值）
 ```
 
@@ -377,7 +379,7 @@ read_variant R { ... }
 ### 11.5 证据
 
 ```bash
-python3 tools/ssdl/check.py                 # 20/20
+python3 tools/ssdl/check.py                 # 24/24
 python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl \
     --strict --attrs tests/ssdl/attrs.json -o /tmp/gen.td
 python3 tools/ssdl/compare.py /tmp/gen.td tests/ssdl/sifive7-mini.expected.td
@@ -420,3 +422,38 @@ fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`pred
 | itinerary 与 MCA 互斥（`tools/llvm-mca/llvm-mca.cpp:446-449`） | 同一 machine 不应同时给 `bind` 与 `itineraries` |
 
 上述八条都还是**规范/实现缺口**，不在本轮代码范围内；下一轮的顺序应为 R1（词表所有权）→ R4/R10（完整性/覆盖）→ R5（三态）→ R2（资源命名）。
+
+## 13. 2026-11-16 调度词表所有权（M11/M12）
+
+领域模型（`2026-11-16-ssdl-domain-model.md`）的 D1/D2 落地结果。
+
+### 13.1 改了什么
+
+| 项 | 之前 | 现在 |
+|---|---|---|
+| `write`/`read` | 每个 machine 各发一份 `SchedWrite`/`SchedRead` | 收集到目标命名空间，只发一次；同形重复声明允许，异形/异 kind 报 `conflicting declaration of scheduling ...` |
+| `write_seq` | 发在 `let SchedModel` 里 | 发在目标级（`WriteSequence.SchedModel` 被 SubtargetEmitter 忽略，`?` 是正确形状） |
+| `func_unit`/`bypass`/`itin_class` | machine 内 prelude | 目标级，只发一次 |
+| 机器级记录名 | `WR_W_ALU` / `RA_R_ALU` / `IRW_*` / `SchedAlias_*` / `*Variant` / `LoadQueue_*` | 加 machine 前缀：`<M>_WR_<W>` 等（等价上游 `defm` 前缀，如 `SiFive7PipeA`） |
+| 资源重名 | 泛化报错 `emitted def 'P' collides with 'machine A'` | `resource 'P' is already defined by 'machine A'; resource names are global TableGen defs, ...` |
+| 引用解析 | 只看本机声明的写/读 | 目标命名空间（B 机可不重复声明直接 `bind W_ALU`） |
+
+### 13.2 证据
+
+```bash
+python3 tools/ssdl/check.py    # 24/24
+```
+
+新增自检：
+
+- `scheduling_vocabulary_is_target_global`：两机共享词表，`def W_ALU : SchedWrite;` 只出现一次，两个 `let SchedModel = ... in` 各自独立；
+- `scheduling_vocabulary_conflict_is_reported`：`write W` 与 `read W` 跨机冲突；
+- `resource_collision_names_the_rule`：资源重名给出"改名"诊断；
+- `machine_scoped_records_are_namespaced`：`A_WR_W`/`B_LoadQueue_Q` 等带前缀，未前缀的 `WR_W` 不存在。
+
+fixture 对拍仍通过（`compare.py` records match）；`tests/ssdl/sifive7-mini.expected.td` 相应改名为 `ssdl_sifive_7_WR_*` 等，并把 `W_MULDIV_SEQ` 移到目标级。
+
+### 13.3 仍然开放
+
+- 用户命名的 `resource`/`res_group`/`reg_file` 仍要求全目标唯一（R2 选择"显式唯一 + 诊断"，不做隐式前缀）；
+- 属性三态的比较语义（D5）与 `-gen-subtarget` 的完整模型验收（§12）未动。

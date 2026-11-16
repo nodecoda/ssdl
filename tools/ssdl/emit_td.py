@@ -36,7 +36,7 @@ import argparse
 import re
 import sys
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 if __package__ in (None, ""):
@@ -109,6 +109,10 @@ class MachineInfo:
     decl: MachineDecl
     def_name: str
     text: str = ""
+    # Target-global records this machine declares (SchedWrite/SchedRead,
+    # WriteSequence, FuncUnit/Bypass/InstrItinClass).  They are collected
+    # across machines and emitted once; see ``Emitter.collect_global_vocabulary``.
+    globals: list[str] = field(default_factory=list)
 
 
 INLINE_BEHAVIOR = {
@@ -178,6 +182,13 @@ class Emitter:
         # machine name its ``sched_model`` names.
         self.top_itineraries: dict[str, str] = {}
         self.top_itin_text: list[str] = []
+        # Scheduling vocabulary is target-global: instructions name these
+        # records through ``Sched<[...]>``, so they cannot be per-machine.
+        self.global_rw: dict[str, tuple[str, str]] = {}
+        self.global_texts: list[str] = []
+        # Def name -> declaring machine, for resources and res groups, so a
+        # cross-machine collision can explain the rule instead of just firing.
+        self.resource_defs: dict[str, str] = {}
 
     # -- diagnostics -----------------------------------------------------
     def error(self, where: str, message: str) -> None:
@@ -194,6 +205,7 @@ class Emitter:
     def run(self) -> str:
         self.collect_features()
         self.declare_machines()
+        self.collect_global_vocabulary()
         self.lower_top_itineraries()
 
         self.set_evaluator = (
@@ -243,6 +255,7 @@ class Emitter:
             chunks.append(info.text)
         chunks.extend(self.top_itin_text)
         chunks.extend(early)
+        chunks.extend(self.global_texts)
         for info in self.machines.values():
             chunks.append(info.text)
         chunks.extend(late)
@@ -277,26 +290,34 @@ class Emitter:
                     names.add(item["name"])
                 elif kind == "write":
                     names.add(item["name"])
-                    names.add("WR_" + item["name"])
+                    names.add(f"{info.def_name}_WR_{item['name']}")
                 elif kind == "read":
                     names.add(item["name"])
-                    names.add("RA_" + item["name"])
+                    names.add(f"{info.def_name}_RA_{item['name']}")
                 elif kind == "retire_unit":
                     names.add(f"{info.def_name}RetireUnit")
                 elif kind == "write_seq":
                     names.add(item["name"])
                 elif kind in ("variant", "read_variant"):
-                    names.add(item["name"] + "Variant")
-                    names.add("SSDLVariantAlias_" + item["name"])
+                    names.add(f"{info.def_name}_{item['name']}Variant")
+                    names.add(f"{info.def_name}_SSDLVariantAlias_{item['name']}")
                 elif kind == "alias":
-                    names.add(td_def_name(f"SchedAlias_{item['src']}_{item['dst']}"))
+                    names.add(
+                        td_def_name(
+                            f"{info.def_name}_SchedAlias_{item['src']}_{item['dst']}"
+                        )
+                    )
                 elif kind == "map_itin":
                     names.add(
-                        td_def_name("ITINRW_" + "_".join(item["itins"]))
-                        if item["itins"] else "ITINRW_")
+                        td_def_name(
+                            f"{info.def_name}_ITINRW_" + "_".join(item["itins"])
+                        )
+                        if item["itins"]
+                        else td_def_name(f"{info.def_name}_ITINRW_")
+                    )
                 elif kind in ("load_queue", "store_queue"):
                     prefix = "LoadQueue_" if kind == "load_queue" else "StoreQueue_"
-                    names.add(prefix + item["resource"])
+                    names.add(f"{info.def_name}_" + prefix + item["resource"])
                 elif kind == "itineraries":
                     names.update(self.itinerary_names(item["decl"], info.def_name))
         for text in self.top_itin_text:
@@ -604,15 +625,78 @@ class Emitter:
                 continue
             self.machines[decl.name] = MachineInfo(decl, td_def_name(decl.name))
 
+    def collect_global_vocabulary(self) -> None:
+        """Collect the target-level scheduling vocabulary.
+
+        Upstream defines ``SchedWrite``/``SchedRead`` once per target and lets
+        every instruction name them through ``Sched<[...]>`` (see
+        ``RISCVSchedule.td``); only the ``WriteRes``/``ReadAdvance`` bindings are
+        per model.  Machine blocks are the only place SSDL can declare them, so
+        they are hoisted here and emitted exactly once.
+        """
+        for info in self.machines.values():
+            if info.decl.alias is not None:
+                continue
+            for item in info.decl.items:
+                kind = item.get("kind")
+                if kind not in ("write", "read", "write_seq"):
+                    continue
+                name = item["name"]
+                owner = self.global_rw.get(name)
+                if owner is not None and owner[0] != kind:
+                    self.error(
+                        f"machine {info.decl.name}",
+                        f"{name!r} is already declared as a {owner[0]} by "
+                        f"{owner[1]}",
+                    )
+                    continue
+                self.global_rw.setdefault(name, (kind, f"machine {info.decl.name}"))
+            for item in info.decl.items:
+                if item.get("kind") not in ("resource", "res_group"):
+                    continue
+                name = item["name"]
+                previous = self.resource_defs.get(name)
+                if previous is not None:
+                    self.error(
+                        f"machine {info.decl.name}",
+                        f"resource {name!r} is already defined by {previous!r}; "
+                        "resource names are global TableGen defs, so give each "
+                        "model's resources distinct names",
+                    )
+                else:
+                    self.resource_defs[name] = f"machine {info.decl.name}"
+
     def lower_machines(self) -> None:
         # Alias targets may be declared later, so resolve in a second pass.
         seen_defs: dict[str, str] = {}
+        global_text: dict[str, str] = {}
+        global_owner: dict[str, str] = {}
         for info in self.machines.values():
-            lowered = self.lower_machine(info)
+            lowered, globals_ = self.lower_machine(info)
+            for chunk in globals_:
+                match = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)", chunk)
+                if match is None:  # pragma: no cover - emitter always names defs
+                    continue
+                def_name = match.group(1)
+                if def_name in global_text:
+                    if global_text[def_name] != chunk:
+                        kind = self.global_rw.get(def_name, ("declaration", ""))[0]
+                        self.error(
+                            f"machine {info.decl.name}",
+                            f"conflicting declaration of scheduling {kind} "
+                            f"{def_name!r}: {global_owner[def_name]} declares it "
+                            "differently",
+                        )
+                    continue
+                global_text[def_name] = chunk
+                global_owner[def_name] = f"machine {info.decl.name}"
+                self.global_texts.append(chunk)
             for def_name in re.findall(
                 r"^[ \t]*def\s+([A-Za-z_][A-Za-z0-9_]*)", lowered, re.MULTILINE
             ):
                 if def_name in seen_defs:
+                    if def_name in self.resource_defs:
+                        continue  # already reported with the resource-specific hint
                     self.error(
                         f"machine {info.decl.name}",
                         f"emitted def {def_name!r} collides with {seen_defs[def_name]!r}",
@@ -633,16 +717,17 @@ class Emitter:
                 self.error(where, f"unknown SchedReadWrite {entry!r}")
         return resolved
 
-    def lower_machine(self, info: MachineInfo) -> str:
+    def lower_machine(self, info: MachineInfo) -> tuple[str, list[str]]:
         decl = info.decl
         where = f"machine {decl.name}"
         if decl.alias is not None:
             if decl.alias not in self.machines:
                 self.error(where, f"alias target {decl.alias!r} is not a declared machine")
-                return ""
+                return "", []
             return (
                 f"def {info.def_name} : ProcessorAlias<{td_str(decl.name)}, "
-                f"{td_str(decl.alias)}>;"
+                f"{td_str(decl.alias)}>;",
+                [],
             )
 
         props: dict[str, Any] = {}
@@ -698,14 +783,20 @@ class Emitter:
         # Records that carry `SchedModel` must be scoped to this model.  A
         # single `let SchedModel = ... in { ... }` cannot contain SchedWrite /
         # SchedRead defs (they have no such field), so the output is split:
-        #   prelude  - func units, bypasses, itinerary classes/data
-        #   unscoped - SchedWrite / SchedRead defs
-        #   scoped   - ProcResource, WriteRes, ReadAdvance, InstRW, SchedAlias,
-        #              SchedVariant, RegisterFile, RetireControlUnit, queues
+        #   global  - target-level vocabulary: SchedWrite/SchedRead,
+        #             WriteSequence, FuncUnit/Bypass/InstrItinClass
+        #   prelude - ProcessorItineraries (no SchedModel, but model-specific)
+        #   scoped  - ProcResource, WriteRes, ReadAdvance, InstRW, SchedAlias,
+        #             SchedVariant, RegisterFile, RetireControlUnit, queues
+        global_out: list[str] = []
         prelude: list[str] = []
-        unscoped: list[str] = []
         scoped: list[str] = []
         out = scoped
+        # Machine-scoped records live in one TableGen def namespace.  Upstream
+        # disambiguates them with `defm` (SiFive7PipeA, SiFive7IDivRemSched
+        # WriteVariant); we do the same with the machine def name as prefix so
+        # two models can be described from the same vocabulary.
+        prefix = info.def_name + "_"
 
         seen_res: set[str] = set()
         for item in items["resource"]:
@@ -761,26 +852,41 @@ class Emitter:
             else:
                 out.append(f"def {name} : ProcResGroup<{join_list(members)}>;")
 
-        writes: set[str] = set()
-        reads: set[str] = set()
+        writes: set[str] = {
+            name for name, (kind, _) in self.global_rw.items() if kind != "read"
+        }
+        reads: set[str] = {
+            name for name, (kind, _) in self.global_rw.items() if kind == "read"
+        }
+        local_writes: set[str] = set()
         for item in items["write"]:
-            if item["name"] in writes:
+            if item["name"] in local_writes:
                 self.error(where, f"duplicate write {item['name']!r}")
-            writes.add(item["name"])
-            unscoped.append(f"def {item['name']} : SchedWrite;")
+                continue
+            local_writes.add(item["name"])
+            global_out.append(f"def {item['name']} : SchedWrite;")
+        local_reads: set[str] = set()
         for item in items["read"]:
-            if item["name"] in reads:
+            if item["name"] in local_reads:
                 self.error(where, f"duplicate read {item['name']!r}")
-            reads.add(item["name"])
-            unscoped.append(f"def {item['name']} : SchedRead;")
+                continue
+            local_reads.add(item["name"])
+            global_out.append(f"def {item['name']} : SchedRead;")
 
         # WriteSequence is itself a SchedWrite, so collect the names first to
         # allow a sequence to refer to another sequence declared later.
         write_seqs: dict[str, dict[str, Any]] = {}
         for item in items["write_seq"]:
             name = item["name"]
-            if name in writes or name in write_seqs:
+            if name in local_writes or name in write_seqs:
                 self.error(where, f"duplicate write {name!r}")
+                continue
+            owner = self.global_rw.get(name)
+            if owner is not None and owner[0] != "write_seq":
+                self.error(
+                    where,
+                    f"{name!r} is already declared as a {owner[0]} by {owner[1]}",
+                )
                 continue
             write_seqs[name] = item
         writes.update(write_seqs)
@@ -794,29 +900,29 @@ class Emitter:
             repeat = item.get("repeat")
             if repeat is not None and repeat != 1:
                 args.append(str(repeat))
-            scoped.append(f"def {name} : WriteSequence<{', '.join(args)}>;")
+            global_out.append(f"def {name} : WriteSequence<{', '.join(args)}>;")
 
         declared_units: set[str] = set()
         for item in items["func_unit"]:
             if item["name"] in declared_units:
                 self.error(where, f"duplicate func_unit {item['name']!r}")
             declared_units.add(item["name"])
-            prelude.append(f"def {item['name']} : FuncUnit;")
+            global_out.append(f"def {item['name']} : FuncUnit;")
         declared_bypasses: set[str] = set()
         for item in items["bypass"]:
             if item["name"] in declared_bypasses:
                 self.error(where, f"duplicate bypass {item['name']!r}")
             declared_bypasses.add(item["name"])
-            prelude.append(f"def {item['name']} : Bypass;")
+            global_out.append(f"def {item['name']} : Bypass;")
         for item in items["itin_class"]:
-            prelude.append(f"def {item['name']} : InstrItinClass;")
+            global_out.append(f"def {item['name']} : InstrItinClass;")
 
         for item in items["alias"]:
             src, dst = item["src"], item["dst"]
             resolved = self.resolve_rw([src, dst], writes, reads, f"{where}.alias")
             if len(resolved) != 2:
                 continue
-            def_name = td_def_name(f"SchedAlias_{src}_{dst}")
+            def_name = td_def_name(f"{prefix}SchedAlias_{src}_{dst}")
             out.append(f"def {def_name} : SchedAlias<{resolved[0]}, {resolved[1]}>;")
 
         bound: set[str] = set()
@@ -869,12 +975,14 @@ class Emitter:
                     body.append(f"  let {field} = {value};")
             if body:
                 out.append(
-                    f"def WR_{write} : WriteRes<{write}, {join_list(resources)}> {{\n"
+                    f"def {prefix}WR_{write} : WriteRes<{write}, {join_list(resources)}> {{\n"
                     + "\n".join(body)
                     + "\n}"
                 )
             else:
-                out.append(f"def WR_{write} : WriteRes<{write}, {join_list(resources)}>;")
+                out.append(
+                    f"def {prefix}WR_{write} : WriteRes<{write}, {join_list(resources)}>;"
+                )
 
         advanced: set[str] = set()
         for item in items["advance"]:
@@ -907,7 +1015,7 @@ class Emitter:
                 args.append(join_list(valid_writes))
             if tunables:
                 args.append(join_list([str(t) for t in tunables]))
-            out.append(f"def RA_{read} : ReadAdvance<{', '.join(args)}>;")
+            out.append(f"def {prefix}RA_{read} : ReadAdvance<{', '.join(args)}>;")
 
         map_names: set[str] = set()
         for index, item in enumerate(items["map"]):
@@ -959,11 +1067,11 @@ class Emitter:
                         names.append(name)
                         pieces.append(name)
                     dag = "(instrs " + ", ".join(names) + ")"
-                def_name = "IRW_" + "_".join(pieces)
+                def_name = prefix + "IRW_" + "_".join(pieces)
                 if mixed:
                     def_name += "_" + group_kind
                 if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", def_name):
-                    def_name = f"IRW_map_{index}"
+                    def_name = f"{prefix}IRW_map_{index}"
                 if def_name in map_names:
                     self.error(where, f"map: duplicate emitted record name {def_name!r}")
                     continue
@@ -1013,10 +1121,10 @@ class Emitter:
                 if item.get("variadic"):
                     body = " {\n  let Variadic = true;\n}"
                 out.append(
-                    f"def {name}Variant : {cls}<{join_list(cases)}>{body};"
+                    f"def {prefix}{name}Variant : {cls}<{join_list(cases)}>{body};"
                 )
                 out.append(
-                    f"def SSDLVariantAlias_{name} : SchedAlias<{name}, {name}Variant>;"
+                    f"def {prefix}SSDLVariantAlias_{name} : SchedAlias<{name}, {prefix}{name}Variant>;"
                 )
 
         for item in items["reg_file"]:
@@ -1085,7 +1193,7 @@ class Emitter:
                 f"{fields['buffer']}, {fields['max_per_cycle']}>;"
             )
 
-        for kind, cls, prefix in (
+        for kind, cls, queue_prefix in (
             ("load_queue", "LoadQueue", "LoadQueue_"),
             ("store_queue", "StoreQueue", "StoreQueue_"),
         ):
@@ -1093,7 +1201,7 @@ class Emitter:
                 res = item["resource"]
                 if res not in seen_res:
                     self.error(where, f"{kind}: unknown resource {res!r}")
-                out.append(f"def {prefix}{res} : {cls}<{res}>;")
+                out.append(f"def {prefix}{queue_prefix}{res} : {cls}<{res}>;")
 
         itineraries_name = self.top_itineraries.get(decl.name)
         for item in items["itineraries"]:
@@ -1147,7 +1255,7 @@ class Emitter:
                 if not classes:
                     self.error(where, "map_itin: empty itinerary class list")
                     continue
-                def_name = td_def_name("ITINRW_" + "_".join(classes))
+                def_name = td_def_name(f"{prefix}ITINRW_" + "_".join(classes))
                 out.append(
                     f"def {def_name} : ItinRW<{join_list(resolved)}, "
                     f"{join_list(classes)}>;"
@@ -1205,12 +1313,12 @@ class Emitter:
                 f"def {info.def_name} : RISCVTuneProcessorModel<{', '.join(args)}>;"
             )
 
-        chunks = list(prelude) + list(unscoped) + [model_text]
+        chunks = list(prelude) + [model_text]
         if scoped:
             body = textwrap.indent("\n\n".join(scoped), "  ")
             chunks.append(f"let SchedModel = {info.def_name}Model in {{\n{body}\n}}")
         chunks.extend(processor_texts)
-        return "\n\n".join(chunks)
+        return "\n\n".join(chunks), global_out
 
 
 def emit(

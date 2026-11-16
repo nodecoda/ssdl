@@ -18,7 +18,7 @@ SSDL 现在描述的是**记录的形状**，而上游真正约束的是**消费
 
 ## 1. 十条结论（按影响排序）
 
-1. **`write`/`read` 是目标级词表，`resource` 是模型级词表。** 上游 `WriteIALU` 定义在 `llvm/lib/Target/RISCV/RISCVSchedule.td:16`，被指令的 `Sched<[WriteIALU, ...]>` 引用（`RISCVInstrInfo.td:786`）；模型只提供 `WriteRes<WriteIALU, [PipeAB]>`（`RISCVSchedSiFive7.td:335`）。SSDL 把两者都放进 `machine`，导致两个 machine 必然冲突（§5 D1，已实测）。
+1. **`write`/`read` 是目标级词表，`resource` 是模型级词表。** 上游 `WriteIALU` 定义在 `llvm/lib/Target/RISCV/RISCVSchedule.td:16`，被指令的 `Sched<[WriteIALU, ...]>` 引用（`RISCVInstrInfo.td:786`）；模型只提供 `WriteRes<WriteIALU, [PipeAB]>`（`RISCVSchedSiFive7.td:335`）。SSDL 把两者都放进 `machine`，导致两个 machine 必然冲突；v1.1 已按 R1 修正（词表提升 + 机器级记录前缀）。
 2. **部分模型不可行。** 一个模型只要有一条 `WriteRes`，`hasInstrSchedModel` 即为真（`utils/TableGen/Common/CodeGenSchedule.h:279-281`），随后 `findWriteResources` 要求覆盖该指令集可达的**每一个** `SchedWrite`/`SchedRead`，否则 fatal `Processor does not define resources for <Write>`（`utils/TableGen/SubtargetEmitter.cpp:984-989`）。没有 base-model 回退，源码里是显式 TODO（同上 `:983`）。这解释了 §7 的 `-gen-subtarget` 失败。
 3. **`complete_model` 只是完整性检查的开关，不是"允许缺资源"的开关。** `CompleteModel=false` 只跳过 `checkCompleteness()`（`CodeGenSchedule.cpp:1921-1922`），不跳过 `findWriteResources`；未建模的打包类会退化成 `InvalidNumMicroOps`（`SubtargetEmitter.cpp:1174-1179`）。
 4. **属性的取值域是三态，不是布尔。** `mayLoad`/`mayStore`/`hasSideEffects` 可以是 `?`（未推断）。RISCV 的 `-print-records` 里 `mayLoad = ?` 出现 190 次、`hasSideEffects = ?` 169 次；限定到 Instruction 记录是 51 / 37 条（16966 条 Instruction 中）。把"未知"读成 `false` 会把可能访存的指令判成纯计算。
@@ -193,9 +193,9 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 
 ## 5. 契约缺口（按优先级）
 
-**D1（P0）`write`/`read` 所有权错位。** 证据：§2.2 的撞名；上游 `RISCVSchedule.td:16`。影响：任何有两个 CPU 的目标都写不出来。修法：见 R1。
+**D1（P0，已闭合）`write`/`read` 所有权错位。** 证据：§2.2 的撞名；上游 `RISCVSchedule.td:16`。修法：R1，已落地（`parser-notes` §13）。
 
-**D2（P0）资源名缺乏模型作用域。** 证据：上游 `defm SiFive7 : SiFive7ProcResources` 造出 `SiFive7PipeA`（`RISCVSchedSiFive7.td:1564`）；我们实测 `P` 撞名。修法：R2。
+**D2（P0，已按诊断闭合）资源名缺乏模型作用域。** 证据：上游 `defm SiFive7 : SiFive7ProcResources` 造出 `SiFive7PipeA`（`RISCVSchedSiFive7.td:1564`）；我们实测 `P` 撞名。修法：R2，选择"显式唯一 + 改名诊断"，已落地；机器级生成记录同时加了 machine 前缀。
 
 **D3（P0）完整性契约缺失。** 证据：结论 2、3。影响：`machine` 被当成"补丁"，实际必须是"完整模型"；`-gen-subtarget` 因缺 `WriteRes` 必炸。修法：R4。
 
@@ -229,8 +229,8 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 
 | ID | 修订 | 类型 | 优先级 |
 |---|---|---|---|
-| R1 | `write` / `read` / `write_seq` 定义为**目标级词表**：可以写在任意 `machine` 块里，但展开时提升到单一目标命名空间；重复声明必须完全同形，否则报 `conflicting declaration of scheduling write 'W'`。`bind`/`advance`/`map` 仍然是 machine 级。 | 语义 | P0 |
-| R2 | `resource` / `res_group` 的 def 名必须全目标唯一；两个 machine 使用同名资源时给出明确诊断，并建议改名（不做隐式前缀，保持 SSDL↔TD 名字 1:1）。备选：按 machine 加前缀，但那会破坏可对拍性。 | 语义 | P0 |
+| R1 ✅ | `write` / `read` / `write_seq` 定义为**目标级词表**：可以写在任意 `machine` 块里，但展开时提升到单一目标命名空间；重复声明必须完全同形，否则报 `conflicting declaration of scheduling write 'W'`。`bind`/`advance`/`map` 仍然是 machine 级。 | 语义 | P0 |
+| R2 ✅ | `resource` / `res_group` 的 def 名必须全目标唯一；两个 machine 使用同名资源时给出明确诊断，并建议改名（不做隐式前缀，保持 SSDL↔TD 名字 1:1）。备选：按 machine 加前缀，但那会破坏可对拍性。 | 语义 | P0 |
 | R3 | `read_default` 列为保留标识符，文法上等价于"该操作数使用上游 `ReadDefault`"。 | 文法 | P0 |
 | R4 | 明确 `machine` 是**完整模型**：`complete_model = false` 只关闭完整性检查，不关闭 `WriteRes` 覆盖要求；展开器在 `--strict` 下对"声明了 resource 但没有任何 `bind`"报错。 | 语义 | P0 |
 | R5 | `set` 的属性取值域改为 `true/false/unknown` 三态；任何比较遇到 `unknown` 都是错误（或要求显式 `unknown` 谓词）。`schema.py` 输出 `"?"`，不静默丢弃。 | 文法/工具 | P1 |
@@ -272,7 +272,7 @@ llvm-tblgen -gen-subtarget -I llvm/include -I llvm/lib/Target/RISCV /tmp/gen.td
 ## 8. 复现命令
 
 ```bash
-# 1. 两机模型的词表撞名（D1）
+# 1. 两机模型的资源撞名（D2；词表已在 R1 中提升为共享）
 python3 tools/ssdl/emit_td.py /tmp/twomach.ssdl
 
 # 2. 属性三态（D5/D13）

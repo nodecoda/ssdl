@@ -159,7 +159,7 @@ def fixture_lowers_to_the_handwritten_records():
     # Records that carry a SchedModel must actually be scoped to it.
     assert_in("let SchedModel = ssdl_sifive_7Model in {", text)
     assert_in("def W_MULDIV_SEQ : WriteSequence<[W_ALU, W_ALU], 2>;", text)
-    assert_in("def ITINRW_IIC_iALU : ItinRW<[W_ALU, ReadDefault], [IIC_iALU]>;", text)
+    assert_in("def ssdl_sifive_7_ITINRW_IIC_iALU : ItinRW<[W_ALU, ReadDefault], [IIC_iALU]>;", text)
 
     with tempfile.TemporaryDirectory() as tmp:
         generated = Path(tmp) / "generated.td"
@@ -332,7 +332,7 @@ def negative_controls():
         ),
         (
             "machine M { write W; map [ADD] -> [W]; map [ADD] -> [W]; }",
-            ["duplicate emitted record name 'IRW_ADD'"],
+            ["duplicate emitted record name 'M_IRW_ADD'"],
         ),
         (
             'feature T : kind = tune, positive_directive = "p", field = "F", value = "true";\n'
@@ -473,9 +473,9 @@ machine M {
 """
     text, skips = emit_source(source, strict=True)
     assert_true(skips == [], skips)
-    assert_in("def IRW_ADD_instrs : InstRW<[W, ReadDefault], (instrs ADD)>;", text)
+    assert_in("def M_IRW_ADD_instrs : InstRW<[W, ReadDefault], (instrs ADD)>;", text)
     assert_in(
-        'def IRW_REGEX_MUL_regex : InstRW<[W, ReadDefault], (instregex "MUL.*")>;',
+        'def M_IRW_REGEX_MUL_regex : InstRW<[W, ReadDefault], (instregex "MUL.*")>;',
         text,
     )
 
@@ -661,6 +661,85 @@ def hook_lowering_negative_controls():
     ]
     for source, expected in cases:
         expect_emit_errors(source, [expected])
+
+
+@test
+def scheduling_vocabulary_is_target_global():
+    source = """
+machine A {
+    resource P : units = 1;
+    write W_ALU;
+    read  R_ALU;
+    bind W_ALU -> [P], latency = 1;
+    advance R_ALU : cycles = 1;
+}
+machine B {
+    resource Q : units = 2;
+    write W_ALU;
+    read  R_ALU;
+    bind W_ALU -> [Q], latency = 2;
+    advance R_ALU : cycles = 2;
+}
+"""
+    text, skips = emit_source(source, strict=True)
+    assert_true(text.count("def W_ALU : SchedWrite;") == 1, "write is emitted once")
+    assert_true(text.count("def R_ALU : SchedRead;") == 1, "read is emitted once")
+    assert_in("def A_WR_W_ALU", text)
+    assert_in("def B_WR_W_ALU", text)
+    assert_in("def A_RA_R_ALU", text)
+    assert_in("def B_RA_R_ALU", text)
+    assert_true(text.count("let SchedModel = ") == 2, "each model keeps its own scope")
+
+
+@test
+def scheduling_vocabulary_conflict_is_reported():
+    source = """
+machine A {
+    resource P : units = 1;
+    write W;
+    bind W -> [P], latency = 1;
+}
+machine B {
+    resource Q : units = 1;
+    read W;
+}
+"""
+    expect_emit_errors(source, ["'W' is already declared as a write by machine A"])
+
+
+@test
+def resource_collision_names_the_rule():
+    source = """
+machine A { resource P : units = 1; }
+machine B { resource P : units = 1; }
+"""
+    expect_emit_errors(source, ["resource 'P' is already defined by 'machine A'", "distinct names"])
+
+
+@test
+def machine_scoped_records_are_namespaced():
+    source = """
+machine A {
+    resource P : units = 1;
+    write W;
+    read  R;
+    bind W -> [P], latency = 1;
+    advance R : cycles = 1;
+    load_queue : resource = P;
+}
+machine B {
+    resource Q : units = 1;
+    write W;
+    read  R;
+    bind W -> [Q], latency = 2;
+    advance R : cycles = 2;
+    load_queue : resource = Q;
+}
+"""
+    text, _ = emit_source(source, strict=True)
+    for name in ("A_LoadQueue_P", "B_LoadQueue_Q"):
+        assert_in(f"def {name}", text)
+    assert_true("def WR_W" not in text, "WriteRes must be namespaced")
 
 
 @test
