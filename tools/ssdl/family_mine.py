@@ -38,8 +38,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ssdl import family_expand  # noqa: E402
 from ssdl.records import load as load_records  # noqa: E402
 
+# Defaults come from ``data/riscv-sched-profiles.json``; ``--profile`` swaps
+# them at startup so the miner itself names no target.
 LMUL_UNITS = [1, 2, 4, 8, 16, 32, 64]
 DEFAULT_LMUL = ["MF8", "MF4", "MF2", "M1", "M2", "M4", "M8"]
+LMUL_NAMES = list(DEFAULT_LMUL)
+LMUL_UNIT_LIST = list(LMUL_UNITS)
 SEG_RE = re.compile(r"^(?P<stem>.*?)(?P<nf>\d+)e(?P<eew>8|16|32|64)$")
 SEW_RE = re.compile(r"^E(8|16|32|64)$")
 RESOURCE_PREFIX_RE = re.compile(r"^.*?SiFive7")
@@ -203,12 +207,12 @@ def _member_env(key: tuple[str, ...], base: Base, vlen: int) -> dict[str, int]:
     emits a ``_WorstCase`` record that duplicates M4, not M8.
     """
     present = [name for name in base.axes.get("LMUL", []) if name != "WorstCase"]
-    widest = max((LMUL_UNITS[DEFAULT_LMUL.index(name)] for name in present), default=LMUL_UNITS[-1])
+    widest = max((LMUL_UNIT_LIST[LMUL_NAMES.index(name)] for name in present), default=LMUL_UNIT_LIST[-1])
     env: dict[str, int] = {"vlen": vlen}
     for item in key:
         axis, _, member = item.partition("=")
         if axis == "LMUL":
-            env["LMUL"] = widest if member == "WorstCase" else LMUL_UNITS[DEFAULT_LMUL.index(member)]
+            env["LMUL"] = widest if member == "WorstCase" else LMUL_UNIT_LIST[LMUL_NAMES.index(member)]
         else:
             env[axis] = int(member)
     return env
@@ -313,7 +317,7 @@ def report(records: str, model: str, catalogue: str | None, vlen: int, out: Path
     payload = json.loads(Path(catalogue).read_text()) if catalogue else {}
     entries = payload.get("formulas", [])
     glued = payload.get("glued")
-    bases, total = collect(recs, model, DEFAULT_LMUL, glued)
+    bases, total = collect(recs, model, LMUL_NAMES, glued)
     out.mkdir(parents=True, exist_ok=True)
 
     unexplained = []
@@ -400,16 +404,36 @@ def report(records: str, model: str, catalogue: str | None, vlen: int, out: Path
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--records", default="/tmp/riscv.rec")
-    parser.add_argument("--model", default="SiFive7VLEN512Model")
+    parser.add_argument("--profile", help="entry in data/riscv-sched-families.json")
+    parser.add_argument("--profiles", default="data/riscv-sched-profiles.json")
+    parser.add_argument("--model")
     parser.add_argument("--catalogue", default="data/riscv-sched-formulas.json")
-    parser.add_argument("--vlen", type=int, default=512)
+    parser.add_argument("--vlen", type=int)
     parser.add_argument("--out", default="/tmp/mine")
     parser.add_argument("--emit", help="write compressed SSDL for the model here")
-    parser.add_argument("--prefix", default="VLEN512SiFive7", help="ProcResource name prefix")
-    parser.add_argument("--family", default="siFive7")
-    parser.add_argument("--instance", default="sifive-7-series")
+    parser.add_argument("--prefix", help="ProcResource name prefix")
+    parser.add_argument("--family")
+    parser.add_argument("--instance")
     parser.add_argument("--processor", help="host ProcessorModel def to copy features/tunes from")
     args = parser.parse_args(argv)
+
+    global LMUL_NAMES, LMUL_UNIT_LIST, LMUL_ORDER, RESOURCE_PREFIX_RE
+    profile: dict = {}
+    if args.profile:
+        profiles = json.loads(Path(args.profiles).read_text())["profiles"]
+        if args.profile not in profiles:
+            parser.error(f"unknown profile {args.profile!r}")
+        profile = profiles[args.profile]
+        LMUL_NAMES = list(profile.get("lmul", DEFAULT_LMUL))
+        LMUL_UNIT_LIST = list(profile.get("lmul_units", LMUL_UNITS))
+        LMUL_ORDER = {name: index for index, name in enumerate(LMUL_NAMES)}
+        RESOURCE_PREFIX_RE = re.compile(profile.get("resource_pattern", "^.*?SiFive7"))
+    args.model = args.model or profile.get("model") or "SiFive7VLEN512Model"
+    args.vlen = args.vlen if args.vlen is not None else profile.get("vlen", 512)
+    args.prefix = args.prefix if args.prefix is not None else profile.get("prefix", "VLEN512SiFive7")
+    args.family = args.family or profile.get("family") or "siFive7"
+    args.instance = args.instance or profile.get("instance") or "sifive-7-series"
+    args.processor = args.processor or profile.get("processor")
     catalogue = args.catalogue if Path(args.catalogue).exists() else None
     if catalogue is None:
         print("note: no catalogue yet; every base will be unexplained", file=sys.stderr)
@@ -432,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
 # Emission: turn the mined bases back into compressed SSDL.
 # --------------------------------------------------------------------------
 
-LMUL_ORDER = {name: index for index, name in enumerate(DEFAULT_LMUL)}
+LMUL_ORDER = {name: index for index, name in enumerate(LMUL_NAMES)}
 
 
 def _order_members(axis: str, members) -> tuple[str, ...]:
@@ -499,12 +523,12 @@ class AxisViews:
         if key not in self.views:
             name = (
                 axis
-                if axis == "LMUL" and members == tuple(DEFAULT_LMUL) and fmt == "_{value}"
+                if axis == "LMUL" and members == tuple(LMUL_NAMES) and fmt == "_{value}"
                 else f"{axis}_{len(self.views)}"
             )
             self.views[key] = name
             units = (
-                [LMUL_UNITS[DEFAULT_LMUL.index(member)] for member in members]
+                [LMUL_UNIT_LIST[LMUL_NAMES.index(member)] for member in members]
                 if axis == "LMUL"
                 else [int(member) for member in members]
             )
@@ -562,7 +586,7 @@ def collect_reads(recs, model: str, glued) -> dict[str, dict]:
         read = fields.get("ReadType")
         if not read:
             continue
-        shape = canonicalise(read, DEFAULT_LMUL, glued)
+        shape = canonicalise(read, LMUL_NAMES, glued)
         base = bases.setdefault(shape.template, {"shape": shape, "axes": {}, "members": {}})
         key = tuple(f"{axis}={shape.axes[axis]}" for axis in shape.order)
         base["members"][key] = (
@@ -1132,12 +1156,12 @@ def emit_ssdl(
     machine_name: str,
     processor: str | None = None,
 ) -> str:
-    bases, total = collect(recs, model, DEFAULT_LMUL, catalogue.get("glued"))
-    unsupported = collect_unsupported(recs, model, DEFAULT_LMUL, catalogue.get("glued"))
+    bases, total = collect(recs, model, LMUL_NAMES, catalogue.get("glued"))
+    unsupported = collect_unsupported(recs, model, LMUL_NAMES, catalogue.get("glued"))
     branch_writes = collect_branch_writes(
-        recs, model, prefix, DEFAULT_LMUL, catalogue.get("glued")
+        recs, model, prefix, LMUL_NAMES, catalogue.get("glued")
     )
-    variants = collect_variants(recs, model, prefix, DEFAULT_LMUL, catalogue.get("glued"))
+    variants = collect_variants(recs, model, prefix, LMUL_NAMES, catalogue.get("glued"))
     entries = catalogue["formulas"]
     resources = resource_table(recs, model)
     views = AxisViews()
@@ -1198,11 +1222,13 @@ def emit_ssdl(
             return f"{shape.base}[{', '.join(parts)}]"
 
         covered: dict[object, list[tuple[str, ...]]] = {}
+        hits: dict[tuple[str, ...], str] = {}
+        for candidate in entries:
+            matched, _failures = match_formula(base, candidate, vlen)
+            for member in matched:
+                hits.setdefault(member, candidate["name"])
         for key in sorted(base.members):
-            chosen = next(
-                (entry["name"] for entry in entries if key in match_formula(base, entry, vlen)[0]),
-                None,
-            )
+            chosen = hits.get(key)
             entry = next((e for e in entries if e["name"] == chosen), None)
             if entry is None or entry.get("latency_table"):
                 payload = base.members[key]

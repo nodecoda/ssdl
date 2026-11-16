@@ -1,0 +1,112 @@
+{
+  "profiles": {
+    "sifive7-512": {
+      "model": "SiFive7VLEN512Model",
+      "vlen": 512,
+      "prefix": "VLEN512SiFive7",
+      "family": "siFive7",
+      "instance": "sifive_7_series",
+      "processor": "SIFIVE_7",
+      "resource_pattern": "^.*?SiFive7",
+      "lmul": [
+        "MF8",
+        "MF4",
+        "MF2",
+        "M1",
+        "M2",
+        "M4",
+        "M8"
+      ],
+      "lmul_units": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64
+      ]
+    },
+    "sifive7-128x100": {
+      "model": "SiFive7VLEN128X100Model",
+      "vlen": 128,
+      "prefix": "VLEN128X100SiFive7",
+      "family": "siFive7",
+      "instance": "sifive_x160",
+      "processor": "SIFIVE_X160",
+      "resource_pattern": "^.*?SiFive7",
+      "lmul": [
+        "MF8",
+        "MF4",
+        "MF2",
+        "M1",
+        "M2",
+        "M4",
+        "M8"
+      ],
+      "lmul_units": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64
+      ]
+    },
+    "sifive7-1024x300": {
+      "model": "SiFive7VLEN1024X300Model",
+      "vlen": 1024,
+      "prefix": "VLEN1024X300SiFive7",
+      "family": "siFive7",
+      "instance": "sifive_x390",
+      "processor": "SIFIVE_X390",
+      "resource_pattern": "^.*?SiFive7",
+      "lmul": [
+        "MF8",
+        "MF4",
+        "MF2",
+        "M1",
+        "M2",
+        "M4",
+        "M8"
+      ],
+      "lmul_units": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64
+      ]
+    },
+    "andes45": {
+      "model": "Andes45Model",
+      "vlen": 128,
+      "prefix": "",
+      "family": "andes45",
+      "instance": "andes_a45",
+      "processor": "ANDES_A45",
+      "resource_pattern": "^$",
+      "lmul": [
+        "MF8",
+        "MF4",
+        "MF2",
+        "M1",
+        "M2",
+        "M4",
+        "M8"
+      ],
+      "lmul_units": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64
+      ]
+    }
+  }
+}
