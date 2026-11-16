@@ -28,6 +28,47 @@ class RISCVTuneProcessorModel<string n, SchedMachineModel m,
                               list<SubtargetFeature> f = []>
     : ProcessorModel<n, m, f, tunef>;
 
+// The feature classes below mirror RISCVFeatures.td.  SSDL `kind = extension`
+// and `kind = tune` lower to these classes, and the stub must be able to
+// compile them just like the real target does.
+class RISCVExtension<int major, int minor, string desc,
+                     list<SubtargetFeature> implies = [],
+                     string fieldname = !subst("Feature", "Has", NAME),
+                     string value = "true", bit IsExperimental = false>
+    : SubtargetFeature<"", fieldname, value, "", implies> {
+  defvar extName = !subst("FeatureVendor", "",
+                          !subst("FeatureStdExt", "", NAME));
+  let Name = !if(IsExperimental, "experimental-", "") # !tolower(extName);
+  let Desc = "'" # extName # "' (" # desc # ")";
+  int MajorVersion = major;
+  int MinorVersion = minor;
+  bit Experimental = false;
+}
+
+class RISCVExtensionBitmask<bits<3> groupID, int bitPos> {
+  int GroupID = groupID;
+  int BitPos = bitPos;
+}
+
+class RISCVExperimentalExtension<int major, int minor, string desc,
+                                list<RISCVExtension> implies = [],
+                                string fieldname = !subst("Feature", "Has", NAME),
+                                string value = "true">
+    : RISCVExtension<major, minor, desc, implies, fieldname, value, true> {
+  let Experimental = true;
+}
+
+class RISCVTuneFeature<string name, string pos_directive, string neg_directive,
+                       string field_name, string value, string description,
+                       list<RISCVTuneFeature> implied_features = [],
+                       InlineBehavior ib = InlineIgnore>
+    : SubtargetFeature<name, field_name, value, description> {
+  let Implies = implied_features;
+  let InlineBehavior = ib;
+  string PositiveDirectiveName = pos_directive;
+  string NegativeDirectiveName = neg_directive;
+}
+
 def X0 : Register<"x0"> { let Namespace = "SSDLStub"; }
 def GPR : RegisterClass<"SSDLStub", [i64], 64, (add X0)>;
 defm : RemapAllTargetPseudoPointerOperands<GPR>;

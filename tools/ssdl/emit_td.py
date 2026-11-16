@@ -439,6 +439,10 @@ class Emitter:
             args = [major, minor, td_str(desc)]
             if implies:
                 args.append(join_list(implies))
+            elif "field" in fields:
+                # fieldname/value are positional after implies; keep the
+                # default implies list so they do not shift into its slot.
+                args.append("[]")
             if "field" in fields:
                 args.append(td_str(fields["field"]))
                 args.append(td_str(fields.get("value", "true")))
@@ -1041,9 +1045,6 @@ class Emitter:
             if "cycles" not in adv_props:
                 self.error(where, f"advance {read}: cycles is required (LLVM ReadAdvance has no default)")
                 continue
-            if "unsupported" in adv_props:
-                self.error(where, f"advance {read}: ReadAdvance has no Unsupported field")
-                continue
             valid_writes = []
             for w in adv_props.get("writes", []):
                 if w not in writes:
@@ -1058,8 +1059,13 @@ class Emitter:
                     args.append(join_list(valid_writes))
                 if tunables:
                     args.append(join_list([str(t) for t in tunables]))
+                body = ""
+                if adv_props.get("unsupported"):
+                    body = " { let Unsupported = true; }"
                 out.append(
-                    f"def {prefix}RAdv_{read} : SchedReadAdvance<{', '.join(args)}>;"
+                    f"def {prefix}RAdv_{read} : SchedReadAdvance<{', '.join(args)}>"
+                    + body
+                    + ("" if body else ";")
                 )
                 concrete_rw[read] = f"{prefix}RAdv_{read}"
             else:
@@ -1068,7 +1074,14 @@ class Emitter:
                     args.append(join_list(valid_writes))
                 if tunables:
                     args.append(join_list([str(t) for t in tunables]))
-                out.append(f"def {prefix}RA_{read} : ReadAdvance<{', '.join(args)}>;")
+                body = ""
+                if adv_props.get("unsupported"):
+                    body = " { let Unsupported = true; }"
+                out.append(
+                    f"def {prefix}RA_{read} : ReadAdvance<{', '.join(args)}>"
+                    + body
+                    + ("" if body else ";")
+                )
 
         map_names: set[str] = set()
         for index, item in enumerate(items["map"]):
@@ -1401,8 +1414,14 @@ class Emitter:
             if name in self.features and self.features[name].kind == "tune":
                 self.error(where, f"tune feature {name!r} belongs in tune_features, not features")
         for name in tune:
-            if name in self.features and self.features[name].kind != "tune":
-                self.error(where, f"feature {name!r} is not a tune feature")
+            # TuneFeatures is list<SubtargetFeature>: upstream mixes plain
+            # features (TuneSiFive7) with RISCVTuneFeature records.  Only an
+            # architectural extension is misplaced here.
+            if name in self.features and self.features[name].kind == "extension":
+                self.error(
+                    where,
+                    f"extension feature {name!r} belongs in features, not tune_features",
+                )
         fargs = self._resolve_features(where, features)
         targs = self._resolve_features(where, tune)
         if features:

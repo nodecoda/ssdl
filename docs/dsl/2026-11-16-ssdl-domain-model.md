@@ -197,7 +197,7 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 
 **D2（P0，已按诊断闭合）资源名缺乏模型作用域。** 证据：上游 `defm SiFive7 : SiFive7ProcResources` 造出 `SiFive7PipeA`（`RISCVSchedSiFive7.td:1564`）；我们实测 `P` 撞名。修法：R2，选择"显式唯一 + 改名诊断"，已落地；机器级生成记录同时加了 machine 前缀。
 
-**D3（P0）完整性契约缺失。** 证据：结论 2、3。影响：`machine` 被当成"补丁"，实际必须是"完整模型"；`-gen-subtarget` 因缺 `WriteRes` 必炸。修法：R4。
+**D3（P0，已闭合）完整性契约缺失。** 证据：结论 2、3。影响：`machine` 被当成"补丁"，实际必须是"完整模型"；`-gen-subtarget` 因缺 `WriteRes` 必炸。修法：R4，已落地——全量 SiFive7 三个模型由 `from_records.py` 生成后与上游逐字段相等（`parser-notes` §17）。
 
 **D4（P0）`map` 的覆盖语义与前置条件。** 证据：`SubtargetEmitter.cpp:1150-1166`、`CodeGenSchedule.cpp:1013`。影响：`map` 不是"给新指令补调度"，而是"覆盖已有 sched class"；没有 `SchedRW` 的指令不能只靠 `map` 救。修法：R10。
 

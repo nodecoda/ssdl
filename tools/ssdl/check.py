@@ -26,6 +26,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
+from ssdl import equiv as equiv_mod  # noqa: E402
+from ssdl import from_records as from_records_mod  # noqa: E402
+from ssdl import records as records_mod  # noqa: E402
 from ssdl import sets as sets_mod  # noqa: E402
 from ssdl import validate as validate_mod  # noqa: E402
 from ssdl.emit_td import SSDLEmitError  # noqa: E402
@@ -343,9 +346,9 @@ def negative_controls():
             ["tune feature 'T' belongs in tune_features"],
         ),
         (
-            'feature F : kind = plain, mattr = "f", field = "F", value = "true";\n'
-            "machine M { tune_features = [F]; }",
-            ["is not a tune feature"],
+            'feature E : kind = extension, version = "1.0";\n'
+            "machine M { tune_features = [E]; }",
+            ["belongs in features, not tune_features"],
         ),
         (
             'feature E1 : kind = extension, version = "1.0";\n'
@@ -1068,6 +1071,112 @@ def anonymous_records_are_canonicalized():
     rendered = diff.render()
     hashes = set(re.findall(r"anon#[0-9a-f]{12}", rendered))
     assert_true(len(hashes) == 2, f"expected two distinct anon hashes:\n{rendered}")
+
+
+@test
+def advance_unsupported_is_lowered():
+    """ProcReadAdvance has an Unsupported bit; SSDL must be able to set it."""
+    text, skips = emit_source(
+        """
+machine M {
+    resource P : units = 1;
+    write W;
+    read R;
+    bind W -> [P];
+    advance R : cycles = 0 : unsupported = true;
+}
+"""
+    )
+    assert_true(skips == [], skips)
+    assert_in("def M_RA_R : ReadAdvance<R, 0> { let Unsupported = true; }", text)
+
+    # The read-variant materialisation path carries the same field.
+    text, _ = emit_source(
+        """
+machine M {
+    resource P : units = 1;
+    write W;
+    read R;
+    bind W -> [P];
+    advance R : cycles = 1 : unsupported = true;
+    read_variant R { case true: [R]; default: [R]; }
+}
+"""
+    )
+    assert_in("def M_RAdv_R : SchedReadAdvance<1> { let Unsupported = true; }", text)
+
+    expect_emit_errors(
+        "machine M { resource P : units = 1; write W; read R; bind W -> [P]; "
+        "advance R : cycles = 0 : nope = true; }",
+        ["unknown property 'nope'"],
+    )
+
+
+@test
+def machine_name_is_the_mcpu_string():
+    """RISC-V `-mcpu` names contain '-' and must survive as the processor Name."""
+    text, skips = emit_source("machine sifive-7-series { issue_width = 2; }")
+    assert_true(skips == [], skips)
+    assert_in(
+        'def sifive_7_series : RISCVTuneProcessorModel<"sifive-7-series", '
+        "sifive_7_seriesModel>;",
+        text,
+    )
+
+
+@test
+def from_records_round_trips_the_stub_model():
+    """records -> SSDL -> records must reproduce the stub model field by field."""
+    try:
+        tblgen = compare_mod.default_tblgen()
+    except compare_mod.CompareError:
+        return
+    include_dirs = compare_mod.default_include_dirs()
+    include_dirs.append(str(ROOT / "tests/ssdl/stub-target"))
+
+    text, skips = emit_td.emit(
+        parser.parse_file(str(ROOT / "tests/ssdl/stub-mini.ssdl")),
+        strict=True,
+        target_include="SSDLStub.td",
+    )
+    assert_true(skips == [], skips)
+
+    def dump(td_text: str, tmp: str, name: str) -> str:
+        td_path = Path(tmp) / f"{name}.td"
+        td_path.write_text(td_text, encoding="utf-8")
+        rec_path = Path(tmp) / f"{name}.rec"
+        cmd = [tblgen, "-print-records"]
+        for inc in include_dirs:
+            cmd.extend(["-I", inc])
+        cmd.extend(["-o", str(rec_path), str(td_path)])
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        assert_true(proc.returncode == 0, f"-print-records failed:\n{proc.stderr}")
+        return str(rec_path)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        original = records_mod.load(dump(text, tmp, "original"))
+        ssdl = from_records_mod.generate(
+            original, "stub_cpuModel", "stub-cpu", "stub_cpu", False
+        )
+        generated = records_mod.load(
+            dump(
+                emit_td.emit(
+                    parser.parse(ssdl), strict=True, target_include="SSDLStub.td"
+                )[0],
+                tmp,
+                "roundtrip",
+            )
+        )
+    intree_model = equiv_mod.build(original, "stub_cpuModel")
+    generated_model = equiv_mod.build(generated, "stub_cpuModel")
+    code = equiv_mod.compare(
+        intree_model,
+        generated_model,
+        20,
+        equiv_mod.build_processor(original, "stub_cpu"),
+        equiv_mod.build_processor(generated, "stub_cpu"),
+    )
+    assert_true(code == 0, "records -> SSDL -> records did not round trip")
 
 
 def main() -> int:

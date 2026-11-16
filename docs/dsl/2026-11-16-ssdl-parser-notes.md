@@ -379,7 +379,7 @@ read_variant R { ... }
 ### 11.5 证据
 
 ```bash
-python3 tools/ssdl/check.py                 # 31/31
+python3 tools/ssdl/check.py                 # 34/34
 python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl \
     --strict --attrs tests/ssdl/attrs.json -o /tmp/gen.td
 python3 tools/ssdl/compare.py /tmp/gen.td tests/ssdl/sifive7-mini.expected.td
@@ -441,7 +441,7 @@ fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`pred
 ### 13.2 证据
 
 ```bash
-python3 tools/ssdl/check.py    # 31/31
+python3 tools/ssdl/check.py    # 34/34
 ```
 
 新增自检：
@@ -474,7 +474,7 @@ fixture 对拍仍通过（`compare.py` records match）；`tests/ssdl/sifive7-mi
 ### 14.3 证据
 
 ```bash
-python3 tools/ssdl/check.py    # 31/31
+python3 tools/ssdl/check.py    # 34/34
 ```
 
 新增自检 `unknown_attribute_is_not_false`：同一 schema 下 `inst(may_load == false)` 报错；`inst(!may_load)` 只选中 `may_load = false` 的指令（`SUB`），不选中 unknown 的（`ADD`）。
@@ -512,7 +512,7 @@ llvm-tblgen -gen-instr-info -I llvm/include -I tests/ssdl/stub-target /tmp/gen.t
 ### 15.4 证据
 
 ```text
-python3 tools/ssdl/check.py -> 31/31
+python3 tools/ssdl/check.py -> 34/34
 generated_td_passes_gen_subtarget:
   -gen-subtarget  exit 0；产出含 ADD_SUB、MUL、XOR 三个 sched class
   -gen-instr-info exit 0
@@ -620,5 +620,83 @@ stub-mini.ssdl 现在同时含：
 ### 16.5 仍然开放
 
 - 含 C++ 代码的 `SchedPredicate` 在 MCA 仍退化为 default（D10 / R8），本轮只保证 MC/Feature 谓词的 variant 在两层一致；
-- 全量 SiFive7 数值等价未做；
-- `advance ... unsupported` 仍被拒绝，尽管 `ProcReadAdvance` 有 `Unsupported` 字段——是否暴露给用户需要单独确认消费者。
+- ~~全量 SiFive7 数值等价未做~~ → §17 已完成（三个调度模型 + 代表处理器）；
+- ~~`advance ... unsupported` 仍被拒绝~~ → §17.3 已接受并展开，消费者是 `SubtargetEmitter.cpp:1324-1328`。
+
+---
+
+## 17. 2026-11-16 全量 SiFive7 等价
+
+上一轮把形状、完整性与 STI/TII 打通；这一轮回答最后一个可证伪的问题：**生成的记录是否与上游 SiFive7 逐字段相同**。答案是可以，且三个调度模型都相同。
+
+### 17.1 方法：外部生成器 + 记录级对拍
+
+SSDL 的原则 3 是"无元编程"：语言里没有 `foreach`，展开后的显式声明才是核心价值。因此全量模型不是手写，也不是在 SSDL 里加循环，而是由**外部生成器**从目标自己的记录生成：
+
+```text
+RISCV.td --llvm-tblgen -print-records--> riscv.rec
+        --from_records.py-------------> model.ssdl   （显式 SSDL，无 foreach）
+        --emit_td.py------------------> model.td
+        --llvm-tblgen -print-records--> model.rec
+        --equiv.py---------------------> 字段级比较
+```
+
+`tools/ssdl/from_records.py` 只做转写，不做优化：每条带 `SchedModel = <M>` 的记录按调度身份转成 SSDL，再由发射器降回同名记录。`tools/ssdl/equiv.py` 以 `WriteType` / `ReadType` / `MatchRW` / 资源名 / `(instrs ...)` dag 为键，**不按记录名匹配**，因此改名不会掩盖差异。
+
+复现命令（`RISCV.td` 的 dump 约 145 MB，`-print-records` 一次生成后复用）：
+
+```bash
+python3 tools/ssdl/from_records.py /tmp/riscv.rec \
+    --model SiFive7VLEN512Model --processor SIFIVE_7 -o /tmp/v512.ssdl
+python3 tools/ssdl/emit_td.py /tmp/v512.ssdl \
+    --target-include SSDLStub.td -o /tmp/v512.td
+llvm-tblgen -print-records -I llvm/include -I tests/ssdl/stub-target \
+    -o /tmp/v512.rec /tmp/v512.td
+python3 tools/ssdl/equiv.py /tmp/riscv.rec /tmp/v512.rec \
+    --in-model SiFive7VLEN512Model --gen-model sifive_7_seriesModel \
+    --in-processor SIFIVE_7 --gen-processor sifive_7_series
+```
+
+`tests/ssdl/stub-target/SSDLStub.td` 现在同时镜像 `RISCVExtension` / `RISCVExtensionBitmask` / `RISCVExperimentalExtension` / `RISCVTuneFeature`，所以 `kind = extension` / `kind = tune` 的展开也能在 stub 上编译并对拍。
+
+### 17.2 证据
+
+三个模型各 4246 条 `WriteRes`、1638 条 `ReadAdvance`、92 个写变体、1 条 `InstRW`；资源数随 VLEN 变化。下面每一行都是 `equiv.py` 的实际输出（`records match` 表示所有已列出的类别逐字段相等）：
+
+| 调度模型 | 处理器 | 写入 / 读取 / 变体 / InstRW | 资源 | 处理器特性 |
+|---|---|---|---|---|
+| `SiFive7VLEN512Model` | `SIFIVE_7` | 4246 / 1638 / 92 / 1 | 8 | 0 features, 4 tune |
+| `SiFive7VLEN128X100Model` | `SIFIVE_X160` | 4246 / 1638 / 92 / 1 | 8 | 39 features, 8 tune |
+| `SiFive7VLEN1024X300Model` | `SIFIVE_X390` | 4246 / 1638 / 92 / 1 | 9 | 41 features, 9 tune |
+
+比较范围由 `equiv.py` 显式打印，不再靠"没有输出就是一样"：
+
+```text
+scope: writes, reads, variants, InstRW, resources, machine props,
+       processor name/features/tunes/march/itinerary
+```
+
+### 17.3 这一轮修掉的四个真问题
+
+1. **`advance ... unsupported`**。`ProcReadAdvance` 有 `bit Unsupported`（`TargetSchedule.td:333`），消费者不是死的：`SubtargetEmitter.cpp:1324-1328` 用它把 sched class 标成 `InvalidNumMicroOps`。上游 SiFive7 对 281 条读设置了该位（另 300 条写也有 `Unsupported`；读侧的示例是 F128、向量 FP、原子、BREV8、CLMUL）。发射器此前直接拒绝，现在同时覆盖 `ReadAdvance` 与 `SchedReadAdvance` 两条路径。
+2. **机器属性此前既没发也没比**。生成器把 `IssueWidth` 当成字段名前缀传错（`field(mb, M, "IssueWidth")`），输出里全部缺失；`equiv.py` 又把 `SchedMachineModel` 本体排除在 `SchedModel = M` 的筛选外，比较因此是空的。现在按 `TargetSchedule.td` 的默认值（整数 `-1`、`CompleteModel=true`、`FullInstRWOverlapCheck=true`、其余 bit 为 false）逐项比较 10 个属性。
+3. **`CheckOpcode` 的字段名是 `ValidOpcodes`**（`TargetInstrPredicate.td:226-228`），不是 `Opcodes`。两边的谓词规范化都读错字段，导致所有 `opcode([...])` 都规范化为空列表——92 个变体的谓词比较是**假通过**。修正后重新跑，仍然全部相等，这次比较的是真实 opcode 列表。
+4. **`RISCVExtension` 的位置参数**。当 `implies` 为空但 `field` / `value` 存在时，发射器把它们顶进了 `implies` 槽，TableGen 报"string 当 list 用"。现在先补 `[]` 再追加 `field` / `value`。
+
+另外把 `tune_features` 的校验从"必须是 `kind = tune`"放宽为"不能是 `kind = extension`"：上游 `TuneSiFive7` 是普通 `SubtargetFeature`，`TuneFeatures` 的类型本来就是 `list<SubtargetFeature>`。
+
+### 17.4 比较边界（明确不做的部分）
+
+- **`UnsupportedFeatures` 不比较**。它的元素是宿主的 `Has<Feature>` 谓词（如 `HasStdExtZbkb`），不属于 SSDL 模型；`unsupported_features = [...]` 会展开成同样的 `list<Predicate>`，但需要 `-I` 真实目标才有定义。`equiv.py` 在输出里列出这些名字，而不是假装比较过。
+- **`ProcessorModel` 的 `MVendorID` / `MArchID` / `MImpID` / `ConfigurableTuneFeatures`** 仍不在 `machine` 语法里（P1-14）。
+- **一个 `machine` 对应一个处理器**。VLEN512 还被 `SIFIVE_E76` / `S76` / `U74` / `X280` 共享；调度记录相同，但每个 `-mcpu` 名字需要各自的 `machine` 块。`from_records.py` 一次转写一个处理器，不合并。
+- **itineraries**：`from_records.py` 遇到非 `NoItineraries` 的模型直接报错，不静默丢弃。SiFive7 全部是 `NoItineraries`。
+- **`VLEN` / `HasDualVALU` / `FPLatencies` / `HasFastGather`** 是 `SiFive7SchedMachineModel` 的 TableGen 期输入，`foreach` 展开时已经体现为资源名、延迟和绑定；它们没有运行时字段，因此不需要转写。
+
+### 17.5 回归
+
+`check.py` 新增三条，总数 34/34：
+
+- `advance_unsupported_is_lowered`：两条展开路径都带 `let Unsupported = true`，且未知属性仍报错；
+- `machine_name_is_the_mcpu_string`：`machine sifive-7-series` → `RISCVTuneProcessorModel<"sifive-7-series", ...>`，即 `-mcpu` 名字不因合法 def 名而改变；
+- `from_records_round_trips_the_stub_model`：`stub-mini.ssdl` → TD → records → SSDL → TD → records，`equiv.py` 逐字段相等（含 `WriteSequence` alias、`read_variant` 的 `SchedReadAdvance` 物化、处理器特性）。
