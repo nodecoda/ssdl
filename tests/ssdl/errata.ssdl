@@ -1,0 +1,29 @@
+# Parser errata from docs/dsl/2026-11-16-ssdl-parser-notes.md.
+# Nothing here is lowered; this file only proves the grammar corrections parse.
+
+# S1: a predicate declaration may bind parameter names.
+predicate IsZeroReg(i) = reg_is(i, ZeroRegs);
+
+# S2: a predicate expression may call a named predicate.
+set ZeroRegs = [ORR];
+predicate IsZeroIdiom = all_of(opcode([ORR]), IsZeroReg(1));
+
+# S3: feature fields may be separated by commas.
+feature ErrataPlain :
+    kind = plain,
+    mattr = "errata-plain",
+    field = "ErrataField",
+    value = "true";
+
+# S4: resource properties accept ':' and ','.
+machine errata-machine {
+    resource LSU : units = 1, buffer = 4;
+}
+
+# S5: '-' is allowed inside identifiers.
+machine errata-machine-alias = errata-machine;
+
+# S6: the trailing ';' after a sti_function body is optional.
+sti_function ErrataHook : SomeDecl {
+    sched_model = errata-machine;
+}

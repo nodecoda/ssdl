@@ -1,0 +1,165 @@
+# ============ 具名集合 ============
+set ZeroRegs     = reg(is_zero_reg);
+set LogicalInsts = [ORR, EOR, AND, ...inst(category == logical),];
+
+# ============ 谓词 ============
+predicate IsZeroReg(i) = reg_is(i, ZeroRegs);
+
+predicate HasStdExtI {
+    selector  = cxx_expr([{ Subtarget->hasStdExtI() }]);
+    assembler = all_of([StdExtI]);
+    desc      = "'I' (Base Integer Instruction Set)";
+}
+
+predicate NoStdExtZbb {
+    selector  = cxx_expr([{ !Subtarget->hasStdExtZbb() }]);
+    assembler = none_of([StdExtZbb]);
+}
+
+predicate_prolog([{
+    auto *RI = MI->getParent()->getParent()->getSubtarget().getRegisterInfo();
+}]);
+
+# ============ Feature ============
+feature StdExtI :
+    kind = extension,
+    version = "2.1",
+    bitmask = { group = 0, bit = 8 },
+    desc = "Base Integer Instruction Set";
+
+feature StdExtZicntr :
+    kind = extension,
+    version = "2.0",
+    implies = [StdExtZicsr],
+    bitmask = { group = 1, bit = 15 },
+    desc = "Base Counters and Timers";
+
+feature StdExtZibi :
+    kind = extension,
+    version = "0.1",
+    experimental = true,
+    bitmask = { group = 1, bit = 13 },
+    desc = "Branch with Immediate";
+
+feature Feature64Bit :
+    kind = plain,
+    field = "IsRV64", value = "true",
+    desc = "Implements RV64";
+
+feature TunePostRA :
+    kind = tune,
+    positive_directive = "use-postra-scheduler",
+    negative_directive = "no-use-postra-scheduler",
+    field = "UsePostRAScheduler", value = "true",
+    desc = "Schedule again after register allocation";
+
+# ============ STI 声明 ============
+sti_decl isZeroIdiom {
+    opcode_mask = true;
+}
+
+sti_decl isDependencyBreaking {
+    opcode_mask = true;
+    delegates   = [isZeroIdiom];
+}
+
+# ============ 机器模型 ============
+machine generic-rv64 {
+    features      = [Feature64Bit, StdExtI, StdExtZifencei, StdExtZicsr];
+    default_march = "rv64i2p1_zicsr2p0_zifencei2p0";
+}
+
+machine siFive7 {
+    features             = [Feature64Bit, StdExtI, StdExtM, StdExtA, StdExtF, StdExtD, StdExtC];
+    tune_features        = [TuneSiFive7, TuneNoDefaultUnroll];
+    issue_width          = 4;
+    micro_op_buffer_size = 192;
+    load_latency         = 3;
+    mispredict_penalty   = 9;
+    complete_model       = false;
+
+    resource PipeA : units = 2;
+    resource PipeB : units = 2;
+    resource LSU   : units = 1, buffer = 4;
+
+    write W_ALU; write W_LD;
+    read  R_ALU;
+
+    bind W_ALU -> [PipeA], latency = 1;
+    bind W_LD  -> [LSU],   latency = 3, release = [3];
+
+    advance R_ALU : cycles = 1 : writes = [W_ALU];
+
+    map [ADD, SUB, AND] -> [W_ALU, read_default, read_default];
+    map [LD]            -> [W_LD,  read_default];
+    map [ORR]           -> [W_ALU, read_default, read_default];
+
+    variant W_ALU {
+        case all_of(opcode([ORR]), IsZeroReg(1), IsZeroReg(2)): [W_ALU];
+        default: [W_ALU];
+    }
+
+    reg_file GPRFile {
+        num_phys             = 180;
+        classes              = [GPR64, GPR32];
+        allow_move_elim      = [true, true];
+        max_move_elim_per_cy = 4;
+    }
+
+    retire_unit { buffer = 320; max_per_cycle = 6; }
+    load_queue  : resource = LSU;
+    store_queue : resource = LSU;
+
+    itineraries : packetizer_namespace = "SiFive7" {
+        func_units = [FU_ALU, FU_LSU];
+        bypasses   = [no_bypass];
+
+        itin IIC_iALU {
+            stages = [stage(1, [FU_ALU])];
+            cycles = [1, 1];
+        }
+
+        itin IIC_iLoad {
+            stages   = [stage(1, [FU_ALU]), stage(1, [FU_LSU])];
+            cycles   = [3, 1];
+            bypasses = [no_bypass, Bypass_ALU_LD];
+        }
+    }
+}
+
+# 处理器别名
+machine siFive7-alias = siFive7;
+
+# ============ 钩子实现 ============
+sti_function SiFive7ZeroIdiom : isZeroIdiom {
+    sched_model = siFive7;
+    dep_breaking_class OrrXzrXzr(
+        [ORR],
+        all_of(opcode([ORR]), IsZeroReg(1), IsZeroReg(2)),
+        [1, 2]
+    );
+}
+
+sti_function SiFive7DepBreaking : isDependencyBreaking {
+    sched_model = siFive7;
+
+    dep_breaking_class OrrXzrXzr(
+        [ORR],
+        all_of(opcode([ORR]), IsZeroReg(1), IsZeroReg(2)),
+        [1, 2]
+    );
+
+    dep_breaking_class EorSelf(
+        [EOR],
+        all_of(opcode([EOR]), same_reg(1, 2)),
+        [1, 2]
+    );
+}
+
+# ============ TII 谓词 ============
+tii_predicate isDependencyBreaking =
+    switch opcode {
+        case [ORR]: return all_of(opcode([ORR]), IsZeroReg(1));
+        case [EOR]: return all_of(opcode([EOR]), same_reg(1, 2));
+        default:    return false;
+    };

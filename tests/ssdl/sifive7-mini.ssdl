@@ -1,0 +1,91 @@
+# A reduced SiFive7-derived scheduling model.
+#
+# The scheduling values are the real ones from
+# llvm/lib/Target/RISCV/RISCVSchedSiFive7.td (SiFive7SchedMachineModel):
+# IssueWidth=2, MicroOpBufferSize=0, LoadLatency=3, MispredictPenalty=3,
+# CompleteModel=0, EnableIntervals=true, UnsupportedFeatures=[HasStdExtZbkb, ...].
+# The instruction mix and resource split are a test subset, not a full model.
+#
+# Feature names are prefixed with `ssdl` because the generated file is loaded
+# *next to* llvm/lib/Target/RISCV/RISCVFeatures.td, whose defs we reuse for the
+# real TableGen classes.  A real migration would replace those defs instead.
+#
+# Covered parser errata (docs/dsl/2026-11-16-ssdl-parser-notes.md):
+#   S3 comma-separated feature fields, S4 comma-separated resource properties,
+#   S5 hyphenated identifiers.
+
+feature FeatureSSDL64Bit :
+    kind = plain,
+    mattr = "ssdl-64bit",
+    field = "IsRV64",
+    value = "true",
+    desc = "Implements RV64";
+
+feature StdExtXssdl :
+    kind = extension,
+    version = "2.1",
+    bitmask = { group = 0, bit = 8 },
+    desc = "SSDL base extension";
+
+feature StdExtZssdlcsr :
+    kind = extension,
+    version = "2.0",
+    desc = "SSDL CSR instructions";
+
+feature StdExtZssdlcnt :
+    kind = extension,
+    version = "2.0",
+    implies = [StdExtZssdlcsr],
+    bitmask = { group = 1, bit = 15 },
+    desc = "SSDL counters";
+
+feature StdExtZssdlexp :
+    kind = extension,
+    version = "0.1",
+    experimental = true,
+    bitmask = { group = 1, bit = 13 },
+    desc = "SSDL experimental extension";
+
+feature TuneSSDLPostRA :
+    kind = tune,
+    positive_directive = "use-ssdl-postra-scheduler",
+    negative_directive = "no-use-ssdl-postra-scheduler",
+    field = "UsePostRAScheduler",
+    value = "true",
+    desc = "Schedule again after register allocation";
+
+machine ssdl-generic-rv64 {
+    features = [FeatureSSDL64Bit, StdExtXssdl];
+    default_march = "rv64i2p1";
+}
+
+machine ssdl-sifive-7 {
+    features = [FeatureSSDL64Bit, StdExtXssdl, StdExtZssdlcnt];
+    tune_features = [TuneSSDLPostRA];
+    issue_width = 2;
+    micro_op_buffer_size = 0;
+    load_latency = 3;
+    mispredict_penalty = 3;
+    complete_model = false;
+    enable_intervals = true;
+    unsupported_features = [StdExtZbkb];
+
+    resource PipeA : units = 1;
+    resource PipeB : units = 1;
+    resource LSU   : units = 1, buffer = 4;
+
+    write W_ALU;
+    write W_LOAD;
+    read  R_ALU;
+
+    bind W_ALU  -> [PipeA], latency = 1;
+    bind W_LOAD -> [LSU],   latency = 3, release = [3];
+
+    advance R_ALU : cycles = 1 : writes = [W_ALU];
+
+    map [ADD, SUB, XOR]  -> [W_ALU, read_default, read_default];
+    map [LD]             -> [W_LOAD, read_default];
+    map [regex("MUL.*")] -> [W_ALU, read_default, read_default];
+}
+
+machine ssdl-sifive-7-alias = ssdl-sifive-7;
