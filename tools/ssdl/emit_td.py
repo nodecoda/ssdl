@@ -858,6 +858,31 @@ class Emitter:
         reads: set[str] = {
             name for name, (kind, _) in self.global_rw.items() if kind == "read"
         }
+        # A variant subject is rewritten as `SchedAlias<subject, Variant>`, so
+        # the subject itself can no longer carry WriteRes/ReadAdvance.  Upstream
+        # (RISCV SiFive7, AArch64) keeps the subject as pure vocabulary and
+        # points every SchedVar at a concrete record.  SSDL lets a branch name
+        # the subject itself ("keep this model's own resources"); materialise
+        # that record once so such a branch stays acyclic in llvm-tblgen.
+        variant_writes = {item["name"] for item in items["variant"]}
+        variant_reads = {item["name"] for item in items["read_variant"]}
+        concrete_rw: dict[str, str] = {}
+        alias_srcs = {item["src"] for item in items["alias"]}
+        alias_dsts = {item["dst"] for item in items["alias"]}
+        for subject in sorted(variant_writes | variant_reads):
+            kind = "variant" if subject in variant_writes else "read_variant"
+            if subject in alias_srcs:
+                self.error(
+                    where,
+                    f"{subject!r} is both an alias source and a {kind} subject; "
+                    "a SchedAlias can have only one match per processor",
+                )
+            if subject in alias_dsts:
+                self.error(
+                    where,
+                    f"{subject!r} is both an alias target and a {kind} subject; "
+                    "TableGen cannot alias an alias",
+                )
         local_writes: set[str] = set()
         for item in items["write"]:
             if item["name"] in local_writes:
@@ -973,15 +998,30 @@ class Emitter:
                     elif isinstance(value, list):
                         value = join_list([str(v) for v in value])
                     body.append(f"  let {field} = {value};")
-            if body:
+            resources_text = join_list(resources)
+            if write in variant_writes:
+                # Variant subjects are aliased away, so their own binding has
+                # to survive as a standalone SchedWriteRes (see the note above).
+                if body:
+                    out.append(
+                        f"def {prefix}WRes_{write} : SchedWriteRes<{resources_text}> {{\n"
+                        + "\n".join(body)
+                        + "\n}"
+                    )
+                else:
+                    out.append(
+                        f"def {prefix}WRes_{write} : SchedWriteRes<{resources_text}>;"
+                    )
+                concrete_rw[write] = f"{prefix}WRes_{write}"
+            elif body:
                 out.append(
-                    f"def {prefix}WR_{write} : WriteRes<{write}, {join_list(resources)}> {{\n"
+                    f"def {prefix}WR_{write} : WriteRes<{write}, {resources_text}> {{\n"
                     + "\n".join(body)
                     + "\n}"
                 )
             else:
                 out.append(
-                    f"def {prefix}WR_{write} : WriteRes<{write}, {join_list(resources)}>;"
+                    f"def {prefix}WR_{write} : WriteRes<{write}, {resources_text}>;"
                 )
 
         advanced: set[str] = set()
@@ -1009,13 +1049,26 @@ class Emitter:
                 if w not in writes:
                     self.error(where, f"advance {read}: unknown write {w!r}")
                 valid_writes.append(w)
-            args = [read, str(adv_props["cycles"])]
             tunables = adv_props.get("tunables", [])
-            if valid_writes or tunables:
-                args.append(join_list(valid_writes))
-            if tunables:
-                args.append(join_list([str(t) for t in tunables]))
-            out.append(f"def {prefix}RA_{read} : ReadAdvance<{', '.join(args)}>;")
+            if read in variant_reads:
+                # Same reasoning as for writes: the subject becomes an alias,
+                # so its advance has to live on a standalone SchedReadAdvance.
+                args = [str(adv_props["cycles"])]
+                if valid_writes or tunables:
+                    args.append(join_list(valid_writes))
+                if tunables:
+                    args.append(join_list([str(t) for t in tunables]))
+                out.append(
+                    f"def {prefix}RAdv_{read} : SchedReadAdvance<{', '.join(args)}>;"
+                )
+                concrete_rw[read] = f"{prefix}RAdv_{read}"
+            else:
+                args = [read, str(adv_props["cycles"])]
+                if valid_writes or tunables:
+                    args.append(join_list(valid_writes))
+                if tunables:
+                    args.append(join_list([str(t) for t in tunables]))
+                out.append(f"def {prefix}RA_{read} : ReadAdvance<{', '.join(args)}>;")
 
         map_names: set[str] = set()
         for index, item in enumerate(items["map"]):
@@ -1086,6 +1139,13 @@ class Emitter:
                     f"def {def_name} : InstRW<{join_list(resolved)}, {dag}>{body};"
                 )
 
+        # A read with no `advance` already means "read as usual", which is
+        # exactly ReadDefault; that is the concrete record for a self-reference.
+        for read in variant_reads:
+            concrete_rw.setdefault(read, "ReadDefault")
+
+        variant_edges: dict[str, set[str]] = {}
+        variant_subjects = variant_writes | variant_reads
         for kind in ("variant", "read_variant"):
             for item in items[kind]:
                 name = item["name"]
@@ -1104,19 +1164,50 @@ class Emitter:
                         "variant requires an explicit default case (P1-12)",
                     )
                     continue
+
+                # A self-reference selects the model's own binding; every other
+                # name is used as written (chained through its own alias).
+                def concretise(
+                    entries: list[str], subject: str = name
+                ) -> list[str]:
+                    return [
+                        concrete_rw.get(entry, entry) if entry == subject else entry
+                        for entry in entries
+                    ]
+
+                def resolve(entries: list[str], subject: str = name) -> list[str]:
+                    return self.resolve_rw(
+                        entries, writes, reads, f"{where}.{subject}"
+                    )
+
                 cases = []
+                resolved_all: list[str] = []
                 for case in item["cases"]:
+                    selected = resolve(case["selected"])
+                    resolved_all.extend(selected)
                     pred = self.predicates.to_sched(
                         case["pred"], {}, f"{where}.{name}"
                     ) if self.predicates is not None else "NoSchedPred"
-                    selected = self.resolve_rw(
-                        case["selected"], writes, reads, f"{where}.{name}"
-                    )
-                    cases.append(f"SchedVar<{pred}, {join_list(selected)}>")
-                default = self.resolve_rw(
-                    item["default"], writes, reads, f"{where}.{name}"
+                    cases.append(f"SchedVar<{pred}, {join_list(concretise(selected))}>")
+                default = resolve(item["default"])
+                resolved_all.extend(default)
+                cases.append(
+                    f"SchedVar<NoSchedPred, {join_list(concretise(default))}>"
                 )
-                cases.append(f"SchedVar<NoSchedPred, {join_list(default)}>")
+
+                if name in resolved_all and name not in concrete_rw:
+                    expected = "write" if kind == "variant" else "read"
+                    self.error(
+                        f"{where}.{name}",
+                        f"{name!r} selects itself but this machine does not "
+                        f"describe its {expected} resources; add a `bind` or "
+                        "name a distinct SchedReadWrite",
+                    )
+                variant_edges[name] = {
+                    other
+                    for other in resolved_all
+                    if other in variant_subjects and other != name
+                }
                 body = ""
                 if item.get("variadic"):
                     body = " {\n  let Variadic = true;\n}"
@@ -1126,6 +1217,26 @@ class Emitter:
                 out.append(
                     f"def {prefix}SSDLVariantAlias_{name} : SchedAlias<{name}, {prefix}{name}Variant>;"
                 )
+
+        # Chained references are legal, but a cycle makes llvm-tblgen expand
+        # variants forever inside inferFromRW; reject it with a location.
+        state: dict[str, int] = {}
+
+        def visit_variant(node: str, stack: list[str]) -> None:
+            state[node] = 1
+            stack.append(node)
+            for nxt in sorted(variant_edges.get(node, ())):
+                if state.get(nxt) == 1:
+                    cycle = " -> ".join(stack[stack.index(nxt):] + [nxt])
+                    self.error(where, f"variant cycle: {cycle}")
+                elif state.get(nxt, 0) == 0:
+                    visit_variant(nxt, stack)
+            stack.pop()
+            state[node] = 2
+
+        for node in sorted(variant_edges):
+            if state.get(node, 0) == 0:
+                visit_variant(node, [])
 
         for item in items["reg_file"]:
             name = item["name"]

@@ -71,11 +71,9 @@ def SSDLPredicateProlog : PredicateProlog<[{
         static_cast<const RISCVInstrInfo*>(SchedModel->getInstrInfo());
 }]>;
 
-def isZeroIdiomDecl : STIPredicateDecl<"isZeroIdiom", FalsePred,
-                                       true, true, true, []>;
-def isDependencyBreakingDecl : STIPredicateDecl<"isDependencyBreaking",
-                                                FalsePred, true, true, true,
-                                                [isZeroIdiomDecl]>;
+// `isZeroIdiom` / `isDependencyBreaking` are fixed TargetSubtargetInfo hooks:
+// the emitter binds the upstream IsZeroIdiomDecl / IsDepBreakingDecl instead
+// of redeclaring them (see parser-notes section 16).
 
 def XorX0X0 : DepBreakingClass<
     [XOR],
@@ -135,7 +133,10 @@ let SchedModel = ssdl_sifive_7Model in {
 
   def ssdl_sifive_7_SchedAlias_W_MULDIV_W_MULDIV_SEQ : SchedAlias<W_MULDIV, W_MULDIV_SEQ>;
 
-  def ssdl_sifive_7_WR_W_ALU : WriteRes<W_ALU, [PipeA]> {
+  // W_ALU is a variant subject, so its own binding becomes a concrete
+  // SchedWriteRes that the variant branches can select without aliasing W_ALU
+  // to itself.
+  def ssdl_sifive_7_WRes_W_ALU : SchedWriteRes<[PipeA]> {
     let Latency = 1;
   }
 
@@ -144,7 +145,7 @@ let SchedModel = ssdl_sifive_7Model in {
     let ReleaseAtCycles = [3];
   }
 
-  def ssdl_sifive_7_RA_R_ALU : ReadAdvance<R_ALU, 1, [W_ALU]>;
+  def ssdl_sifive_7_RAdv_R_ALU : SchedReadAdvance<1, [W_ALU]>;
 
   def ssdl_sifive_7_IRW_ADD_SUB_XOR : InstRW<[W_ALU, ReadDefault, ReadDefault],
                                (instrs ADD, SUB, XOR)>;
@@ -159,15 +160,15 @@ let SchedModel = ssdl_sifive_7Model in {
   def ssdl_sifive_7_W_ALUVariant : SchedWriteVariant<[
     SchedVar<MCSchedPredicate<CheckAll<[
       CheckOpcode<[ADD, SUB, XOR, AND, MUL, DIV]>,
-      CheckSameRegOperand<1, 2>]>>, [W_ALU]>,
-    SchedVar<NoSchedPred, [W_ALU]>]>;
+      CheckSameRegOperand<1, 2>]>>, [ssdl_sifive_7_WRes_W_ALU]>,
+    SchedVar<NoSchedPred, [ssdl_sifive_7_WRes_W_ALU]>]>;
   def ssdl_sifive_7_SSDLVariantAlias_W_ALU : SchedAlias<W_ALU, ssdl_sifive_7_W_ALUVariant>;
 
   def ssdl_sifive_7_R_ALUVariant : SchedReadVariant<[
     SchedVar<MCSchedPredicate<CheckAll<[
       CheckOpcode<[AND, XOR, ADD, SUB, MUL, DIV]>,
-      CheckRegOperand<1, X0>]>>, [R_ALU]>,
-    SchedVar<NoSchedPred, [R_ALU]>]>;
+      CheckRegOperand<1, X0>]>>, [ssdl_sifive_7_RAdv_R_ALU]>,
+    SchedVar<NoSchedPred, [ssdl_sifive_7_RAdv_R_ALU]>]>;
   def ssdl_sifive_7_SSDLVariantAlias_R_ALU : SchedAlias<R_ALU, ssdl_sifive_7_R_ALUVariant>;
 
   def GPRFile : RegisterFile<180, [GPR, GPRNoX0], [1, 1], [true, true], 4>;
@@ -198,10 +199,10 @@ def ssdl_itin_rv64 : RISCVProcessorModel<"ssdl-itin-rv64",
 // `sched_model` binds the STIPredicate to the machine model, so these records
 // follow the model defs.
 let SchedModel = ssdl_sifive_7Model in
-def SSDLZeroIdiom : STIPredicate<isZeroIdiomDecl, [XorX0X0]>;
+def SSDLZeroIdiom : STIPredicate<IsZeroIdiomDecl, [XorX0X0]>;
 
 let SchedModel = ssdl_sifive_7Model in
-def SSDLDepBreaking : STIPredicate<isDependencyBreakingDecl, [XorSelf]>;
+def SSDLDepBreaking : STIPredicate<IsDepBreakingDecl, [XorSelf]>;
 
 def isXorZeroIdiom
     : TIIPredicate<"isXorZeroIdiom",

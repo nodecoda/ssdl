@@ -1,6 +1,8 @@
 # Minimal SSDL input validated by -gen-subtarget/-gen-instr-info.
-# It exercises: target-level vocabulary, WriteRes, ReadAdvance, SchedAlias to a
-# WriteSequence, and InstRW from `map`.
+# It exercises: target-level vocabulary, WriteRes/SchedWriteRes, ReadAdvance/
+# SchedReadAdvance, SchedAlias to a WriteSequence, InstRW from `map`,
+# variant/read_variant, the builtin STI hooks, a predicate prolog and a TII
+# predicate -- together, so the generated records are checked as one model.
 
 feature StubBase : kind = plain, mattr = "stub-base",
                    field = "HasStubBase", value = "true";
@@ -14,15 +16,54 @@ machine stub-cpu {
 
     write W_ALU;
     write W_MULDIV;
+    write W_XOR;
     read  R_ALU;
 
     write_seq W_SEQ = [W_ALU, W_ALU] repeat = 2;
 
-    bind W_ALU -> [P], latency = 1;
+    bind W_ALU   -> [P], latency = 1;
+    bind W_XOR   -> [P], latency = 2;
     advance R_ALU : cycles = 1 : writes = [W_ALU];
 
     alias W_MULDIV -> W_SEQ;
 
-    map [ADD, SUB] -> [W_ALU, read_default, read_default];
+    map [ADD, SUB] -> [W_ALU, R_ALU, read_default];
     map [MUL]      -> [W_MULDIV, read_default, read_default];
+    map [XOR]      -> [W_XOR, read_default];
+
+    # Variant subjects: the case selects a concrete WriteRes, the default
+    # selects the model's own binding.  Both must survive -gen-subtarget, and
+    # the subject itself is only an alias to the SchedWriteVariant.
+    variant W_XOR {
+        case opcode([XOR]): [W_ALU];
+        default: [W_XOR];
+    }
+
+    read_variant R_ALU {
+        case opcode([ADD]): [R_ALU];
+        default: [R_ALU];
+    }
 }
+
+predicate_prolog([{
+    [[maybe_unused]] const void *PrologTII = MI->getParent();
+}]);
+
+sti_decl isZeroIdiom { opcode_mask = true; }
+sti_decl isDependencyBreaking { opcode_mask = true; delegates = [isZeroIdiom]; }
+
+sti_function StubZeroIdiom : isZeroIdiom {
+    sched_model = stub-cpu;
+    dep_breaking_class AddSelf([ADD], same_reg(1, 2), [1, 2]);
+}
+
+sti_function StubDepBreaking : isDependencyBreaking {
+    sched_model = stub-cpu;
+    dep_breaking_class AddSelf([ADD], same_reg(1, 2), [1, 2]);
+}
+
+tii_predicate IsAddSelfTII =
+    switch opcode {
+        case [ADD]: return same_reg(1, 2);
+        default:    return false;
+    };

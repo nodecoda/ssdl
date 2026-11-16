@@ -379,7 +379,7 @@ read_variant R { ... }
 ### 11.5 证据
 
 ```bash
-python3 tools/ssdl/check.py                 # 26/26
+python3 tools/ssdl/check.py                 # 31/31
 python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl \
     --strict --attrs tests/ssdl/attrs.json -o /tmp/gen.td
 python3 tools/ssdl/compare.py /tmp/gen.td tests/ssdl/sifive7-mini.expected.td
@@ -441,7 +441,7 @@ fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`pred
 ### 13.2 证据
 
 ```bash
-python3 tools/ssdl/check.py    # 26/26
+python3 tools/ssdl/check.py    # 31/31
 ```
 
 新增自检：
@@ -474,7 +474,7 @@ fixture 对拍仍通过（`compare.py` records match）；`tests/ssdl/sifive7-mi
 ### 14.3 证据
 
 ```bash
-python3 tools/ssdl/check.py    # 26/26
+python3 tools/ssdl/check.py    # 31/31
 ```
 
 新增自检 `unknown_attribute_is_not_false`：同一 schema 下 `inst(may_load == false)` 报错；`inst(!may_load)` 只选中 `may_load = false` 的指令（`SUB`），不选中 unknown 的（`ADD`）。
@@ -490,7 +490,7 @@ python3 tools/ssdl/check.py    # 26/26
 
 `-gen-subtarget` 的失败不是展开器 bug：模型一旦有任何 `WriteRes`，TableGen 要求覆盖该指令集可达的每个 `SchedWrite`（`SubtargetEmitter.cpp:984-989`），而完整 RISC-V 指令集有上百个写。用 `RISCV.td` 做夹具只能得到"必然失败"的结论，无法做回归。
 
-因此新增 `tests/ssdl/stub-target/SSDLStub.td`：一个只含 `ADD`/`SUB`/`MUL` 的最小目标，专门给生成物喂 `-gen-subtarget` / `-gen-instr-info`。
+因此新增 `tests/ssdl/stub-target/SSDLStub.td`：一个只含 `ADD`/`SUB`/`MUL`/`XOR` 的最小目标，专门给生成物喂 `-gen-subtarget` / `-gen-instr-info`。`XOR` 是 `variant` 的落点，`R_ALU` 是 `read_variant` 的落点。
 
 ### 15.2 stub 的三条约定
 
@@ -512,13 +512,13 @@ llvm-tblgen -gen-instr-info -I llvm/include -I tests/ssdl/stub-target /tmp/gen.t
 ### 15.4 证据
 
 ```text
-python3 tools/ssdl/check.py -> 26/26
+python3 tools/ssdl/check.py -> 31/31
 generated_td_passes_gen_subtarget:
-  -gen-subtarget  exit 0；产出含 ADD_SUB、MUL 两个 sched class
+  -gen-subtarget  exit 0；产出含 ADD_SUB、MUL、XOR 三个 sched class
   -gen-instr-info exit 0
 ```
 
-`stub-mini.ssdl` 覆盖：目标级词表、`WriteRes`、`ReadAdvance`、`SchedAlias` → `WriteSequence`、两条 `InstRW`。生成的 `ADD_SUB` 是 1 uop / 1 资源，`MUL` 经 4 条 `W_ALU` 的序列展开为 4 uops，说明 alias + sequence 真的被 TableGen 解析了。
+`stub-mini.ssdl` 覆盖：目标级词表、`WriteRes`、`ReadAdvance`、`SchedAlias` → `WriteSequence`、`map` → `InstRW`、`variant` / `read_variant`。生成的 `ADD_SUB` 是 1 uop / 1 资源，`MUL` 经 4 条 `W_ALU` 的序列展开为 4 uops，说明 alias + sequence 真的被 TableGen 解析了。`XOR` 的 sched class 里同时出现 `W_ALU_ReadDefault`（case 分支）和 `stub_cpu_WRes_W_XOR_ReadDefault`（default 分支），说明 variant 的选择在生成的转换表里真实生效，而不是只存在于 .td。
 
 反控：同一条管线删除 `bind`（只剩 `resource`）后，`-gen-subtarget` 必须以
 `SchedMachineModel defines ProcResources without defining WriteRes SchedWriteRes`
@@ -528,3 +528,97 @@ generated_td_passes_gen_subtarget:
 
 - stub 只覆盖调度记录，不覆盖 STI/TII 谓词的生成代码是否可编译（需要 C++ 侧夹具）；
 - 真实 CPU 的完整模型验收（全量 SiFive7）仍未做；stub 证明的是"形状与完整性契约"，不是"数值等价"。
+
+## 16. 2026-11-16 STI 固定 hook 与 `variant` 的可执行展开
+
+本轮把 STI/TII 与 `variant` 从"形状正确"推进到"`-gen-subtarget` 可执行"，并修掉一个会让 `llvm-tblgen` **挂死**的展开器 bug。
+
+### 16.1 `isZeroIdiom` 等是固定 hook，只能绑定不能重声明
+
+上游 `TargetInstrPredicate.td:425-437` 已经给出三个 `STIPredicateDecl`：
+
+```tablegen
+def IsZeroIdiomDecl : STIPredicateDecl<"isZeroIdiom", FalsePred, true, true, true, []>;
+def IsDepBreakingDecl : STIPredicateDecl<"isDependencyBreaking", FalsePred, true, true, true, [IsZeroIdiomDecl]>;
+```
+
+`STIPredicate<IsZeroIdiomDecl, ...>` 的名字是 C++ 侧 `TargetSubtargetInfo::isZeroIdiom` 的钩子名，签名不可改。展开器原先按声明名再发一个 `isZeroIdiomDecl`，TableGen 报 `STIPredicate isZeroIdiom multiply declared.`。
+
+修法（`predicates.py`）：
+
+- `BUILTIN_STI_DECLS` / `BUILTIN_STI_FIXED` 把 DSL 名映射到上游记录及其固定字段；
+- `sti_decl isZeroIdiom { ... }` 不再产生 def，只校验字段与固定签名一致；
+- `overrides` / `expand_for_mc` 必须为 `true`（可省略）；`default` 只能是 `false`（`FalsePred`）；`opcode_mask` 与 `delegates` 见下表；`isDependencyBreaking.delegates` 用 DSL 名写，比较前解析成 `IsZeroIdiomDecl`。
+
+三个 hook 的固定属性并不相同：`TargetInstrPredicate.td:426-435` 把 `UpdatesOpcodeMask = true` 只放在前两个外面，`IsOptimizableRegisterMoveDecl` 在 `let` 之外。因此：
+
+| DSL 名 | `opcode_mask` | `delegates` |
+|---|---|---|
+| `isZeroIdiom` | `true`（可省略） | `[]` |
+| `isDependencyBreaking` | `true`（可省略） | `[isZeroIdiom]` |
+| `isOptimizableRegisterMove` | `false`（写了 `true` 报错） | `[]` |
+
+用户仍然写 `sti_decl` / `sti_function`，只是不再"重新定义" C++ 钩子。`spec-example.ssdl` 的写法（`opcode_mask = true` + `delegates = [isZeroIdiom]`）原样通过；负控 `builtin_sti_hooks_are_bound_not_redeclared` 钉住了三条签名。
+
+### 16.2 `variant` 的 subject 是 dispatch 名，分支必须是具体记录
+
+SSDL 允许分支写回 subject 自己：
+
+```text
+variant W_ALU {
+    case ...: [W_ALU];
+    default: [W_ALU];
+}
+```
+
+这在 TD 里不能直译成 `SchedVar<..., [W_ALU]>` + `SchedAlias<W_ALU, Variant>`：`inferFromRW` 的 do/while（`CodeGenSchedule.cpp:1719-1725`）会反复把 default 展开回 `W_ALU`，又经 alias 回到 variant，**永不收敛**；实测是 100% CPU 挂死（gdb 栈：`inferFromRW -> substituteVariants -> substituteVariantOperand -> pushVariant`）。
+
+上游的真实形状是"dispatch 名 + 具体记录"（`RISCVSchedSiFive7.td:358-373`：`WriteIDiv` 本身没有 `WriteRes`，alias 到 variant，variant 的两个分支各指向一个 `SchedWriteRes`；AArch64 的 `SchedReadVariant` 同理，见 `AArch64SchedA53.td:174-182`）。
+
+展开规则（M13）：
+
+| SSDL | 展开 |
+|---|---|
+| `bind W -> [R], ...` 且 `W` 是本机器的 variant subject | `def <M>_WRes_W : SchedWriteRes<[R]> { ... }`，不再发 `WriteRes<W, [R]>` |
+| `variant W` 分支里的 `W` | 替换为 `<M>_WRes_W` |
+| `advance R : cycles = C : writes = [...]` 且 `R` 是 read_variant subject | `def <M>_RAdv_R : SchedReadAdvance<C, [...]>` |
+| `read_variant R` 分支里的 `R`，且该机器没有 `advance R` | 替换为 `ReadDefault`（无 advance 的读本来就是 ReadDefault） |
+| `alias` 与 variant 抢同一个名字 | 诊断：subject 只能有一个 `SchedAlias` |
+| 分支引用了另一个 subject，形成环 | 诊断 `variant cycle: A -> B -> A`（TableGen 会挂死，必须在 SSDL 侧拦住） |
+
+非自引用的分支保持不变（可以是普通 `SchedWrite` + `WriteRes`，也可以是另一个 subject 的 alias 链）。`--strict` 下 subject 自引用但没有本地 `bind` 会报错，而不是发一个无资源记录。
+
+### 16.3 证据
+
+```text
+stub-mini.ssdl 现在同时含：
+  target 级词表 / WriteRes / SchedWriteRes / ReadAdvance / SchedReadAdvance /
+  SchedAlias→WriteSequence / InstRW / variant / read_variant /
+  predicate_prolog / sti_decl+sti_function / tii_predicate
+  -gen-subtarget  exit 0
+  -gen-instr-info exit 0
+  .inc: XOR 的 sched class 同时含 W_ALU_ReadDefault 与 stub_cpu_WRes_W_XOR_ReadDefault
+
+只含 STI：      -gen-subtarget exit 0（此前 multiply declared）
+```
+
+负控（`check.py`）：
+
+- `variant_self_reference_needs_a_local_binding`：自引用无 `bind` → 诊断；
+- `variant_cycles_are_rejected_before_tblgen`：A↔B → `variant cycle`；
+- `variant_subject_cannot_be_an_alias_endpoint`：`alias A -> B` + `variant A` → 诊断。
+
+### 16.4 STI 等价类是共享 def，不是重复声明
+
+规范 §5 把 `OrrXzrXzr` 同时写在 `SiFive7ZeroIdiom` 和 `SiFive7DepBreaking` 里。`dep_breaking_class` 展开成 `DepBreakingClass` 的 `def`，TableGen 里 def 名全局唯一，所以"同名同内容"必须只发一次、两个 `STIPredicate` 都引用它；"同名不同内容"才是错误。
+
+- 相同内容：复用，`STIPredicate<IsZeroIdiomDecl, [OrrXzrXzr]>` 与 `STIPredicate<IsDepBreakingDecl, [OrrXzrXzr]>` 都指向同一个 `def`；
+- 不同内容：`equivalence class 'X' is already declared with different contents`。
+
+这与上游 X86 的用法一致：`IsZeroIdiomFunction` 与 `IsDepBreakingFunction` 是两个 `STIPredicate`，而 `DepBreakingClass` 记录可以被两边引用（`X86ScheduleZnver2.td:1350,1399`）。
+
+### 16.5 仍然开放
+
+- 含 C++ 代码的 `SchedPredicate` 在 MCA 仍退化为 default（D10 / R8），本轮只保证 MC/Feature 谓词的 variant 在两层一致；
+- 全量 SiFive7 数值等价未做；
+- `advance ... unsupported` 仍被拒绝，尽管 `ProcReadAdvance` 有 `Unsupported` 字段——是否暴露给用户需要单独确认消费者。

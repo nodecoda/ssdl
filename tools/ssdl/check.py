@@ -131,7 +131,8 @@ def spec_example_is_not_lowerable_as_written():
     # the -mattr name the grammar cannot express for a plain feature, and uses
     # sets whose host attribute schema is not part of the example.  The 1.1
     # lowering now accepts the predicate/STI/TII/variant/reg_file/itineraries
-    # syntax, so these are the blockers that remain.
+    # syntax, and sharing one equivalence class between two STI functions is
+    # accepted; these are the blockers that remain.
     for expected in [
         "feature Feature64Bit: error: kind = plain requires field 'mattr'",
         "set ZeroRegs: error: requires the host attribute schema",
@@ -142,10 +143,11 @@ def spec_example_is_not_lowerable_as_written():
         "'Bypass_ALU_LD'",
         "lowering: error: tii_predicate isDependencyBreaking.IsZeroReg: "
         "set 'ZeroRegs' requires the attribute schema",
-        "lowering: error: sti_function SiFive7DepBreaking.OrrXzrXzr: "
-        "emitted def 'OrrXzrXzr' already exists",
     ]:
         assert_in(expected, text)
+    # `OrrXzrXzr` is declared in both STI functions; that is one shared def,
+    # not a duplicate (section 16.4 of parser-notes).
+    assert_true("emitted def 'OrrXzrXzr'" not in text, text)
 
 
 @test
@@ -615,8 +617,9 @@ def predicate_and_hook_lowering_shapes():
     # MC is promoted to SCHED in a variant case; a SCHED case is used directly.
     assert_in(
         "SchedWriteVariant<[SchedVar<MCSchedPredicate<CheckAll<[CheckOpcode<[ADD]>, "
-        "CheckRegOperand<1, X0>]>>, [W_ALU]>, SchedVar<SchedPred, [W_ALU]>, "
-        "SchedVar<NoSchedPred, [W_ALU]>]>",
+        "CheckRegOperand<1, X0>]>>, [v11_machine_WRes_W_ALU]>, "
+        "SchedVar<SchedPred, [v11_machine_WRes_W_ALU]>, "
+        "SchedVar<NoSchedPred, [v11_machine_WRes_W_ALU]>]>",
         text,
     )
     # Top-level itineraries are attached to the machine model.
@@ -846,6 +849,11 @@ machine stub-cpu {
         subtarget = ok["-gen-subtarget"][1].read_text(encoding="utf-8")
         assert_in("ADD_SUB", subtarget)
         assert_in("MUL", subtarget)
+        # The variant really dispatches through the generated sched class: the
+        # case selects W_ALU while the default selects the materialised
+        # SchedWriteRes, so both names show up in the transition table.
+        assert_in("stub_cpu_WRes_W_XOR", subtarget)
+        assert_in("W_ALU_ReadDefault", subtarget)
 
         # Negative control: ProcResources without any WriteRes is the exact
         # failure a partial model produces, and it must stay fatal.
@@ -853,6 +861,144 @@ machine stub-cpu {
         proc = bad["-gen-subtarget"][0]
         assert_true(proc.returncode != 0, "a model without WriteRes must be rejected")
         assert_in("without defining WriteRes", proc.stderr)
+
+
+@test
+def builtin_sti_hooks_are_bound_not_redeclared():
+    """`isZeroIdiom` and friends already exist in TargetInstrPredicate.td."""
+    text, skips = emit_source(
+        """
+sti_decl isZeroIdiom { opcode_mask = true; }
+sti_decl isDependencyBreaking { opcode_mask = true; delegates = [isZeroIdiom]; }
+sti_decl isOptimizableRegisterMove { }
+machine m {
+    write W;
+}
+sti_function F : isOptimizableRegisterMove {
+    sched_model = m;
+    equiv_class C([ADD], true);
+}
+"""
+    )
+    assert_true(skips == [], skips)
+    # Binding, not redeclaration: the only declaration records are upstream's.
+    assert_true("isZeroIdiomDecl : STIPredicateDecl" not in text, text)
+    assert_true("IsDepBreakingDecl : STIPredicateDecl" not in text, text)
+    assert_in("def F : STIPredicate<IsOptimizableRegisterMoveDecl, [C]>;", text)
+    assert_in("let SchedModel = mModel in", text)
+
+    # TargetInstrPredicate.td scopes UpdatesOpcodeMask to the first two hooks.
+    expect_emit_errors(
+        "sti_decl isOptimizableRegisterMove { opcode_mask = true; }\n",
+        ["'isOptimizableRegisterMove' is a fixed TargetSubtargetInfo hook",
+         "opcode_mask must be False"],
+    )
+    expect_emit_errors(
+        "sti_decl isDependencyBreaking { opcode_mask = true; }\n",
+        ["has a fixed delegation ['IsZeroIdiom']; got []"],
+    )
+
+
+@test
+def sti_functions_can_share_an_equivalence_class():
+    """Section 5 declares OrrXzrXzr in both isZeroIdiom and isDependencyBreaking."""
+    text, skips = emit_source(
+        """
+sti_decl isZeroIdiom { }
+sti_decl isDependencyBreaking { delegates = [isZeroIdiom]; }
+machine m { write W; }
+sti_function Z : isZeroIdiom {
+    sched_model = m;
+    dep_breaking_class Shared([ADD], same_reg(1, 2), [1, 2]);
+}
+sti_function D : isDependencyBreaking {
+    sched_model = m;
+    dep_breaking_class Shared([ADD], same_reg(1, 2), [1, 2]);
+}
+"""
+    )
+    assert_true(skips == [], skips)
+    assert_true(text.count("def Shared : DepBreakingClass<") == 1, text)
+    assert_in("STIPredicate<IsZeroIdiomDecl, [Shared]>", text)
+    assert_in("STIPredicate<IsDepBreakingDecl, [Shared]>", text)
+
+    expect_emit_errors(
+        """
+sti_decl isZeroIdiom { }
+machine m { write W; }
+sti_function Z : isZeroIdiom {
+    sched_model = m;
+    dep_breaking_class Shared([ADD], same_reg(1, 2), [1, 2]);
+}
+sti_function D : isZeroIdiom {
+    sched_model = m;
+    dep_breaking_class Shared([SUB], same_reg(1, 2), [1, 2]);
+}
+""",
+        ["equivalence class 'Shared' is already declared with different contents"],
+    )
+
+
+@test
+def variant_self_reference_needs_a_local_binding():
+    """A branch that names the subject itself selects this model's binding."""
+    expect_emit_errors(
+        """
+machine m {
+    write W;
+    variant W {
+        case opcode([ADD]): [W];
+        default: [W];
+    }
+}
+""",
+        ["'W' selects itself", "add a `bind` or name a distinct SchedReadWrite"],
+    )
+
+
+@test
+def variant_cycles_are_rejected_before_tblgen():
+    """llvm-tblgen loops forever on a variant cycle; diagnose it in SSDL."""
+    expect_emit_errors(
+        """
+machine m {
+    resource P : units = 1;
+    write A; write B;
+    bind A -> [P];
+    bind B -> [P];
+    variant A {
+        case opcode([ADD]): [B];
+        default: [A];
+    }
+    variant B {
+        case opcode([ADD]): [A];
+        default: [B];
+    }
+}
+""",
+        ["variant cycle: A -> B -> A"],
+    )
+
+
+@test
+def variant_subject_cannot_be_an_alias_endpoint():
+    """A subject gets its own SchedAlias, so `alias` cannot also use it."""
+    expect_emit_errors(
+        """
+machine m {
+    resource P : units = 1;
+    write A; write B;
+    bind A -> [P];
+    bind B -> [P];
+    alias A -> B;
+    variant A {
+        case opcode([ADD]): [B];
+        default: [A];
+    }
+}
+""",
+        ["'A' is both an alias source and a variant subject"],
+    )
 
 
 @test

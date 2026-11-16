@@ -168,7 +168,7 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 | `map [...] -> [RW...]` | `InstRW` | codegen | **覆盖**该 CPU 上指令的 `SchedRW`（`SubtargetEmitter.cpp:1150-1166`）；要求指令已有 sched class，否则 fatal `No sched class for instruction.`（`CodeGenSchedule.cpp:1013`）；`Unsupported` 死字段 |
 | `map_itin [...] -> [RW...]` | `ItinRW` | codegen | 只在 `Writes.empty()` 时被查（审计结论；属 itinerary 兼容路径） |
 | `alias SRC -> DST` | `SchedAlias` | codegen | 逐处理器解析（`SubtargetEmitter.cpp:766-800`）；alias 套 alias 是 fatal，同一 RW 重复 alias 是 fatal |
-| `variant W { case P: [...] default: [...] }` | `SchedWriteVariant<[SchedVar<...>]>` + `SchedAlias` | codegen；MCA 仅 MC/Feature 谓词 | 必须显式 `default`；`SchedVar` 自身无 `SchedModel`（`TargetSchedule.td:430` 显式忽略） |
+| `variant W { case P: [...] default: [...] }` | `SchedWriteVariant<[SchedVar<...>]>` + `SchedAlias` | codegen；MCA 仅 MC/Feature 谓词 | 必须显式 `default`；`SchedVar` 自身无 `SchedModel`（`TargetSchedule.td:430` 显式忽略）；subject 是 dispatch 名，分支里的 subject 自引用要实体化成 `SchedWriteRes`/`SchedReadAdvance`（M13） |
 | `write_seq X = [...] repeat = n` | `WriteSequence` | codegen | `SchedModel` 字段被显式忽略（`:240`） |
 | `reg_file F { num_phys; classes; costs; allow_move_elim; max_move_elim_per_cy; allow_zero_elim_only }` | `RegisterFile` | **只有 MCA**（`MCA/HardwareUnits/RegisterFile.h:212`） | codegen 不读 |
 | `retire_unit { buffer; max_per_cycle }` | `RetireControlUnit` | **只有 MCA**（`lib/MCA/HardwareUnits/RetireControlUnit.cpp:22`） | 顺序核上 MCA 直接断言不可用（`:27`） |
@@ -205,13 +205,13 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 
 **D6（P1）谓词索引空间未建模。** 证据：D8。影响：`opcode_mask` 场景下谓词与掩码不一致。修法：R6。
 
-**D7（P1）STI 谓词只服务 MCA，但 SSDL 未声明这一事实。** 证据：结论 5。影响：用户以为写了 `sti_decl` 就改了调度器。修法：R13（文档 + 可选诊断）。
+**D7（P1，部分闭合）STI 谓词只服务 MCA，但 SSDL 未声明这一事实。** 证据：结论 5。影响：用户以为写了 `sti_decl` 就改了调度器。进展：三个固定 hook（`isZeroIdiom`/`isDependencyBreaking`/`isOptimizableRegisterMove`）现在只绑定上游 `STIPredicateDecl`，字段按 C++ 签名校验，重复声明会报错（`parser-notes` §16.1）。剩余：消费者事实仍需在规范里明说。修法：R13。
 
 **D8（P1）`PredicateProlog` 作用域过宽。** 证据：§4.3。修法：R7。
 
 **D9（P1）`read_default` 是隐式魔法名。** 证据：`emit_td.py:142` 特判 `read_default → ReadDefault`，v1.1 文法没有它。修法：R3。
 
-**D10（P2）`variant` 的 MCA 退化。** 证据：§3-3。修法：R8。
+**D10（P2，部分闭合）`variant` 的 MCA 退化。** 证据：§3-3。进展：`variant`/`read_variant` 现在能生成可被 `-gen-subtarget` 展开的真实记录，MC/Feature 谓词在 codegen 与 MCA 两层一致（`parser-notes` §16.2-16.3）。剩余：含 C++ 代码的 `SchedPredicate` 在 MCA 仍退化为 default。修法：R8。
 
 **D11（P2）`acquire`/`unsupported` 的层间不一致。** 证据：§3-1、§3-2。修法：R11（规范里按字段标注所属层）。
 
@@ -242,6 +242,7 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 | R11 | `bind` 的字段按消费者分层标注：`acquire` 只影响 codegen；`retire_ooo`、`reg_file`、`retire_unit`、队列只影响 llvm-mca；`InstRW.unsupported` 不生成任何东西。 | 文档 | P2 |
 | R12 | 同一 `machine` 中 `itineraries` 与 `bind` 互斥（上游 MCA 不支持 itinerary）。 | 语义 | P2 |
 | R13 | `sti_decl`/`sti_function` 标注"消费者：llvm-mca 依赖破坏分析"，并说明 MI 侧没有树内调用者。 | 文档 | P1 |
+| R14 ✅ | `variant`/`read_variant` 的 subject 是 dispatch 名：分支写回 subject 时，展开器把 `bind` 实体化为 `SchedWriteRes`、把 `advance` 实体化为 `SchedReadAdvance`；read 无 `advance` 时用 `ReadDefault`。subject 与 `alias` 互斥，subject 之间的环必须在展开期诊断（TableGen 会无限展开）。 | 语义 | P0 |
 
 ---
 

@@ -46,3 +46,4 @@ multiclass StubBinOp<string mnemonic> {
 defm ADD : StubBinOp<"add">;
 defm SUB : StubBinOp<"sub">;
 defm MUL : StubBinOp<"mul">;
+defm XOR : StubBinOp<"xor">;

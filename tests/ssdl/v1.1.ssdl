@@ -20,14 +20,17 @@ predicate AnyEmpty = any_of();
 feature StdExtXssdl : kind = extension, version = "1.0";
 
 machine v11-machine {
+    resource P : units = 1;
+
+    write W_ALU;
+    bind W_ALU -> [P], latency = 1;
+
     variant W_ALU {
         # MC is auto-promoted in a variant case.
         case all_of(opcode([ADD]), IsZeroReg(1)): [W_ALU];
         case SchedPred: [W_ALU];
         default: [W_ALU];
     }
-
-    write W_ALU;
 }
 
 tii_predicate V11TII =

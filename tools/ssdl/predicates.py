@@ -92,6 +92,30 @@ def _bool(value: bool) -> str:
     return "true" if value else "false"
 
 
+# Three STI hooks are fixed virtuals on `TargetSubtargetInfo` and already have
+# declaration records in `llvm/Target/TargetInstrPredicate.td:425-437`.  A DSL
+# `sti_decl` for one of these names selects the hook; it must not declare a
+# second record, or -gen-subtarget reports a duplicate predicate name (and can
+# recurse through the delegation graph).
+BUILTIN_STI_DECLS = {
+    "isZeroIdiom": "IsZeroIdiomDecl",
+    "isDependencyBreaking": "IsDepBreakingDecl",
+    "isOptimizableRegisterMove": "IsOptimizableRegisterMoveDecl",
+}
+
+# Fixed fields of the same declarations.  `TargetInstrPredicate.td:426-435`
+# scopes `UpdatesOpcodeMask = true` over the first two only, so
+# `isOptimizableRegisterMove` must not request an opcode mask.
+BUILTIN_STI_FIXED = {
+    "isZeroIdiom": {"opcode_mask": True, "delegates": []},
+    "isDependencyBreaking": {
+        "opcode_mask": True,
+        "delegates": ["IsZeroIdiomDecl"],
+    },
+    "isOptimizableRegisterMove": {"opcode_mask": False, "delegates": []},
+}
+
+
 @dataclass
 class PredicateLowerer:
     program: Program
@@ -112,9 +136,15 @@ class PredicateLowerer:
             d.name: d for d in self.program.decls if isinstance(d, STIDecl)
         }
         self.sti_decl_defs: dict[str, str] = {
-            name: td_def_name(name) + "Decl" for name in self.sti_decls
+            name: BUILTIN_STI_DECLS.get(name, td_def_name(name) + "Decl")
+            for name in self.sti_decls
         }
         self.named_defs: dict[str, str] = {}
+        # A DepBreakingClass/InstructionEquivalenceClass is a TableGen def: two
+        # STIPredicate functions can share it (the section 5 example declares
+        # OrrXzrXzr in both isZeroIdiom and isDependencyBreaking), but the same
+        # name with different contents is still an error.
+        self.class_defs: dict[str, str] = {}
         self.sti_functions: dict[str, tuple[str | None, list[str]]] = {}
         self.global_defs: list[tuple[str, str]] = []
         self.def_names: set[str] = set(self.reserved_names)
@@ -611,6 +641,9 @@ class PredicateLowerer:
     def lower_sti_decl(self, decl: STIDecl) -> None:
         where = f"sti_decl {decl.name}"
         def_name = self.sti_decl_defs[decl.name]
+        if decl.name in BUILTIN_STI_DECLS:
+            self.check_builtin_sti_decl(decl, where)
+            return
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", decl.name):
             self.error(where, f"{decl.name!r} is not a valid C++ predicate name")
         default = "FalsePred"
@@ -632,6 +665,51 @@ class PredicateLowerer:
         )
         self.register_def(def_name, where)
         self.global_defs.append((def_name, text))
+
+    def check_builtin_sti_decl(self, decl: STIDecl, where: str) -> None:
+        """Validate a declaration of one of the fixed `TargetSubtargetInfo` hooks.
+
+        Their signatures live in C++, so the attributes the DSL cannot change
+        are rejected rather than silently ignored.
+        """
+        fields = decl.fields
+        fixed = BUILTIN_STI_FIXED[decl.name]
+        expected = {
+            "overrides": True,
+            "expand_for_mc": True,
+            "opcode_mask": fixed["opcode_mask"],
+        }
+        for key, value in expected.items():
+            given = fields.get(key)
+            if given is None or given == value:
+                continue
+            self.error(
+                where,
+                f"{decl.name!r} is a fixed TargetSubtargetInfo hook; "
+                f"{key} must be {value!r} (got {given!r})",
+            )
+        # The C++ declaration already says `FalsePred`; writing `false` is the
+        # same predicate, any other expression is not representable.
+        given_default = fields.get("default")
+        if given_default is not None and given_default != ("bool", False):
+            self.error(
+                where,
+                f"{decl.name!r} is a fixed TargetSubtargetInfo hook; "
+                f"default must be FalsePred (got {given_default!r})",
+            )
+        # `delegates` are written with DSL names but the fixed signature lists
+        # the emitted STIPredicateDecl records.
+        given_delegates = list(fields.get("delegates", []))
+        resolved_delegates = [
+            self.sti_decl_defs.get(name, name) for name in given_delegates
+        ]
+        want = fixed["delegates"]
+        if resolved_delegates != want:
+            self.error(
+                where,
+                f"{decl.name!r} has a fixed delegation "
+                f"{[w.removesuffix('Decl') for w in want]!r}; got {given_delegates!r}",
+            )
 
     def lower_sti_classes(self, decl: STIFunction) -> None:
         """Lower the equivalence classes of an ``sti_function``.
@@ -662,7 +740,19 @@ class PredicateLowerer:
                 if operands:
                     args.append(join_list([str(n) for n in operands]))
                 text = f"def {class_name} : {base}<{', '.join(args)}>;"
+                previous = self.class_defs.get(class_name)
+                if previous is not None:
+                    if previous != text:
+                        self.error(
+                            f"{where}.{item['name']}",
+                            f"equivalence class {class_name!r} is already "
+                            "declared with different contents",
+                        )
+                    else:
+                        class_defs.append(class_name)
+                    continue
                 self.register_def(class_name, f"{where}.{item['name']}")
+                self.class_defs[class_name] = text
                 self.global_defs.append((class_name, text))
                 class_defs.append(class_name)
             elif item["kind"] == "sched_model":
