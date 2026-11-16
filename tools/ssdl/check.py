@@ -29,7 +29,8 @@ from ssdl import census_riscv as census_mod  # noqa: E402
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
-from ssdl import family_tables as family_mod  # noqa: E402
+from ssdl import family_expand as family_mod  # noqa: E402
+from ssdl import family_tables as family_tables_mod  # noqa: E402
 from ssdl import from_records as from_records_mod  # noqa: E402
 from ssdl import record_ir as record_ir_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
@@ -1649,13 +1650,142 @@ def riscv_family_table_matches_the_sources():
     table = ROOT / "data/riscv-sched-families.json"
     if not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
         return
-    text = family_mod.render(
-        family_mod.build(src / "lib/Target/RISCV", family_mod.llvm_commit(src))
+    text = family_tables_mod.render(
+        family_tables_mod.build(src / "lib/Target/RISCV", family_tables_mod.llvm_commit(src))
     )
     assert_true(
         text == table.read_text(),
         "family table is stale; regenerate with tools/ssdl/family_tables.py",
     )
+
+
+@test
+def family_expansion_preserves_scheduling_records():
+    """Expand the compressed mini family and compare its records exactly."""
+    source = (ROOT / "tests/ssdl/family-mini.ssdl").read_text(encoding="utf-8")
+    flat = family_mod.expand(source)
+    assert_in("write W_A;", flat)
+    assert_in("write W_C;", flat)
+    assert_in("bind W_A -> [P], latency = 4, uops = 1;", flat)
+    text, skips = emit_td.emit(
+        parser.parse(flat), strict=True, target_include="SSDLStub.td"
+    )
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "family.td"
+        generated.write_text(text, encoding="utf-8")
+        diff = compare_mod.compare(
+            str(generated),
+            str(ROOT / "tests/ssdl/family-mini.expected.td"),
+            compare_mod.default_tblgen(),
+            tblgen_include_dirs(),
+        )
+    assert_true(diff.ok(), "record mismatch:\n" + diff.render())
+
+
+@test
+def family_coverage_rejects_unbound_members():
+    """A bind site that covers more members than the write must be diagnosed."""
+    source = """dimension D = [A, B, C];
+
+machine f(n: INT) {
+    write W[D in [A, B]];
+    bind  W[D] -> [P], latency = n;
+}
+
+machine m : f(4) {
+    resource P : units = 1;
+}
+"""
+    origins: list[tuple[str, str, int]] = []
+    flat = family_mod.expand(source, origins=origins)
+    errors = family_mod.check_coverage(flat, origins)
+    assert_true(
+        any("bind W_C has no write" in error for error in errors),
+        f"diagnostics: {errors}",
+    )
+    assert_true(
+        any("(line 5)" in error for error in errors),
+        f"diagnostics lost the source line: {errors}",
+    )
+
+
+@test
+def family_add_axis_value_reports_every_uncovered_site():
+    """Adding M16 must name every site that does not cover the new member."""
+    source = """dimension D = [A, B];
+
+machine f(n: INT) {
+    write W[D];
+    bind  W[D in [A]] -> [P], latency = n;
+}
+
+machine m : f(4) {
+    resource P : units = 1;
+}
+"""
+    origins: list[tuple[str, str, int]] = []
+    flat = family_mod.expand(source, add_axis=("D", "C"), origins=origins)
+    errors = family_mod.check_coverage(flat, origins)
+    assert_true(any("write W_B has no bind" in e for e in errors), f"diagnostics: {errors}")
+    assert_true(any("write W_C has no bind" in e for e in errors), f"diagnostics: {errors}")
+    assert_true(all("(line 4)" in e for e in errors), f"diagnostics: {errors}")
+
+
+@test
+def sifive7_vlde_family_matches_upstream_values():
+    """A real SiFive7 sub-family must expand to the upstream record values.
+
+    The compressed source writes each sparse group once (MF8/MF4/MF2, M1, ...,
+    M8/WorstCase); the expanded records are compared field by field against the
+    pinned ``-print-records`` dump, so this is not a re-statement of the
+    generator's own output.
+    """
+    upstream_path = Path("/tmp/riscv.rec")
+    if not upstream_path.is_file():
+        return
+    source = (ROOT / "tests/ssdl/sifive7-vlde.ssdl").read_text(encoding="utf-8")
+    flat = family_mod.expand(source)
+    text, skips = emit_td.emit(
+        parser.parse(flat), strict=True, target_include="SSDLStub.td"
+    )
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = dump_records(text, tmp, "vlde", tblgen_include_dirs())
+    upstream = records_mod.load(str(upstream_path))
+
+    def by_write_type(recs, model: str) -> dict[str, str]:
+        found = {}
+        for name in recs.scoped_to(model):
+            if recs.cls.get(name) != "WriteRes" or not census_mod.explicit(recs, name):
+                continue
+            write = recs.value(name, "SchedWrite WriteType")
+            if write and write.startswith("WriteVLDE"):
+                found[write] = name
+        return found
+
+    expected = by_write_type(upstream, "SiFive7VLEN512Model")
+    got = by_write_type(generated, "vldeModel")
+    assert_true(
+        set(got) == set(expected),
+        f"write sets differ: missing {sorted(set(expected) - set(got))}, "
+        f"extra {sorted(set(got) - set(expected))}",
+    )
+    fields = [
+        ("int Latency", "Latency"),
+        ("int NumMicroOps", "NumMicroOps"),
+        ("list<int> ReleaseAtCycles", "ReleaseAtCycles"),
+        ("list<int> AcquireAtCycles", "AcquireAtCycles"),
+        ("list<ProcResourceKind> ProcResources", "ProcResources"),
+    ]
+    for write in sorted(expected):
+        for field, label in fields:
+            want = upstream.value(expected[write], field)
+            have = generated.value(got[write], field)
+            assert_true(
+                have == want,
+                f"{write}.{label}: generated {have!r}, upstream {want!r}",
+            )
 
 
 

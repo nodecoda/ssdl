@@ -1,0 +1,11 @@
+# Compressed family used by check.py: one dimension, one family parameter.
+dimension D = [A, B, C];
+
+machine fam(vlen: INT) {
+    write W[D];
+    bind  W[D] -> [P], latency = vlen / 128, uops = 1;
+}
+
+machine m512 : fam(512) {
+    resource P : units = 2;
+}
