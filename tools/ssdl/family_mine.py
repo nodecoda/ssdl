@@ -559,59 +559,70 @@ def collect_reads(recs, model: str, glued) -> dict[str, dict]:
 
 
 def emit_reads(bases: dict[str, dict], views: "AxisViews") -> list[str]:
+    """Emit the read half, mirroring the write emitter's axis handling.
+
+    An axis is only dropped when it has nothing but its ``_WorstCase``
+    member; a family that carries both real members and a worst case emits
+    the members through a view and the worst case through ``worst(AXIS)``.
+    Dropping the whole axis collapses 8 records into 1 (see ReadVWSLLV).
+    """
     lines: list[str] = []
+
+    def advance(target: str, payload: tuple) -> str:
+        cycles, _writes, _tun, unsupported = payload
+        return (
+            f"    advance {target} : cycles = {cycles}"
+            + (", unsupported = true;" if unsupported == "1" else ";")
+        )
+
     for template in sorted(bases):
         base = bases[template]
         shape = base["shape"]
-        axes = [axis for axis in shape.order if "WorstCase" not in base["axes"].get(axis, ())]
-        declared = {
-            axis: _order_members(axis, [m for m in base["axes"][axis] if m != "WorstCase"])
-            for axis in axes
-        }
-        if not axes:
-            key = next(iter(base["members"]))
-            cycles, _writes, _tun, unsupported = base["members"][key]
+        if not base["axes"]:
+            (key,) = base["members"]
             lines.append(f"    read {shape.base};")
-            lines.append(
-                f"    advance {shape.base} : cycles = {cycles}"
-                + (", unsupported = true;" if unsupported == "1" else ";")
-            )
+            lines.append(advance(shape.base, base["members"][key]))
             continue
-        if any(not declared[axis] for axis in axes):
+        all_axes = list(shape.order)
+        members = {
+            axis: _order_members(axis, [m for m in base["axes"][axis] if m != "WorstCase"])
+            for axis in all_axes
+        }
+        if any(not members[axis] for axis in all_axes):
+            payload = next(iter(base["members"].values()))
+            query = ", ".join(f"worst({axis})" for axis in all_axes)
+            target = f"{shape.base}[{query}]"
+            lines.append(f"    read {target};")
+            lines.append(advance(target, payload))
             continue
-        query = ", ".join(views.render(axis, declared[axis], shape.formats[axis]) for axis in axes)
+        query = ", ".join(
+            views.render(axis, members[axis], shape.formats[axis]) for axis in all_axes
+        )
         lines.append(f"    read {shape.base}[{query}];")
         groups: dict[tuple, list[tuple[str, ...]]] = {}
         for key, payload in base["members"].items():
-            if "LMUL=WorstCase" in key:
+            if any("=WorstCase" in part for part in key):
                 continue
             groups.setdefault(payload, []).append(key)
-        for (cycles, _writes, _tun, unsupported), keys in groups.items():
-            for block in decompose(keys, axes):
+        for payload, keys in groups.items():
+            for block in decompose(keys, all_axes):
                 sub = ", ".join(
                     views.render(axis, _order_members(axis, block[axis]), shape.formats[axis])
-                    for axis in axes
+                    for axis in all_axes
                 )
                 target = f"{shape.base}[{sub}]"
-                lines.append(
-                    f"    advance {target} : cycles = {cycles}"
-                    + (", unsupported = true;" if unsupported == "1" else ";")
-                )
+                lines.append(advance(target, payload))
         if "WorstCase" in base["axes"].get("LMUL", ()):
             key = next(k for k in sorted(base["members"]) if "LMUL=WorstCase" in k)
-            cycles, _writes, _tun, unsupported = base["members"][key]
             sub = ", ".join(
-                f"worst({views.render(axis, declared[axis], shape.formats[axis])})"
+                f"worst({views.render(axis, members[axis], shape.formats[axis])})"
                 if axis == "LMUL"
-                else views.render(axis, declared[axis], shape.formats[axis])
-                for axis in axes
+                else views.render(axis, members[axis], shape.formats[axis])
+                for axis in all_axes
             )
             target = f"{shape.base}[{sub}]"
             lines.append(f"    read {target};")
-            lines.append(
-                f"    advance {target} : cycles = {cycles}"
-                + (", unsupported = true;" if unsupported == "1" else ";")
-            )
+            lines.append(advance(target, base["members"][key]))
     return lines
 
 
