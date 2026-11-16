@@ -532,6 +532,89 @@ def render_bind(prefix, target, latency, uops, resources, release, acquire) -> s
     )
 
 
+def collect_reads(recs, model: str, glued) -> dict[str, dict]:
+    """Group ``SchedRead``/``ReadAdvance`` records by canonical template."""
+    bases: dict[str, dict] = {}
+    for name in recs.body:
+        fields = _fields(recs, name)
+        if fields.get("SchedModel") != model:
+            continue
+        read = fields.get("ReadType")
+        if not read:
+            continue
+        shape = canonicalise(read, DEFAULT_LMUL, glued)
+        base = bases.setdefault(shape.template, {"shape": shape, "axes": {}, "members": {}})
+        key = tuple(f"{axis}={shape.axes[axis]}" for axis in shape.order)
+        base["members"][key] = (
+            int(fields.get("Cycles", "0")),
+            fields.get("ValidWrites", "[]"),
+            fields.get("CycleTunables", "[]"),
+            fields.get("Unsupported", "0"),
+        )
+        for axis, member in shape.axes.items():
+            values = base["axes"].setdefault(axis, [])
+            if member not in values:
+                values.append(member)
+    return bases
+
+
+def emit_reads(bases: dict[str, dict], views: "AxisViews") -> list[str]:
+    lines: list[str] = []
+    for template in sorted(bases):
+        base = bases[template]
+        shape = base["shape"]
+        axes = [axis for axis in shape.order if "WorstCase" not in base["axes"].get(axis, ())]
+        declared = {
+            axis: _order_members(axis, [m for m in base["axes"][axis] if m != "WorstCase"])
+            for axis in axes
+        }
+        if not axes:
+            key = next(iter(base["members"]))
+            cycles, _writes, _tun, unsupported = base["members"][key]
+            lines.append(f"    read {shape.base};")
+            lines.append(
+                f"    advance {shape.base} : cycles = {cycles}"
+                + (", unsupported = true;" if unsupported == "1" else ";")
+            )
+            continue
+        if any(not declared[axis] for axis in axes):
+            continue
+        query = ", ".join(views.render(axis, declared[axis], shape.formats[axis]) for axis in axes)
+        lines.append(f"    read {shape.base}[{query}];")
+        groups: dict[tuple, list[tuple[str, ...]]] = {}
+        for key, payload in base["members"].items():
+            if "LMUL=WorstCase" in key:
+                continue
+            groups.setdefault(payload, []).append(key)
+        for (cycles, _writes, _tun, unsupported), keys in groups.items():
+            for block in decompose(keys, axes):
+                sub = ", ".join(
+                    views.render(axis, _order_members(axis, block[axis]), shape.formats[axis])
+                    for axis in axes
+                )
+                target = f"{shape.base}[{sub}]"
+                lines.append(
+                    f"    advance {target} : cycles = {cycles}"
+                    + (", unsupported = true;" if unsupported == "1" else ";")
+                )
+        if "WorstCase" in base["axes"].get("LMUL", ()):
+            key = next(k for k in sorted(base["members"]) if "LMUL=WorstCase" in k)
+            cycles, _writes, _tun, unsupported = base["members"][key]
+            sub = ", ".join(
+                f"worst({views.render(axis, declared[axis], shape.formats[axis])})"
+                if axis == "LMUL"
+                else views.render(axis, declared[axis], shape.formats[axis])
+                for axis in axes
+            )
+            target = f"{shape.base}[{sub}]"
+            lines.append(f"    read {target};")
+            lines.append(
+                f"    advance {target} : cycles = {cycles}"
+                + (", unsupported = true;" if unsupported == "1" else ";")
+            )
+    return lines
+
+
 def emit_ssdl(
     recs,
     model: str,
@@ -647,6 +730,10 @@ def emit_ssdl(
                     f"release = {_release(entry, mapping)}, acquire = [0, 1];"
                 )
 
+    reads = collect_reads(recs, model, catalogue.get("glued"))
+    # Reads may introduce new axis views, so they must run before the header is
+    # snapshotted from ``views.definitions``.
+    body = emit_reads(reads, views) + [""] + body
     header = views.definitions + ["", f"machine {family}(vlen: INT) {{"]
     footer = ["}", "", f"machine {instance} : {family}({vlen}) {{", "}"]
     return "\n".join(lines + header + body + footer) + "\n"

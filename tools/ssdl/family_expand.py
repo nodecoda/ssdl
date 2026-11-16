@@ -56,7 +56,7 @@ from pathlib import Path
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 SET_DECL_RE = re.compile(rf"^set\s+({IDENT})\s*=\s*(.+?)\s*:\s*(.+?)\s*;?\s*$")
 RANGE_RE = re.compile(r"^(-?\d+)\s*\.\.\s*(-?\d+)$")
-ITEM_HEAD_RE = re.compile(rf"^(write|bind|advance)\s+({IDENT})\s*\[")
+ITEM_HEAD_RE = re.compile(rf"^(write|read|bind|advance)\s+({IDENT})\s*\[")
 DIM_USE_WORST_RE = re.compile(rf"^worst\(\s*({IDENT})\s*\)$")
 DIM_USE_SUBSET_RE = re.compile(rf"^({IDENT})\s+in\s*\[([^\]]*)\]$")
 DIM_USE_RE = re.compile(rf"^({IDENT})$")
