@@ -173,9 +173,9 @@ def collect(
     bases: dict[str, Base] = {}
     total = 0
     for name in recs.body:
-        if recs.cls.get(name, "") != "WriteRes":
-            continue
         f = _fields(recs, name)
+        if "WriteType" not in f or "Latency" not in f:
+            continue
         if f.get("SchedModel") != model or f.get("Unsupported") != "0":
             continue
         total += 1
@@ -466,15 +466,48 @@ def _order_members(axis: str, members) -> tuple[str, ...]:
 
 
 def resource_table(recs, model: str) -> dict[str, dict]:
-    table = {}
+    """ProcResources of ``model``, plus unscoped ones its writes reference.
+
+    SiFive7 defines its units inside a model-scoped multiclass, so every
+    record carries ``SchedModel``.  Rocket and several other models define
+    them at target level (``SchedModel = ?``) and rely on the writes to name
+    them.  Both spellings must reach the emitted machine.
+    """
+    used: set[str] = set()
+    for name in recs.scoped_to(model):
+        if recs.cls.get(name) not in ("WriteRes", "SchedWriteRes"):
+            continue
+        used.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", _fields(recs, name).get("ProcResources", "")))
+
+    defs: dict[str, tuple[str, dict[str, str]]] = {}
     for name in recs.body:
         cls = recs.cls.get(name, "")
         if cls not in ("ProcResource", "ProcResGroup"):
             continue
         fields = _fields(recs, name)
-        if fields.get("SchedModel") != model:
+        if fields.get("SchedModel") not in (model, "?"):
             continue
-        kind = fields.get("Kind", name)
+        defs[fields.get("Kind", name)] = (cls, fields)
+
+    selected = {
+        kind for kind, (_cls, fields) in defs.items() if fields.get("SchedModel") == model
+    }
+    stack = list(selected | used)
+    while stack:
+        kind = stack.pop()
+        if kind in selected or kind not in defs:
+            continue
+        selected.add(kind)
+        cls, fields = defs[kind]
+        if cls == "ProcResGroup":
+            stack.extend(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", fields.get("Resources", "")))
+        super_ = fields.get("Super", "?")
+        if super_ != "?":
+            stack.append(super_)
+
+    table = {}
+    for kind in sorted(selected):
+        cls, fields = defs[kind]
         if cls == "ProcResGroup":
             members = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", fields.get("Resources", ""))
             table[kind] = {"group": members, "buffer": int(fields.get("BufferSize", "0") or 0)}
@@ -706,9 +739,9 @@ def collect_unsupported(recs, model: str, lmul, glued) -> dict[str, dict]:
     """``WriteRes`` records TableGen filled in with ``Unsupported = 1``."""
     bases: dict[str, dict] = {}
     for name in recs.body:
-        if recs.cls.get(name) != "WriteRes":
-            continue
         fields = _fields(recs, name)
+        if "WriteType" not in fields or "Latency" not in fields:
+            continue
         if fields.get("SchedModel") != model or fields.get("Unsupported") != "1":
             continue
         shape = canonicalise(fields["WriteType"], lmul, glued)
@@ -752,9 +785,9 @@ def collect_branch_writes(recs, model: str, prefix: str, lmul, glued) -> dict[st
     """``SchedWriteRes`` defs: the concrete writes a variant case selects."""
     bases: dict[str, dict] = {}
     for name in recs.body:
-        if recs.cls.get(name) != "SchedWriteRes":
-            continue
         fields = _fields(recs, name)
+        if "Latency" not in fields or "WriteType" in fields:
+            continue
         if fields.get("SchedModel") != model:
             continue
         short = _strip_anon(_strip_prefix(name, prefix))
@@ -860,29 +893,59 @@ def _pred_text(recs, name: str | None) -> str | None:
         return f"not({inner})"
     if cls == "MCSchedPredicate":
         return _mc_text(recs, fields.get("Pred"))
+    if cls == "SchedPredicate":
+        return f"sched_code({fields['Predicate']})"
     raise SystemExit(f"family_mine: unsupported SchedPredicateBase class {cls!r} ({name})")
 
 
+def _variant_cases(recs, variant: str, prefix: str, lmul, glued) -> list[dict]:
+    cases = []
+    for var in _list(_fields(recs, variant).get("Variants")):
+        var_fields = _fields(recs, var)
+        selected = [
+            canonicalise(_strip_anon(_strip_prefix(sel, prefix)), lmul, glued)
+            for sel in _list(var_fields.get("Selected"))
+        ]
+        cases.append({"pred": _pred_text(recs, var_fields.get("Predicate")), "selected": selected})
+    return cases
+
+
 def collect_variants(recs, model: str, prefix: str, lmul, glued) -> list[dict]:
-    """Alias subjects and their ``SchedVar`` cases, with expanded selections."""
+    """Alias subjects plus standalone variants, with expanded selections."""
     out: list[dict] = []
+    alias_targets: set[str] = set()
     for name in recs.body:
         if recs.cls.get(name) != "SchedAlias":
             continue
         fields = _fields(recs, name)
         if fields.get("SchedModel") != model:
             continue
+        alias_targets.add(fields["AliasRW"])
         subject = canonicalise(_strip_anon(_strip_prefix(fields["MatchRW"], prefix)), lmul, glued)
-        variant = fields["AliasRW"]
-        cases = []
-        for var in _list(_fields(recs, variant).get("Variants")):
-            var_fields = _fields(recs, var)
-            selected = [
-                canonicalise(_strip_anon(_strip_prefix(sel, prefix)), lmul, glued)
-                for sel in _list(var_fields.get("Selected"))
-            ]
-            cases.append({"pred": _pred_text(recs, var_fields.get("Predicate")), "selected": selected})
-        out.append({"subject": subject, "cases": cases})
+        out.append(
+            {
+                "subject": subject,
+                "cases": _variant_cases(recs, fields["AliasRW"], prefix, lmul, glued),
+                "kind": "variant",
+            }
+        )
+    # Some models point InstRW straight at a SchedWriteVariant; there is no
+    # alias record to carry the subject.
+    for name in recs.body:
+        cls = recs.cls.get(name)
+        if cls not in ("SchedWriteVariant", "SchedReadVariant") or name in alias_targets:
+            continue
+        fields = _fields(recs, name)
+        if fields.get("SchedModel") != model:
+            continue
+        subject = canonicalise(_strip_anon(_strip_prefix(name, prefix)), lmul, glued)
+        out.append(
+            {
+                "subject": subject,
+                "cases": _variant_cases(recs, name, prefix, lmul, glued),
+                "kind": "read_variant" if cls == "SchedReadVariant" else "variant",
+            }
+        )
     return out
 
 
@@ -896,7 +959,11 @@ def emit_variants(variants: list[dict], views: "AxisViews") -> list[str]:
     groups: dict[tuple, list[dict]] = {}
     for item in variants:
         shape = item["subject"]
-        key = (shape.template, tuple(shape.axes.get(axis) == "WorstCase" for axis in shape.order))
+        key = (
+            shape.template,
+            item.get("kind", "variant"),
+            tuple(shape.axes.get(axis) == "WorstCase" for axis in shape.order),
+        )
         groups.setdefault(key, []).append(item)
 
     lines: list[str] = []
@@ -927,6 +994,10 @@ def emit_variants(variants: list[dict], views: "AxisViews") -> list[str]:
         def name_of(shape) -> str:
             if worst:
                 return _concrete(shape, shape.axes)
+            if not subject.order:
+                # Concrete variant subject: each case selects one record, so
+                # the selection is spelled out member by member.
+                return _concrete(shape, shape.axes) if shape.order else shape.base
             if not shape.order:
                 return shape.base
             parts = []
@@ -946,7 +1017,8 @@ def emit_variants(variants: list[dict], views: "AxisViews") -> list[str]:
             target = subject.base
         else:
             target = f"{subject.base}[{', '.join(views.render(axis, members[axis], _fmt(subject, axis)) for axis in axes)}]"
-        lines.append(f"    variant {target} {{")
+        keyword = items[0].get("kind", "variant")
+        lines.append(f"    {keyword} {target} {{")
         for case in items[0]["cases"]:
             head = f"case {case['pred']}:" if case["pred"] else "default:"
             sels = ", ".join(name_of(sel) for sel in case["selected"])
@@ -1000,16 +1072,17 @@ def emit_subject_writes(variants: list[dict], declared: set[str], views: "AxisVi
             missing.append(tuple(f"{axis}={shape.axes[axis]}" for axis in axes))
         if not missing:
             continue
+        keyword = "read" if items[0].get("kind") == "read_variant" else "write"
         if not axes or any("WorstCase" in part for key in missing for part in key):
             for key in missing:
-                lines.append(f"    write {_concrete(subject, dict(part.split('=') for part in key))};")
+                lines.append(f"    {keyword} {_concrete(subject, dict(part.split('=') for part in key))};")
             continue
         for block in decompose(missing, axes):
             parts = []
             for axis in axes:
                 members = _order_members(axis, block[axis])
                 parts.append(views.render(axis, members, _fmt(subject, axis)))
-            lines.append(f"    write {subject.base}[{', '.join(parts)}];")
+            lines.append(f"    {keyword} {subject.base}[{', '.join(parts)}];")
     return lines
 
 
@@ -1085,18 +1158,36 @@ def collect_processor(recs, processor: str | None) -> tuple[list[str], list[str]
     return decls, features, tune
 
 
+def _canon_rw(name: str, prefix: str) -> str:
+    """Scheduling identity of a referenced write: defm/anon prefixes dropped."""
+    name = _strip_anon(_strip_prefix(name, prefix))
+    return re.sub(r"^.*?_WRes_", "", name)
+
+
 def collect_inst_rw(recs, model: str, prefix: str) -> list[str]:
-    """``InstRW`` records: one ``map`` per record, members spelled out."""
+    """``InstRW`` records: one ``map`` per record.
+
+    Two spellings appear upstream: explicit ``(instrs ...)`` lists and a
+    single ``(instregex "...")``.  The latter must stay a regex; splitting
+    its text into identifiers would invent instructions that do not exist.
+    """
     lines: list[str] = []
     for name in recs.scoped_to(model):
         instrs = recs.value(name, "dag Instrs")
         if instrs is None:
             continue
-        inst_names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", instrs)
-        # Drop the dag opcode keyword (`instrs`/`instregex`).
-        inst_names = [item for item in inst_names if item not in ("instrs", "instregex")]
-        rws = [n[len(prefix):] if n.startswith(prefix) else n
-               for n in _list(recs.value(name, "list<SchedReadWrite> OperandReadWrites"))]
+        if instrs.startswith("(instregex"):
+            inst_names = [
+                f"regex({json.dumps(literal)})"
+                for literal in re.findall(r'"((?:[^"\\]|\\.)*)"', instrs)
+            ]
+        else:
+            body = instrs[len("(instrs"):].rstrip(")")
+            inst_names = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", body)
+        rws = [
+            _canon_rw(n, prefix)
+            for n in _list(recs.value(name, "list<SchedReadWrite> OperandReadWrites"))
+        ]
         if not inst_names or not rws:
             continue
         unsupported = recs.value(name, "bit Unsupported")

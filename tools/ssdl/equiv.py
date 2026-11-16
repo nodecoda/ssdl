@@ -77,6 +77,9 @@ def pred_canon(recs: RecordFile, name: str | None) -> Any:
     feature = v("SubtargetFeature Feature")
     if feature:
         return ("feature", feature)
+    if c == "SchedPredicate":
+        code = v("code Predicate") or ""
+        return ("sched", " ".join(code.split()))
     mc = v("MCInstPredicate Pred")
     if mc:
         return ("mc", mc_canon(recs, mc))
@@ -190,18 +193,29 @@ MODEL_PROPS = (
 def build(recs: RecordFile, model: str, prefix: str | None = None) -> Model:
     out = Model()
     bound: set[str] = set()
-    for name in recs.scoped_to(model):
+    used_resources: set[str] = set()
+    scoped = list(recs.scoped_to(model))
+    alias_targets: set[str] = set()
+    for name in scoped:
+        if recs.value(name, "SchedReadWrite MatchRW") is not None:
+            alias_targets.add(recs.value(name, "SchedReadWrite AliasRW"))
+    for name in scoped:
+        if recs.cls.get(name) in ("WriteRes", "SchedWriteRes"):
+            used_resources.update(
+                as_list(recs.value(name, "list<ProcResourceKind> ProcResources"))
+            )
+    for name in scoped:
         if recs.value(name, "SchedWrite WriteType") is not None:
             key = canon_name(recs.value(name, "SchedWrite WriteType"), prefix)
-            if recs.cls.get(name) == "WriteRes":
-                # A binding outranks the bare subject declaration: the emitter
-                # splits an aliased subject into ``X`` plus
-                # ``<machine>_WRes_X``, and the latter carries the payload.
+            # A binding (any WriteRes subclass) outranks the bare subject
+            # declaration: the emitter splits an aliased subject into ``X``
+            # plus ``<machine>_WRes_X``, and the latter carries the payload.
+            if recs.value(name, "int Latency") is not None:
                 out.writes[key] = write_props(recs, name)
                 bound.add(key)
             elif key not in bound:
                 out.writes[key] = write_props(recs, name)
-        elif recs.cls.get(name) == "SchedWriteRes":
+        elif recs.value(name, "int Latency") is not None:
             key = canon_name(name, prefix)
             out.writes[key] = write_props(recs, name)
             bound.add(key)
@@ -224,8 +238,21 @@ def build(recs: RecordFile, model: str, prefix: str | None = None) -> Model:
             # like an alias to a WriteSequence just because both have no
             # SchedVars.
             out.variants[canon_name(match, prefix)] = (recs.cls.get(variant, ""), tuple(cases))
+        elif recs.cls.get(name) in ("SchedWriteVariant", "SchedReadVariant") and name not in alias_targets:
+            cases = []
+            for var in as_list(recs.value(name, "list<SchedVar> Variants")):
+                pred = pred_canon(recs, recs.value(var, "SchedPredicateBase Predicate"))
+                selected = tuple(
+                    canon_name(sel, prefix)
+                    for sel in as_list(recs.value(var, "list<SchedReadWrite> Selected"))
+                )
+                cases.append((pred, selected))
+            out.variants[canon_name(name, prefix)] = (recs.cls.get(name, ""), tuple(cases))
         if recs.value(name, "dag Instrs") is not None:
-            rws = as_list(recs.value(name, "list<SchedReadWrite> OperandReadWrites"))
+            rws = tuple(
+                canon_name(item, prefix)
+                for item in as_list(recs.value(name, "list<SchedReadWrite> OperandReadWrites"))
+            )
             out.instrw[(recs.value(name, "dag Instrs"), rws)] = (
                 as_bit(recs.value(name, "bit Unsupported")),
             )
@@ -236,6 +263,19 @@ def build(recs: RecordFile, model: str, prefix: str | None = None) -> Model:
                 as_int(recs.value(name, "int BufferSize"), -1),
                 recs.value(name, "ProcResourceKind Super"),
             )
+    # Target-level resources are not scoped; include the ones this model's
+    # writes actually name.
+    for name in recs.body:
+        if name in out.resources:
+            continue
+        units = recs.value(name, "int NumUnits")
+        if units is None or name not in used_resources:
+            continue
+        out.resources[name] = (
+            as_int(units),
+            as_int(recs.value(name, "int BufferSize"), -1),
+            recs.value(name, "ProcResourceKind Super"),
+        )
     # The machine model def itself does not carry ``SchedModel = ...``; it is
     # the record every other entry points at.
     if model in recs.body:

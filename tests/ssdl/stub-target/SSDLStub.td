@@ -84,6 +84,15 @@ multiclass StubBinOp<string mnemonic> {
   }
 }
 
+// Pseudos that RISC-V InstRW classes name explicitly (SiFive P600/P800).
+def PseudoCCMOVGPRNoX0 : Instruction {
+  let Namespace = "SSDLStub";
+  let Size = 4;
+  let OutOperandList = (outs GPR:$rd);
+  let InOperandList = (ins GPR:$rs1, GPR:$rs2);
+  let AsmString = "ccmov $rd, $rs1, $rs2";
+}
+
 defm ADD : StubBinOp<"add">;
 defm SUB : StubBinOp<"sub">;
 defm MUL : StubBinOp<"mul">;

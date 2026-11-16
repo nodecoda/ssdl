@@ -31,6 +31,7 @@ from ssdl import emit_td, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
 from ssdl import family_expand as family_mod  # noqa: E402
 from ssdl import family_mine as family_mine_mod  # noqa: E402
+from ssdl import family_sweep as family_sweep_mod  # noqa: E402
 from ssdl import family_tables as family_tables_mod  # noqa: E402
 from ssdl import from_records as from_records_mod  # noqa: E402
 from ssdl import record_ir as record_ir_mod  # noqa: E402
@@ -2074,6 +2075,33 @@ machine m {
     for name in ("read R_MF8;", "read R_M1;", "read R_WorstCase;"):
         assert_in(name, flat)
     assert_in("advance R_WorstCase : cycles = 2;", flat)
+
+
+@test
+def family_sweep_covers_every_riscv_model_with_a_processor():
+    """The sweep must see all 14 scheduling models, not just the four pilots."""
+    upstream_path = Path("/tmp/riscv.rec")
+    if not upstream_path.is_file():
+        return
+    models = family_sweep_mod.discover(upstream_path, None)
+    expected = {
+        "Andes45Model",
+        "GenericOOOModel",
+        "MIPSP8700Model",
+        "RocketModel",
+        "SiFiveP400Model",
+        "SiFiveP500Model",
+        "SiFiveP600Model",
+        "SiFiveP800Model",
+        "SpacemitX100Model",
+        "SpacemitX60Model",
+        "SyntacoreSCR1Model",
+        "SyntacoreSCR7Model",
+        "XiangShanKunMingHuModel",
+        "XiangShanNanHuModel",
+    }
+    assert_true({item["model"] for item in models} == expected, f"models: {len(models)}")
+    assert_true(all(item["instance"] and item["processor"] for item in models), models)
 
 
 @test

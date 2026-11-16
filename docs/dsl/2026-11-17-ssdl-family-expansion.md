@@ -1,9 +1,9 @@
 # 族/维度展开器与无损验证（Step 3）
 
 - date: 2026-11-17
-- status: **Implemented + 4 models verified（SiFive7 ×3 + Andes45）**
+- status: **Implemented + 14/14 RISC-V models verified**
 - 工具：`tools/ssdl/family_expand.py`
-- 测试：`check.py` 65/65
+- 测试：`check.py` 66/66
 - 源：LLVM `700e551714cc`
 
 ## 1. 实现了什么
@@ -202,6 +202,42 @@ Andes45 的公式覆盖与 SiFive7 不同：共享目录（每条都引用 SiFiv
 
 注意：processor 名 `sifive-7-series` 含 `-`，不是 SSDL 标识符；生成侧写作 `sifive_7_series`，`equiv.py` 在比较时统一折叠 `-` → `_`（记录本身仍由 `--in-processor/--gen-processor` 指定）。
 
+## 4.4 全 RISC-V 模型扫掠
+
+`tools/ssdl/family_sweep.py` 对 `/tmp/riscv.rec` 中每个有 processor 指向的 `SchedMachineModel` 自动生成 profile 并跑完整链路。`NoSchedModel` 被排除（它没有调度模型）。实测 **14/14 `records match`**：
+
+| model | writes | reads | variants | InstRW | resources |
+|---|---:|---:|---:|---:|---:|
+| `Andes45Model` | 4200 | 1638 | 0 | 0 | 16 |
+| `GenericOOOModel` | 4200 | 1639 | 0 | 0 | 6 |
+| `MIPSP8700Model` | 4200 | 1639 | 0 | 0 | 12 |
+| `RocketModel` | 4200 | 1639 | 0 | 1 | 7 |
+| `SiFiveP400Model` | 4188 | 1638 | 0 | 2 | 13 |
+| `SiFiveP500Model` | 4201 | 1639 | 0 | 2 | 9 |
+| `SiFiveP600Model` | 4210 | 1638 | 0 | 94 | 15 |
+| `SiFiveP800Model` | 4188 | 1638 | 0 | 2 | 18 |
+| `SpacemitX100Model` | 4184 | 1638 | 0 | 0 | 10 |
+| `SpacemitX60Model` | 4207 | 1638 | 1 | 1 | 7 |
+| `SyntacoreSCR1Model` | 4200 | 1639 | 0 | 1 | 5 |
+| `SyntacoreSCR7Model` | 4200 | 1639 | 0 | 1 | 9 |
+| `XiangShanKunMingHuModel` | 4200 | 1639 | 0 | 1 | 16 |
+| `XiangShanNanHuModel` | 4200 | 1639 | 0 | 1 | 7 |
+
+```bash
+python3 tools/ssdl/family_sweep.py --out /tmp/ssdl-sweep --jobs 4
+# 单模型调试：
+python3 tools/ssdl/family_sweep.py --only RocketModel --jobs 1
+```
+
+扫掠暴露并修掉了四个只在其他模型出现的表示问题：
+
+1. **WriteRes 子类**：`XSWriteStore` 等类不是记录名里的 `WriteRes`，矿工改按字段（`WriteType` + `Latency`）识别绑定；分支写按“有 `Latency`、无 `WriteType`”识别。
+2. **目标级 ProcResource**：Rocket 等模型的资源 `SchedModel = ?`，由写绑定引用；`resource_table` 与 `equiv` 都按“本模型写到的资源”做闭包。
+3. **`instregex`**：P600/P800 的 92 条 InstRW 用 `(instregex "...")`，必须保持正则而不是拆成标识符；生成的 `map [regex("...")]` 由 `emit_td` 还原成 `instregex`。
+4. **独立 variant**：SpacemitX60 的 `SMX60CopySchedWriteVariant` 没有 `SchedAlias` 主体，InstRW 直接引用它；矿工把它发射成无轴 `variant`，选择项按成员具体名展开；`equiv` 对独立 variant 与 alias variant 做对称比较。
+
+processor 名仍按 SSDL 标识符规则折叠 `-` → `_`；扫掠每个模型选一个 processor（按 def 名排序的第一个），模型语义与 processor 选择无关。
+
 ## 5. 剩余工作（Step 3 未完成项）
 
 1. ~~全模型压缩源~~ → 已完成：3746 行 → 12375 行，四类记录齐全（§4.3）。
@@ -217,7 +253,7 @@ Andes45 的公式覆盖与 SiFive7 不同：共享目录（每条都引用 SiFiv
 cd /home/ubuntu/llvm/llvm-dev
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
-python3 tools/ssdl/check.py   # 65/65
+python3 tools/ssdl/check.py   # 66/66
 
 # 四个已对拍实例（profile 名见 data/riscv-sched-profiles.json）
 python3 tools/ssdl/family_mine.py --emit /tmp/sf.ssdl --profile sifive7-512
