@@ -2077,6 +2077,22 @@ machine m {
 
 
 @test
+def family_read_axis_keeps_the_real_sifive7_members():
+    """The shape Step A fixed: ReadVWSLLV is 7 real members plus WorstCase."""
+    upstream_path = Path("/tmp/riscv.rec")
+    if not upstream_path.is_file():
+        return
+    recs = records_mod.load(str(upstream_path))
+    bases = family_mine_mod.collect_reads(recs, "SiFive7VLEN512Model", None)
+    base = bases["ReadVWSLLV_{{LMUL}}"]
+    assert_true(len(base["members"]) == 8, f"members: {len(base['members'])}")
+    assert_true(
+        set(base["axes"]["LMUL"]) == {"MF8", "MF4", "MF2", "M1", "M2", "M4", "M8", "WorstCase"},
+        f"LMUL: {base['axes']['LMUL']}",
+    )
+
+
+@test
 def family_map_survives_expansion_unchanged():
     """``map`` carries instruction names, which are not axis-indexed."""
     flat = family_mod.expand(

@@ -3,7 +3,7 @@
 - date: 2026-11-17
 - status: **Implemented + 4 models verified（SiFive7 ×3 + Andes45）**
 - 工具：`tools/ssdl/family_expand.py`
-- 测试：`check.py` 64/64
+- 测试：`check.py` 65/65
 - 源：LLVM `700e551714cc`
 
 ## 1. 实现了什么
@@ -196,6 +196,8 @@ Andes45Model            4200 writes, 1638 reads,  0 variants, 0 InstRW, 16 resou
 
 machine props、resource buffer、processor name/features/tunes/default_march 同在这四组比较范围内。Andes45 没有 `variant`/`InstRW`，但有 641 条上游 `Unsupported = 1` 的 WriteRes，由 `emit_unsupported` 逐条表达。
 
+Andes45 的公式覆盖与 SiFive7 不同：共享目录（每条都引用 SiFive7 TD 行号）解释了 9 个 SEG 族（2016 条）等，但 **3360 条**记录的延迟/载荷不服从这些公式，矿工报告为 `unexplained`。发射器对它们按成员或载荷组写显式 `bind`，没有引入任何新内核——因此 Step E 的停止条件（“需要新内核而内核无上游行号”）没有触发。这也解释了 Andes45 的压缩比只有 7432 → 11834（1.6×，3166 `bind` → 4200 `WriteRes`）：机制可移植，公式目录仍带 SiFive7 的行号依据。
+
 **压缩比的口径**：整模型 3746 → 12375 是 **3.3×**，低于 §1.4 用「只发射 WriteRes 半边」估出的 6.4×。原因不是回退，而是当时的 1925 行并不是完整模型：它没有 variant 子写（474）、分支写（474）、unsupported 写（300）、variant 谓词，也没有把 read 的真实成员展开。完整模型里 1 条 `bind` 平均表达 3.4 条 `WriteRes`；真正的收益仍是「加一个维度值只改一处」，行数比只作为参考。
 
 注意：processor 名 `sifive-7-series` 含 `-`，不是 SSDL 标识符；生成侧写作 `sifive_7_series`，`equiv.py` 在比较时统一折叠 `-` → `_`（记录本身仍由 `--in-processor/--gen-processor` 指定）。
@@ -215,5 +217,24 @@ machine props、resource buffer、processor name/features/tunes/default_march �
 cd /home/ubuntu/llvm/llvm-dev
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
-python3 tools/ssdl/check.py   # 64/64
+python3 tools/ssdl/check.py   # 65/65
+
+# 四个已对拍实例（profile 名见 data/riscv-sched-profiles.json）
+python3 tools/ssdl/family_mine.py --emit /tmp/sf.ssdl --profile sifive7-512
+python3 tools/ssdl/family_expand.py /tmp/sf.ssdl --check-coverage
+python3 tools/ssdl/family_expand.py /tmp/sf.ssdl -o /tmp/sf-flat.ssdl
+python3 tools/ssdl/emit_td.py /tmp/sf-flat.ssdl --target-include SSDLStub.td \
+    --records-json /tmp/sf-flat.json -o /tmp/sf-flat.td
+/home/ubuntu/llvm/builds/explore/bin/llvm-tblgen -print-records \
+    -I /home/ubuntu/llvm/trees/explore/llvm/include -I tests/ssdl/stub-target \
+    -o /tmp/sf-gen.rec /tmp/sf-flat.td
+python3 tools/ssdl/equiv.py /tmp/riscv.rec /tmp/sf-gen.rec \
+    --in-model SiFive7VLEN512Model --gen-model sifive_7_seriesModel \
+    --in-processor SIFIVE_7 --gen-processor sifive_7_series \
+    --strip-prefix VLEN512SiFive7
+
+# 另三组只需换 profile 与名字：
+#   sifive7-128x100  -> SiFive7VLEN128X100Model / sifive_x160Model / SIFIVE_X160 / VLEN128X100SiFive7
+#   sifive7-1024x300 -> SiFive7VLEN1024X300Model / sifive_x390Model / SIFIVE_X390 / VLEN1024X300SiFive7
+#   andes45          -> Andes45Model / andes_a45Model / ANDES_A45 / andes_a45（无 strip-prefix）
 ```

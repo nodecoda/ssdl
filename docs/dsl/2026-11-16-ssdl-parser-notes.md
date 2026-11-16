@@ -741,4 +741,4 @@ scope: writes, reads, variants, InstRW, resources, machine props,
 `docs/dsl/2026-11-16-ssdl-keyword-reference.md`（245 行：形态/声明/读取点），
 `check.py` 的 `keyword_reference_is_up_to_date` 防止文档与后端绑定漂移。
 
-细节见 `2026-11-16-ssdl-record-layer.md`。`check.py` 现在 64/64。
+细节见 `2026-11-16-ssdl-record-layer.md`。`check.py` 现在 65/65。
