@@ -1,0 +1,398 @@
+{
+  "llvm": "700e551714cc",
+  "source": "llvm/lib/Target/RISCV",
+  "families": {
+    "siFive7": {
+      "class": "SiFive7SchedMachineModel",
+      "template_args": [
+        {
+          "name": "vlen",
+          "type": "int"
+        }
+      ],
+      "params": [
+        "vlen",
+        "has_dual_valu",
+        "fp_latencies",
+        "has_fast_gather"
+      ],
+      "defaults": {
+        "has_dual_valu": false,
+        "fp_latencies": null,
+        "has_fast_gather": false
+      },
+      "members": [
+        {
+          "name": "SiFive7VLEN128X100Model",
+          "vlen": 128,
+          "has_dual_valu": false,
+          "fp_latencies": "Low",
+          "has_fast_gather": true
+        },
+        {
+          "name": "SiFive7VLEN512Model",
+          "vlen": 512,
+          "has_dual_valu": false,
+          "fp_latencies": "Default",
+          "has_fast_gather": false
+        },
+        {
+          "name": "SiFive7VLEN1024X300Model",
+          "vlen": 1024,
+          "has_dual_valu": true,
+          "fp_latencies": "Low",
+          "has_fast_gather": true
+        }
+      ],
+      "member_count": 3,
+      "observed_domain_product": 24,
+      "binding_site": "RISCVSchedSiFive7.td:1658"
+    }
+  },
+  "vocabulary": {
+    "LMUL": {
+      "base": "SchedMxList",
+      "values": [
+        "MF8",
+        "MF4",
+        "MF2",
+        "M1",
+        "M2",
+        "M4",
+        "M8"
+      ],
+      "subsets": {
+        "SchedMxListEEW16": [
+          "MF4",
+          "MF2",
+          "M1",
+          "M2",
+          "M4",
+          "M8"
+        ],
+        "SchedMxListEEW32": [
+          "MF2",
+          "M1",
+          "M2",
+          "M4",
+          "M8"
+        ],
+        "SchedMxListEEW64": [
+          "M1",
+          "M2",
+          "M4",
+          "M8"
+        ],
+        "SchedMxListEEW8": [
+          "MF8",
+          "MF4",
+          "MF2",
+          "M1",
+          "M2",
+          "M4",
+          "M8"
+        ],
+        "SchedMxListF": [
+          "MF4",
+          "MF2",
+          "M1",
+          "M2",
+          "M4",
+          "M8"
+        ],
+        "SchedMxListFW": [
+          "MF4",
+          "MF2",
+          "M1",
+          "M2",
+          "M4"
+        ],
+        "SchedMxListFWRed": [
+          "MF4",
+          "MF2",
+          "M1",
+          "M2",
+          "M4",
+          "M8"
+        ],
+        "SchedMxListW": [
+          "MF8",
+          "MF4",
+          "MF2",
+          "M1",
+          "M2",
+          "M4"
+        ],
+        "SchedMxListWRed": [
+          "MF8",
+          "MF4",
+          "MF2",
+          "M1",
+          "M2",
+          "M4",
+          "M8"
+        ]
+      },
+      "source": "RISCVScheduleV.td:12"
+    },
+    "SEW": {
+      "base": {
+        "M1": [
+          8,
+          16,
+          32,
+          64
+        ],
+        "M2": [
+          8,
+          16,
+          32,
+          64
+        ],
+        "M4": [
+          8,
+          16,
+          32,
+          64
+        ],
+        "M8": [
+          8,
+          16,
+          32,
+          64
+        ],
+        "MF2": [
+          8,
+          16,
+          32
+        ],
+        "MF4": [
+          8,
+          16
+        ],
+        "MF8": [
+          8
+        ]
+      },
+      "derived": {
+        "M1": {
+          "default": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "widening": [
+            8,
+            16,
+            32
+          ],
+          "fp": [
+            16,
+            32,
+            64
+          ],
+          "fp_widening": [
+            16,
+            32
+          ]
+        },
+        "M2": {
+          "default": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "widening": [
+            8,
+            16,
+            32
+          ],
+          "fp": [
+            16,
+            32,
+            64
+          ],
+          "fp_widening": [
+            16,
+            32
+          ]
+        },
+        "M4": {
+          "default": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "widening": [
+            8,
+            16,
+            32
+          ],
+          "fp": [
+            16,
+            32,
+            64
+          ],
+          "fp_widening": [
+            16,
+            32
+          ]
+        },
+        "M8": {
+          "default": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "widening": [
+            8,
+            16,
+            32
+          ],
+          "fp": [
+            16,
+            32,
+            64
+          ],
+          "fp_widening": [
+            16,
+            32
+          ]
+        },
+        "MF2": {
+          "default": [
+            8,
+            16,
+            32
+          ],
+          "widening": [
+            8,
+            16,
+            32
+          ],
+          "fp": [
+            16,
+            32
+          ],
+          "fp_widening": [
+            16,
+            32
+          ]
+        },
+        "MF4": {
+          "default": [
+            8,
+            16
+          ],
+          "widening": [
+            8,
+            16
+          ],
+          "fp": [
+            16
+          ],
+          "fp_widening": [
+            16
+          ]
+        },
+        "MF8": {
+          "default": [
+            8
+          ],
+          "widening": [
+            8
+          ]
+        }
+      },
+      "rules": {
+        "fp_removes": 8,
+        "widening_removes": 64
+      },
+      "source": "RISCVScheduleV.td:31"
+    },
+    "EEW": {
+      "values": [
+        8,
+        16,
+        32,
+        64
+      ],
+      "sites": [
+        "RISCVSchedAndes45.td:608",
+        "RISCVSchedAndes45.td:629",
+        "RISCVSchedAndes45.td:651",
+        "RISCVSchedAndes45.td:676",
+        "RISCVSchedAndes45.td:697",
+        "RISCVSchedSiFive7.td:680",
+        "RISCVSchedSiFive7.td:705",
+        "RISCVSchedSiFive8.td:372",
+        "RISCVSchedSiFive8.td:388",
+        "RISCVSchedSiFiveP600.td:581",
+        "RISCVSchedSiFiveP600.td:597",
+        "RISCVSchedSiFiveP800.td:385",
+        "RISCVSchedSpacemitX100.td:373",
+        "RISCVSchedSpacemitX100.td:383",
+        "RISCVSchedSpacemitX100.td:398",
+        "RISCVSchedSpacemitX60.td:419",
+        "RISCVSchedSpacemitX60.td:440",
+        "RISCVSchedTTAscalonX.td:546",
+        "RISCVSchedTTAscalonX.td:561",
+        "RISCVScheduleV.td:364",
+        "RISCVScheduleV.td:876"
+      ]
+    },
+    "NF": {
+      "min": 2,
+      "max": 8,
+      "values": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "sites": [
+        "RISCVSchedAndes45.td:650",
+        "RISCVSchedAndes45.td:675",
+        "RISCVSchedAndes45.td:696",
+        "RISCVSchedSiFive7.td:690",
+        "RISCVSchedSiFive7.td:704",
+        "RISCVSchedSiFive8.td:387",
+        "RISCVSchedSiFiveP600.td:596",
+        "RISCVSchedSiFiveP800.td:384",
+        "RISCVSchedSpacemitX100.td:397",
+        "RISCVSchedSpacemitX60.td:439",
+        "RISCVSchedTTAscalonX.td:547",
+        "RISCVSchedTTAscalonX.td:560",
+        "RISCVScheduleV.td:363",
+        "RISCVScheduleV.td:875"
+      ]
+    }
+  },
+  "projections": [
+    {
+      "name": "worst(LMUL)",
+      "axis": "LMUL",
+      "value": "M8",
+      "rule": "last element of SchedMxList (list is sorted ascending)",
+      "source": "RISCVScheduleV.td:49"
+    },
+    {
+      "name": "cycles",
+      "axis": [
+        "LMUL",
+        "sew",
+        "nf",
+        "VLEN"
+      ],
+      "value": "vl * ceil((SEW * NF) / DLEN), DLEN = VLEN / 2",
+      "source": "RISCVSchedSiFive7.td:91"
+    }
+  ]
+}

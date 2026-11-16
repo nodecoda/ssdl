@@ -29,6 +29,7 @@ from ssdl import census_riscv as census_mod  # noqa: E402
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
+from ssdl import family_tables as family_mod  # noqa: E402
 from ssdl import from_records as from_records_mod  # noqa: E402
 from ssdl import record_ir as record_ir_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
@@ -1572,6 +1573,88 @@ def riscv_census_matches_the_committed_table():
         text == table.read_text(),
         "census table is stale; regenerate with tools/ssdl/census_riscv.py "
         "--records /tmp/riscv.rec --llvm <llvm>",
+    )
+
+
+@test
+def sifive7_family_table_records_the_sparse_shape():
+    """The Step 2 table must pin the axes, not just the three model names.
+
+    SiFive7 is a sparse family: four parameters, three members, and the two
+    boolean axes are correlated with VLEN.  A table that only lists names
+    would let a wrong parameter tuple pass, so the exact tuple is asserted.
+    """
+    table = ROOT / "data/riscv-sched-families.json"
+    assert_true(table.is_file(), f"missing {table}")
+    data = json.loads(table.read_text())
+    family = data["families"]["siFive7"]
+    assert_true(
+        family["params"] == ["vlen", "has_dual_valu", "fp_latencies", "has_fast_gather"],
+        f"params: {family['params']}",
+    )
+    assert_true(family["member_count"] == 3, f"members: {family['member_count']}")
+    expected = {
+        ("SiFive7VLEN128X100Model", 128, False, "Low", True),
+        ("SiFive7VLEN512Model", 512, False, "Default", False),
+        ("SiFive7VLEN1024X300Model", 1024, True, "Low", True),
+    }
+    got = {
+        (
+            member["name"],
+            member["vlen"],
+            member["has_dual_valu"],
+            member["fp_latencies"],
+            member["has_fast_gather"],
+        )
+        for member in family["members"]
+    }
+    assert_true(got == expected, f"members: {sorted(got)}")
+    assert_true(
+        family["observed_domain_product"] == 24,
+        f"domain product: {family['observed_domain_product']}",
+    )
+    # The two boolean axes are not free: dual-VALU implies VLEN 1024, and fast
+    # gather is absent only in the 512 model.
+    assert_true(
+        {m["vlen"] for m in family["members"] if m["has_dual_valu"]} == {1024},
+        "has_dual_valu is not correlated with vlen",
+    )
+    assert_true(
+        {m["vlen"] for m in family["members"] if m["has_fast_gather"]} == {128, 1024},
+        "has_fast_gather is not correlated with vlen",
+    )
+
+    vocab = data["vocabulary"]
+    assert_true(
+        vocab["LMUL"]["values"] == ["MF8", "MF4", "MF2", "M1", "M2", "M4", "M8"],
+        f"LMUL: {vocab['LMUL']['values']}",
+    )
+    assert_true(vocab["LMUL"]["subsets"]["SchedMxListW"] == ["MF8", "MF4", "MF2", "M1", "M2", "M4"], "W subset")
+    assert_true(vocab["SEW"]["base"]["MF8"] == [8], f"MF8 SEW: {vocab['SEW']['base']['MF8']}")
+    assert_true(vocab["SEW"]["base"]["MF4"] == [8, 16], f"MF4 SEW: {vocab['SEW']['base']['MF4']}")
+    assert_true(vocab["SEW"]["base"]["MF2"] == [8, 16, 32], f"MF2 SEW: {vocab['SEW']['base']['MF2']}")
+    assert_true(vocab["SEW"]["base"]["M1"] == [8, 16, 32, 64], f"M1 SEW: {vocab['SEW']['base']['M1']}")
+    assert_true(vocab["EEW"]["values"] == [8, 16, 32, 64], f"EEW: {vocab['EEW']['values']}")
+    assert_true((vocab["NF"]["min"], vocab["NF"]["max"]) == (2, 8), f"NF: {vocab['NF']}")
+    assert_true(
+        data["projections"][0]["value"] == "M8",
+        f"worst(LMUL): {data['projections'][0]}",
+    )
+
+
+@test
+def riscv_family_table_matches_the_sources():
+    """Regenerating the family table from the pinned sources must be a no-op."""
+    src = Path(os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"))
+    table = ROOT / "data/riscv-sched-families.json"
+    if not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
+        return
+    text = family_mod.render(
+        family_mod.build(src / "lib/Target/RISCV", family_mod.llvm_commit(src))
+    )
+    assert_true(
+        text == table.read_text(),
+        "family table is stale; regenerate with tools/ssdl/family_tables.py",
     )
 
 
