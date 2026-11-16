@@ -726,4 +726,11 @@ scope: writes, reads, variants, InstRW, resources, machine props,
 `check.py` 用 `backend_bindings_are_declared_in_the_schema` 固定（含 240 的下界，
 正则失效不会伪装成通过）。
 
-细节见 `2026-11-16-ssdl-record-layer.md`。`check.py` 现在 39/39。
+**值也要有类型**：`td_types.py` 把字段值与位置参数解析成 `Init` 树，再按 TD 声明检查
+（`int Latency` 拒绝 `"1"`；`RISCVExtension` 的第 4 槽是 `list<SubtargetFeature>`）。
+三个 SiFive7 模型共 53943/54431/54516 个值、0 个错误；`check.py` 用
+`record_values_match_the_declared_types` 固定正向结果 + 两条负控制（§17.3 的
+`RISCVExtension` 错位、int 收到字符串）。读真实目标头文件还暴露了 `td_schema.py`
+的两个盲点：形参默认值里 `!subst(...)` 的逗号、`def Name # I # b` 这种计算出的 def 名。
+
+细节见 `2026-11-16-ssdl-record-layer.md`。`check.py` 现在 40/40。

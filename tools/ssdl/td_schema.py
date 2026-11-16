@@ -259,9 +259,9 @@ def _split_param(seg: list[tuple[str, str]]) -> Param:
     eq = None
     depth = 0
     for i, tok in enumerate(seg):
-        if tok[1] in ("<", "[", "("):
+        if tok[1] in ("<", "[", "(", "{"):
             depth += 1
-        elif tok[1] in (">", "]", ")"):
+        elif tok[1] in (">", "]", ")", "}"):
             depth -= 1
         elif tok[1] == "=" and depth == 0:
             eq = i
@@ -292,7 +292,9 @@ def parse_params(p: Parser) -> list[Param]:
         tok = p.next()
         if tok[0] == "eof":
             break
-        if tok[1] == "<":
+        if tok[1] in ("<", "(", "[", "{"):
+            # `!subst("Feature", "Has", NAME)` and `bits<3>` both appear in
+            # default values; their commas are not parameter separators.
             depth += 1
             seg.append(tok)
             continue
@@ -301,6 +303,10 @@ def parse_params(p: Parser) -> list[Param]:
                 if seg:
                     out.append(_split_param(seg))
                 break
+            depth -= 1
+            seg.append(tok)
+            continue
+        if tok[1] in (")", "]", "}") and depth > 0:
             depth -= 1
             seg.append(tok)
             continue
@@ -430,6 +436,12 @@ def parse_text(text: str) -> Schema:
                     schema.classes[name] = new
             elif tok[1] == "def":
                 name = p.next()[1]
+                computed = False
+                while not p.at(":") and not p.at(";") and not p.at("{") and p.peek()[0] != "eof":
+                    # `def FeatureStdExtZvl # I # b : ...` builds the name
+                    # from an expression; the concrete name is not a literal.
+                    computed = True
+                    p.next()
                 bases = parse_bases(p)
                 if p.at(";"):
                     p.next()
@@ -438,6 +450,8 @@ def parse_text(text: str) -> Schema:
                     fields, lets = parse_body(p)
                     if p.at(";"):
                         p.next()
+                if computed:
+                    continue
                 schema.defs[name] = Def(name, bases, fields, lets)
                 if not bases and not fields:
                     schema.dag_ops.append(name)

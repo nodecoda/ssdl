@@ -188,7 +188,7 @@ class RecordSet:
     ) -> Record:
         resolved: list[Base] = []
         for base in bases:
-            resolved.append(base if isinstance(base, Base) else Base(base))
+            resolved.append(base if isinstance(base, Base) else Base.parse(base))
         record = Record(
             name=name,
             bases=tuple(resolved),

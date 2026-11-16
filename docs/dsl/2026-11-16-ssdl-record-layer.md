@@ -52,6 +52,34 @@ Record(
 )
 ```
 
+**值也有类型（`td_types.py`）**。`record_ir.py` 只保证"后端绑定的是哪个字段"，
+另一半契约是"这个字段要什么类型的值"：字段值与位置参数被解析成 `Init` 树
+（int / bit / string / code / list / dag / def 引用 / 类应用 / `?`），再对着
+`td_schema.py` 解析出的声明检查——`int Latency` 拒绝 `"1"`，
+`list<ProcResourceKind> ProcResources` 拒绝裸字符串，
+`RISCVExtension<int, int, string, list<SubtargetFeature>, ...>` 拒绝把字符串推进 implies 槽。
+标识符指向宿主记录（指令、目标自有谓词）时无法在此解析，计为 *external* 而不是猜。
+
+```text
+$ python3 tools/ssdl/td_types.py /tmp/v512.json \
+      --source llvm/lib/Target/RISCV/{RISCVFeatures,RISCVProcessors}.td
+12063 records, 53943 values checked, 93 external, 0 errors
+```
+
+把这份表里任意一条 `Latency = 3` 改成 `"3"`，同一命令立刻报
+`…WR_….Latency: expected int, got "3"`。三个模型的完整数字：
+
+| 模型 | 记录 | 检查的值 | external | 错误 |
+|---|---|---|---|---|
+| `SiFive7VLEN512Model` | 12063 | 53943 | 93 | 0 |
+| `SiFive7VLEN128X100Model` | 12118 | 54431 | 94 | 0 |
+| `SiFive7VLEN1024X300Model` | 12130 | 54516 | 95 | 0 |
+
+顺带暴露了 `td_schema.py` 只在 target-independent 头文件上跑过的两个盲点：
+形参默认值里的 `!subst("Feature", "Has", NAME)` 逗号被当成参数分隔符；
+`def FeatureStdExtZvl # I # b : ...` 这种**计算出来的 def 名**让解析器失去同步。
+两者都只在读真实目标头文件时出现，现在都处理了。
+
 两个刻意的取舍：
 
 1. **字段值保留表达式文本**（`1`、`[PipeA]`、`true`、`SiFive7Model`）。记录层建模的是
@@ -75,6 +103,8 @@ out.append(self.define(where, name, "WriteRes", [write, resources_text], body))
 ```text
 ok   every_def_in_the_output_belongs_to_the_record_table
      # 文本里出现的 def 名集合 == 表里的 def 名集合
+ok   record_values_match_the_declared_types
+     # 25 条 stub record、98 个值全部符合声明；两条负控制被拒绝
 ```
 
 ## 3. 证据：表能独立重建 llvm-tblgen 看到的记录
@@ -184,11 +214,13 @@ python3 tools/ssdl/td_schema.py --census   # 逐条列出 name -> 声明位置
 - **llvm-tblgen 不读 JSON**。本轮的证明是"表能重建同样的 dump"，不是"宿主已直连"。
   真要直连，需要在 `llvm-tblgen` 加一个 record 加载入口（`RecordKeeper::addDef` +
   `Record::setValue`，约两三百行），那是唯一剩下的、属于宿主的改动。
-- **字段值是表达式文本，不是 `Init` 树**。给宿主做类型检查需要
-  `IntInit`/`ListInit`/`DefInit` 的显式建模；当前的粒度只保证"名字到字段的绑定"。
-- **位置参数没有名字可查**。`RegisterFile<numPhys, ...>`、`RISCVExtension<maj, min, ...>`
-  的槽位由 C++ 决定，record 层只能记录"第几个参数"，无法像字段那样对拍。
-  这也是 §4 普查里 `field` 占绝大多数、`def` 只有 3 个的原因。
+- **JSON 里存的是表达式文本**。`td_types.py` 会把它解析成 `Init` 树再检查，但
+  序列化格式没有变；如果宿主（或未来的 tblgen 加载器）要直接吃这张表，
+  值应该改成带类型的 JSON 节点（`{"kind":"int","value":1}`）。
+- **位置参数按槽位检查，不按名字**。`RegisterFile<numPhys, ...>`、
+  `RISCVExtension<maj, min, ...>` 的槽位顺序由 class 的形参表决定；`td_types.py`
+  按位置对拍形参的类型，所以"顶错槽"（`parser-notes` §17.3 的 `RISCVExtension` 那一类）已经是
+  可判定错误，但报错只能给出 `[3] (implies)`，给不出调用点。
 - **`UnsupportedFeatures`** 仍未比较：它的元素是宿主的 `Has<Feature>` 谓词。
 
 ## 8. 对最初问题的回答

@@ -33,6 +33,7 @@ from ssdl import record_ir as record_ir_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
 from ssdl import sets as sets_mod  # noqa: E402
 from ssdl import td_schema as td_schema_mod  # noqa: E402
+from ssdl import td_types as td_types_mod  # noqa: E402
 from ssdl import validate as validate_mod  # noqa: E402
 from ssdl.emit_td import SSDLEmitError  # noqa: E402
 
@@ -1225,6 +1226,28 @@ def normalize_value(value: str) -> str:
     return re.sub(r",\s+", ", ", value)
 
 
+_SCHEMA_CACHE: dict[tuple[str, ...], "td_schema_mod.Schema"] = {}
+
+
+def llvm_schema(*extra: str) -> "td_schema_mod.Schema":
+    """Parse the TD declarations once; the census and the type checks share it.
+
+    Returns None when there is no LLVM checkout, so callers can skip.
+    """
+    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    key = (src,) + extra
+    if key not in _SCHEMA_CACHE:
+        sources = td_schema_mod.default_sources(src)
+        sources.extend(Path(path) for path in extra)
+        _SCHEMA_CACHE[key] = td_schema_mod.parse_files(sources)
+    return _SCHEMA_CACHE[key]
+
+
+def has_llvm_source() -> bool:
+    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    return Path(src, "include/llvm/Target/TargetSchedule.td").is_file()
+
+
 def tblgen_include_dirs() -> list[str]:
     include_dirs = compare_mod.default_include_dirs()
     include_dirs.append(str(ROOT / "tests/ssdl/stub-target"))
@@ -1243,7 +1266,7 @@ def backend_bindings_are_declared_in_the_schema():
     src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
     if not Path(src, "utils/TableGen").is_dir():
         return  # no LLVM checkout; the rest of the checks do not need one
-    schema = td_schema_mod.parse_files(td_schema_mod.default_sources(src))
+    schema = llvm_schema()
     bindings, scanned = td_schema_mod.census(src)
     assert_true(len(scanned) >= 6, f"only scanned {len(scanned)} emitter files")
     undeclared = [
@@ -1271,14 +1294,17 @@ def inst_rw_unsupported_is_lowered():
     Inline bodies carry no trailing semicolon: llvm-tblgen rejects
     ``def ... { ... };`` outright, so the previous shape never reached a test.
     """
-    text, skips = emit_source(
-        """
+    text, skips = emit_td.emit(
+        parser.parse(
+            """
 machine m {
     write W_ALU;
     map [ADD] -> [W_ALU] : unsupported = true;
     map [SUB] -> [W_ALU] : unsupported = false;
 }
 """
+        ),
+        target_include="SSDLStub.td",
     )
     assert_true(skips == [], skips)
     assert_in(
@@ -1290,9 +1316,6 @@ machine m {
         text,
     )
     with tempfile.TemporaryDirectory() as tmp:
-        # `text` already starts with `include "RISCV.td"`; SSDLStub.td
-        # includes the same file, so adding it here would define ValueType
-        # twice.  InstRW needs only the instruction names from RISCV.td.
         recs = dump_records(text, tmp, "inst_rw_unsupported", tblgen_include_dirs())
     assert_true(dump_field(recs, "m_IRW_ADD", "Unsupported") == "1", "Unsupported bit")
     assert_true(dump_field(recs, "m_IRW_SUB", "Unsupported") == "0", "Unsupported bit")
@@ -1307,10 +1330,9 @@ def record_table_fields_are_declared_by_their_classes():
     checkable: a renamed or misspelled field would land on a class that does
     not declare it, and llvm-tblgen would silently use the default.
     """
-    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    if not Path(src, "include/llvm/Target/TargetSchedule.td").is_file():
+    if not has_llvm_source():
         return
-    schema = td_schema_mod.parse_files(td_schema_mod.default_sources(src))
+    schema = llvm_schema()
     records = record_ir_mod.RecordSet()
     emit_td.emit(
         parser.parse_file(str(ROOT / "tests/ssdl/stub-mini.ssdl")),
@@ -1327,6 +1349,45 @@ def record_table_fields_are_declared_by_their_classes():
             if field_name not in declared:
                 unknown.append(f"{record.name}.{field_name}")
     assert_true(unknown == [], f"fields not declared by their class: {unknown}")
+
+
+@test
+def record_values_match_the_declared_types():
+    """Values are typed against the TD declarations, not just carried as text.
+
+    Positive: every value the stub model emits checks out.  Negative: the two
+    mistakes this project has actually made (`"1"` where an int belongs, a
+    string pushed into `RISCVExtension`'s implies slot) are rejected.
+    """
+    if not has_llvm_source():
+        return
+    schema = llvm_schema(str(ROOT / "tests/ssdl/stub-target/SSDLStub.td"))
+
+    records = record_ir_mod.RecordSet()
+    emit_td.emit(
+        parser.parse_file(str(ROOT / "tests/ssdl/stub-mini.ssdl")),
+        strict=True,
+        target_include="SSDLStub.td",
+        records=records,
+    )
+    checker = td_types_mod.check(records, schema)
+    assert_true(
+        checker.errors == [],
+        "type errors: " + "; ".join(d.render() for d in checker.errors),
+    )
+    assert_true(checker.checked >= 80, f"only {checker.checked} values checked")
+
+    bad = record_ir_mod.RecordSet()
+    bad.add("BadLatency", ["ReadAdvance<R_ALU, \"1\">"])
+    # The 17.3 bug: field/value shifted into the `list<SubtargetFeature>`
+    # implies slot because the emitter forgot the empty list.
+    bad.add("BadSlot", ['RISCVExtension<2, 1, "d", "field", "value">'])
+    bad.add("BadField", ["WriteRes<W_ALU, [P]>"], [("Latency", '"1"')])
+    errors = td_types_mod.check(bad, schema).errors
+    messages = "\n".join(d.render() for d in errors)
+    assert_in("expected int", messages)
+    assert_in("expected list", messages)
+    assert_in("BadField.Latency: expected int", messages)
 
 
 @test
