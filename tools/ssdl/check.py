@@ -664,6 +664,51 @@ def hook_lowering_negative_controls():
 
 
 @test
+def attribute_schema_exports_tablegen_records():
+    from ssdl import schema as schema_mod
+
+    records = """def ADD {  // Instruction
+  bit isPseudo = 0;
+  bit mayLoad = 0;
+  bit mayStore = 1;
+  int Size = 4;
+}
+def BROKEN {  // Instruction
+  bit mayLoad = ?;
+  bit hasSideEffects = ?;
+  dag InOperandList = (ins i32imm:$imm);
+}
+def X0 {  // Register
+  bit isConstant = 1;
+  bit isArtificial = 0;
+}
+def GPR64 {  // RegisterClass
+  bit isAllocatable = 1;
+}
+"""
+    merged = schema_mod.build_schema(
+        records,
+        {"inst": {"ADD": {"category": "alu"}}, "reg": {"X0": {"is_zero": True}}},
+    )
+    assert_true(merged["order"]["inst"] == ["ADD", "BROKEN"], "inst order")
+    assert_true(merged["order"]["reg"] == ["X0"], "reg order")
+    assert_true(
+        merged["inst"]["ADD"]
+        == {"is_pseudo": False, "may_load": False, "may_store": True, "category": "alu"},
+        f"ADD attrs: {merged['inst']['ADD']!r}",
+    )
+    assert_true(
+        merged["inst"]["BROKEN"] == {"may_load": None, "has_side_effects": None},
+        "unset bit must stay tri-state (null), not be dropped or coerced to false",
+    )
+    assert_true(
+        merged["reg"]["X0"] == {"is_constant": True, "is_artificial": False, "is_zero": True},
+        f"X0 attrs: {merged['reg']['X0']!r}",
+    )
+    assert_true("GPR64" not in merged["reg"], "register classes are not registers")
+
+
+@test
 def anonymous_records_are_canonicalized():
     a = 'include "RISCV.td"\ndef X : CheckAll<[CheckOpcode<[ADD]>]>;\n'
     b = 'include "RISCV.td"\ndef X : CheckAll<[CheckOpcode<[ADD]>]>;\n'

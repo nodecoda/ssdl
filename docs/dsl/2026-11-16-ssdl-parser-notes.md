@@ -377,7 +377,7 @@ read_variant R { ... }
 ### 11.5 证据
 
 ```bash
-python3 tools/ssdl/check.py                 # 18/18
+python3 tools/ssdl/check.py                 # 20/20
 python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl \
     --strict --attrs tests/ssdl/attrs.json -o /tmp/gen.td
 python3 tools/ssdl/compare.py /tmp/gen.td tests/ssdl/sifive7-mini.expected.td
@@ -387,10 +387,36 @@ fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`pred
 
 ### 11.6 仍然开放
 
-- **M5 属性 schema 来源**：`attrs.json` 是测试夹具，真实实现需要从 `RISCVInstrInfo`/`RISCVRegisterInfo` 或生成器导出；schema 的词法/位置未定。
+- **M5 属性 schema 来源**：`schema.py` 已能从 `llvm-tblgen -print-records` 导出指令/寄存器属性（RISCV：16962 inst / 398 reg），并用 `--merge` 叠加宿主语义属性（如零寄存器）。三态已保留为 JSON `null`（`mayLoad = ?` 在 Instruction 记录上 51 条）；缺口转到消费端：`sets.py` 还没有把"与 null 比较"升级为错误。见 `2026-11-16-ssdl-domain-model.md` D5/D13。
 - **`map=`**：`reg_is`/`imm_is` 等的函数映射没有对应 SSDL 语义，lowering 直接报错。
-- **宏参数**：参数目前只在操作数下标位置替换；用参数传 opcode/寄存器集合尚未支持。
-- **`write_seq` / `combo_func` / `map_itin` / 调度 `alias`**：仍 skip（`--strict` 报错）。`map_itin` 已有明确的 `ItinRW` 落点，下一轮可补。
-- **`sti_function.delegates`（M7）**：`STIPredicate` 没有 delegates 字段，仍然显式报错。
-- **SchedModel 绑定**：本轮沿用既有扁平输出，`WriteRes`/`InstRW`/`RegisterFile` 等记录没有统一包在 `let SchedModel = ... in`；真实接入前需要补这一层。`STIPredicate` 是例外，因为 SSDL 显式写了 `sched_model`。
-- **验证深度**：只做 `-print-records`，没有跑 `-gen-subtarget`/`-gen-instr-info`，也没有替换在树 `RISCV*.td` 做完整构建。
+- **`combo_func`**：`ProcessorItineraries` 上没有挂载点，仍然 skip（`--strict` 报错）。
+- **`sti_function.delegates`（M7）**：`STIPredicate` 本身没有 delegates 字段；`delegates` 属于 `STIPredicateDecl`（`TargetInstrPredicate.td:405-408`），因此只能在 `sti_decl` 上表达。
+- **验证深度**：仍只做 `-print-records`。`-gen-subtarget`/`-gen-instr-info` 已实测，失败原因是模型完整性而非展开器形状，见 §12 与领域模型 §7。
+
+### 11.7 本轮关闭的项
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| SchedModel 作用域 | 关闭 | 输出分三类桶：prelude（FuncUnit/Bypass/InstrItinClass/ProcessorItineraries）、unscoped（SchedWrite/SchedRead/ProcessorModel/ProcessorAlias）、scoped（`let SchedModel = ... in { ... }`）；`-print-records` 确认 `PipeA`/`WR_W_ALU`/`IRW_LD`/`SchedAlias`/`RegisterFile` 等都带 `SchedModel` |
+| `write_seq` | 关闭 | `WriteSequence<[...], N>`；名字先收集，支持前向引用 |
+| 调度 `alias` | 关闭 | `SchedAlias_<SRC>_<DST> : SchedAlias<SRC, DST>` |
+| `map_itin` | 关闭 | `ItinRW<[IIC...], [RW...]>`，名字对 `itin_class` 与机器内 `itin` 解析 |
+| 宏参数传集合/特性 | 关闭 | `IsALUAndZero([ADD,SUB], ZeroRegs, 1)` → `CheckAll<[CheckOpcode<[ADD,SUB]>, CheckRegOperand<1, X0>]>` |
+| 属性 schema 导出 | 关闭（导出）/ 部分（消费） | `schema.py` 导出 + `--merge`；三态写 `null`；`check.py` 的 `attribute_schema_exports_tablegen_records` 覆盖；`sets.py` 的 null 比较待做 |
+
+## 12. 2026-11-16 领域模型审计
+
+规范增量见 `2026-11-16-ssdl-domain-model.md`。§11 的 lowering 是"记录形状正确"，本轮补的是"消费者契约"。对新实现的直接影响：
+
+| 发现 | 对实现的含义 |
+|---|---|
+| `write`/`read` 是目标级词表（`RISCVSchedule.td:16`），`resource` 是模型级 | 两机模型必然撞名（已实测）；`emit_td.py` 需要把 `write`/`read`/`write_seq` 提升到单一目标命名空间 |
+| 有 `WriteRes` 就必须覆盖全部可达 `SchedWrite`（`SubtargetEmitter.cpp:984-989`） | `machine` 是完整模型，不是补丁；`complete_model = false` 不解除该要求 |
+| `WriteRes` 的 `release`/`acquire` 数组默认值与长度约束（`SubtargetEmitter.cpp:1254-1266`） | 展开器应校验长度相等；`acquire` 只影响 codegen |
+| `InstRW` 是覆盖且要求已有 sched class（`CodeGenSchedule.cpp:1013`） | `map` 不能给"没有 SchedRW 的指令"补调度 |
+| STI 谓词只有 llvm-mca 消费者（`MCA/InstrBuilder.cpp:724`） | `sti_decl`/`sti_function` 必须在规范中标注消费层 |
+| 属性三态（`mayLoad = ?` 190 处） | `set` 的比较语义需要 `unknown`，`schema.py` 需要保留 `?` |
+| `PredicateProlog` 只注入 `resolveSchedClass`（`SubtargetEmitter.cpp:1943-1949`） | prolog 只能被 SCHED sort 引用 |
+| itinerary 与 MCA 互斥（`tools/llvm-mca/llvm-mca.cpp:446-449`） | 同一 machine 不应同时给 `bind` 与 `itineraries` |
+
+上述八条都还是**规范/实现缺口**，不在本轮代码范围内；下一轮的顺序应为 R1（词表所有权）→ R4/R10（完整性/覆盖）→ R5（三态）→ R2（资源命名）。
