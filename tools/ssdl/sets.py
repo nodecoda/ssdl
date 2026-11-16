@@ -60,6 +60,11 @@ class AttributeSchema:
 
 
 def _type_of(value: Any) -> str:
+    if value is None:
+        # JSON null means the host could not determine the attribute.  It is
+        # not false: TableGen leaves ``mayLoad = ?`` / ``hasSideEffects = ?``
+        # unset until inference runs, so the distinction is load-bearing.
+        return "unknown"
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, int):
@@ -111,7 +116,7 @@ class SetEvaluator:
             names = [
                 entity
                 for entity in self.schema.entities(kind)
-                if self.eval_cond(cond, entity, kind, where)
+                if self.eval_cond(cond, entity, kind, where) is True
             ]
             return kind, _dedupe(names)
         if expr[0] == "set_list":
@@ -163,16 +168,30 @@ class SetEvaluator:
         return "inst"
 
     # -- conditions ------------------------------------------------------
-    def eval_cond(self, expr, entity: str, kind: str, where: str) -> bool:
+    def eval_cond(self, expr, entity: str, kind: str, where: str) -> bool | None:
+        """Three-valued logic: ``None`` means "unknown".
+
+        An unknown attribute poisons the whole expression; the entity is
+        excluded, and the diagnostic was already reported where the unknown
+        value was read.
+        """
         tag = expr[0]
         if tag == "binop":
             op, left, right = expr[1], expr[2], expr[3]
             if op in ("&&", "||"):
                 lv = self.eval_cond(left, entity, kind, where)
                 rv = self.eval_cond(right, entity, kind, where)
-                return (lv and rv) if op == "&&" else (lv or rv)
+                if op == "&&":
+                    if lv is False or rv is False:
+                        return False
+                    return None if (lv is None or rv is None) else True
+                if lv is True or rv is True:
+                    return True
+                return None if (lv is None or rv is None) else False
             lv, lt = self.eval_atom(left, entity, kind, where, allow_attr=True)
             rv, rt = self.eval_atom(right, entity, kind, where, allow_attr=False)
+            if "unknown" in (lt, rt) or "invalid" in (lt, rt):
+                return None
             if op in ("==", "!="):
                 if lt != rt:
                     self.error(
@@ -194,8 +213,10 @@ class SetEvaluator:
             return lv >= rv
         if tag == "unop" and expr[1] == "!":
             value = self.eval_cond(expr[2], entity, kind, where)
-            return not value
+            return None if value is None else not value
         value, value_type = self.eval_atom(expr, entity, kind, where, allow_attr=True)
+        if value_type == "unknown":
+            return None
         if value_type != "bool":
             self.error(where, f"condition for {kind} {entity!r} is {value_type}, not bool")
             return False
@@ -227,11 +248,15 @@ class SetEvaluator:
                     where,
                     f"attribute {name!r} is not declared for {kind} {entity!r}",
                 )
-                return False, "bool"
+                return None, "unknown"
             value = attrs[name]
             if value is None:
-                self.error(where, f"attribute {name!r} has no value for {kind} {entity!r}")
-                return False, "bool"
+                self.error(
+                    where,
+                    f"attribute {name!r} is unknown for {kind} {entity!r}; "
+                    "a comparison against an unknown value is an error",
+                )
+                return None, "unknown"
             return value, _type_of(value)
         if tag == "attr":
             ent, name = atom[1], atom[2]
@@ -246,8 +271,15 @@ class SetEvaluator:
                     where,
                     f"attribute {name!r} is not declared for {kind} {entity!r}",
                 )
-                return False, "bool"
+                return None, "unknown"
             value = attrs[name]
+            if value is None:
+                self.error(
+                    where,
+                    f"attribute {name!r} is unknown for {kind} {entity!r}; "
+                    "a comparison against an unknown value is an error",
+                )
+                return None, "unknown"
             return value, _type_of(value)
         self.error(where, f"unsupported attribute expression {atom!r}")
         return False, "bool"

@@ -201,7 +201,7 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 
 **D4（P0）`map` 的覆盖语义与前置条件。** 证据：`SubtargetEmitter.cpp:1150-1166`、`CodeGenSchedule.cpp:1013`。影响：`map` 不是"给新指令补调度"，而是"覆盖已有 sched class"；没有 `SchedRW` 的指令不能只靠 `map` 救。修法：R10。
 
-**D5（P1）属性三态被压成二态。** 证据：`mayLoad = ?` 190 处、`hasSideEffects = ?` 169 处；`getValueAsBitOrUnset`（`CodeGenInstruction.cpp:459-465`）。影响：`inst(may_load == false)` 会把未知当否。修法：R5。
+**D5（P1，已闭合）属性三态被压成二态。** 证据：`mayLoad = ?` 190 处（Instruction 记录 51 条）、`hasSideEffects = ?` 169 处（37 条）；`getValueAsBitOrUnset`（`CodeGenInstruction.cpp:459-465`）。修法：R5，已落地——`schema.py` 导出 `null`，`sets.py` 用三值逻辑，未知参与比较即错误。
 
 **D6（P1）谓词索引空间未建模。** 证据：D8。影响：`opcode_mask` 场景下谓词与掩码不一致。修法：R6。
 
@@ -217,7 +217,7 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 
 **D12（P2）`feature.implies` 双闭包。** 证据：§4.4。修法：R9。
 
-**D13（P2）三态在消费端还没有约束。** 导出端已修：`schema.py` 把 `?` 写成 JSON `null`（不再是静默丢弃），并有 `attribute_schema_exports_tablegen_records` 自检；但 `sets.py` 目前只把 `null` 当"非真"，还没有把"与未知值比较"升级为错误。修法：R5 的剩余部分。
+**D13（P2，已闭合）三态在消费端还没有约束。** 导出端已修：`schema.py` 把 `?` 写成 JSON `null`（不再是静默丢弃），并有 `attribute_schema_exports_tablegen_records` 自检；消费端也已修：`sets.py` 的 `eval_cond` 返回 `bool | None`，`&&`/`||`/`!` 按三值逻辑传播，读取未知属性时直接报错。
 
 **D14（P2）itinerary 与资源模型混用。** 证据：§4.8。修法：R12。
 
@@ -233,7 +233,7 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 | R2 ✅ | `resource` / `res_group` 的 def 名必须全目标唯一；两个 machine 使用同名资源时给出明确诊断，并建议改名（不做隐式前缀，保持 SSDL↔TD 名字 1:1）。备选：按 machine 加前缀，但那会破坏可对拍性。 | 语义 | P0 |
 | R3 | `read_default` 列为保留标识符，文法上等价于"该操作数使用上游 `ReadDefault`"。 | 文法 | P0 |
 | R4 | 明确 `machine` 是**完整模型**：`complete_model = false` 只关闭完整性检查，不关闭 `WriteRes` 覆盖要求；展开器在 `--strict` 下对"声明了 resource 但没有任何 `bind`"报错。 | 语义 | P0 |
-| R5 | `set` 的属性取值域改为 `true/false/unknown` 三态；任何比较遇到 `unknown` 都是错误（或要求显式 `unknown` 谓词）。`schema.py` 输出 `"?"`，不静默丢弃。 | 文法/工具 | P1 |
+| R5 ✅ | `set` 的属性取值域改为 `true/false/unknown` 三态；任何比较遇到 `unknown` 都是错误。`schema.py` 输出 `null`（JSON 的 unknown），`sets.py` 用三值逻辑传播。 | 文法/工具 | P1 |
 | R6 | 谓词的操作数下标必须声明索引空间：默认 MI 下标；使用 `opcode_mask` 时必须显式给出掩码下标列表，且掩码长度按 MCA use 索引计。 | 文法 | P1 |
 | R7 | `predicate_prolog` 限定只对 SCHED sort 生效；`assembler`/`tii_predicate`/isel 谓词引用 prolog 符号是错误。 | 语义 | P1 |
 | R8 | `variant` 的 case 谓词含 C++（`SchedPredicate<code>`）时，若该机器 `expand_for_mc = true`，必须报错或要求显式 `mc_only = true` 标注。 | 语义 | P2 |

@@ -552,6 +552,50 @@ def set_evaluation_negative_controls():
 
 
 @test
+def unknown_attribute_is_not_false():
+    """JSON null means unknown, and unknown must never be folded to false."""
+
+    def schema() -> "sets_mod.AttributeSchema":
+        return sets_mod.AttributeSchema(
+            {
+                "order": {"inst": ["ADD", "SUB"], "reg": ["X0"]},
+                "inst": {
+                    "ADD": {"may_load": None, "category": "alu"},
+                    "SUB": {"may_load": False, "category": "alu"},
+                },
+                "reg": {"X0": {"is_zero": True}},
+            }
+        )
+
+    program = parser.parse("set L = inst(may_load == false);")
+    ev = sets_mod.SetEvaluator(program, schema())
+    ev.expand_set("L", "test")
+    try:
+        ev.finish()
+    except sets_mod.SetError as exc:
+        text = "\n".join(exc.errors)
+        assert_in("attribute 'may_load' is unknown for inst 'ADD'", text)
+        assert_in("comparison against an unknown value is an error", text)
+    else:
+        raise Failure("a comparison against an unknown attribute must be an error")
+
+    program = parser.parse("set L = inst(!may_load);")
+    ev = sets_mod.SetEvaluator(program, schema())
+    kind, names = ev.expand_set("L", "test")
+    assert_true(kind == "inst", kind)
+    assert_true(
+        names == ["SUB"],
+        f"unknown must not behave like false (ADD must be excluded): {names!r}",
+    )
+    try:
+        ev.finish()
+    except sets_mod.SetError:
+        pass
+    else:
+        raise Failure("negating an unknown attribute must still report it")
+
+
+@test
 def predicate_and_hook_lowering_shapes():
     source = (ROOT / "tests/ssdl/v1.1.ssdl").read_text(encoding="utf-8")
     text, skips = emit_source(source, strict=True, attrs=attrs_schema())

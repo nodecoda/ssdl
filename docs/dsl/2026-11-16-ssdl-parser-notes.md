@@ -379,7 +379,7 @@ read_variant R { ... }
 ### 11.5 证据
 
 ```bash
-python3 tools/ssdl/check.py                 # 24/24
+python3 tools/ssdl/check.py                 # 25/25
 python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl \
     --strict --attrs tests/ssdl/attrs.json -o /tmp/gen.td
 python3 tools/ssdl/compare.py /tmp/gen.td tests/ssdl/sifive7-mini.expected.td
@@ -441,7 +441,7 @@ fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`pred
 ### 13.2 证据
 
 ```bash
-python3 tools/ssdl/check.py    # 24/24
+python3 tools/ssdl/check.py    # 25/25
 ```
 
 新增自检：
@@ -456,4 +456,30 @@ fixture 对拍仍通过（`compare.py` records match）；`tests/ssdl/sifive7-mi
 ### 13.3 仍然开放
 
 - 用户命名的 `resource`/`res_group`/`reg_file` 仍要求全目标唯一（R2 选择"显式唯一 + 诊断"，不做隐式前缀）；
-- 属性三态的比较语义（D5）与 `-gen-subtarget` 的完整模型验收（§12）未动。
+- `-gen-subtarget` 的完整模型验收（§12）未动；属性三态已在 §14 闭合。
+
+## 14. 2026-11-16 属性三态（D5/D13）
+
+### 14.1 规则
+
+- schema 用 JSON `null` 表示 unknown（对应 TableGen 未推断的 `?`），与"属性未声明"是两种不同错误；
+- `sets.py` 的 `eval_cond` 返回 `bool | None`：`unknown && false = false`、`unknown && true = unknown`、`unknown || true = true`、`unknown || false = unknown`、`!unknown = unknown`；
+- 被 unknown 污染的实体不进入结果集，同时报错；
+- 取值处（`ident` 与 `Ent.name` 两种 atom）都报 `attribute 'X' is unknown for inst 'Y'; a comparison against an unknown value is an error`。
+
+### 14.2 为什么必须这样
+
+上游 `-print-records` 里 `mayLoad = ?` 有 190 处（Instruction 记录 51 条）、`hasSideEffects = ?` 169 处（37 条）；`CodeGenDAGPatterns::InferInstructionFlags` 事后才推断，且未推断的 `hasSideEffects` 默认按 `true` 保守处理（`CodeGenDAGPatterns.cpp:4309-4312`）。把 `?` 当 `false` 会让 `inst(may_load == false)` 选中可能访存的指令，而 `inst(!may_load)` 会把未知翻成 `true`——这正是三值逻辑要禁止的翻转。
+
+### 14.3 证据
+
+```bash
+python3 tools/ssdl/check.py    # 25/25
+```
+
+新增自检 `unknown_attribute_is_not_false`：同一 schema 下 `inst(may_load == false)` 报错；`inst(!may_load)` 只选中 `may_load = false` 的指令（`SUB`），不选中 unknown 的（`ADD`）。
+
+### 14.4 仍然开放
+
+- schema 的**来源**（`schema.py` 导出 + `--merge`）已可用，但还没有把在树 RISC-V 的 `--merge` 宿主属性（如 `is_zero`）固化成生成步骤；
+- `unknown` 是否需要一个显式谓词（如 `unknown(may_load)`）尚未定，当前一律禁止比较。
