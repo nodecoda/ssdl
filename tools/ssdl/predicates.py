@@ -258,6 +258,15 @@ class PredicateLowerer:
             return self.lower_sched(decl.expr, new_env, f"{where}.{name}")
         return self.lower_mc(decl.expr, new_env, f"{where}.{name}")
 
+    @staticmethod
+    def resolve_param(arg, env: dict[str, Any] | None):
+        """Follow macro parameters used as set/entity arguments."""
+        seen: set[str] = set()
+        while env and arg[0] == "ident" and arg[1] in env and arg[1] not in seen:
+            seen.add(arg[1])
+            arg = env[arg[1]]
+        return arg
+
     def operand_index(self, arg, env: dict[str, Any], where: str) -> int:
         tag = arg[0]
         if tag == "int":
@@ -327,7 +336,7 @@ class PredicateLowerer:
                 return "FalsePred"
             return self.named_call(name, args, env, where)
         if name == "opcode" or name == "pseudo":
-            names = self.inst_list(args[0], where)
+            names = self.inst_list(args[0], where, env)
             if not names:
                 return "FalsePred"
             cls = "CheckOpcode" if name == "opcode" else "CheckPseudo"
@@ -355,7 +364,7 @@ class PredicateLowerer:
         if name == "reg_is":
             index = self.operand_index(args[0], env, where)
             self.reject_mapper(args[2:], where, name)
-            regs = self.reg_list(args[1], where)
+            regs = self.reg_list(args[1], where, env)
             if not regs:
                 return "FalsePred"
             checks = [f"CheckRegOperand<{index}, {reg}>" for reg in regs]
@@ -480,7 +489,7 @@ class PredicateLowerer:
 
         name, args = expr[1], expr[2]
         if name == "feature":
-            feat = self.feature_def(args[0], where)
+            feat = self.feature_def(args[0], where, env)
             return f"FeatureSchedPredicate<{feat}>"
         if name == "sched_code":
             code = self.code_arg(args[0], where, name)
@@ -512,7 +521,8 @@ class PredicateLowerer:
         self.error(where, f"unsupported scheduling predicate {name!r}")
         return "NoSchedPred"
 
-    def feature_def(self, arg, where: str) -> str:
+    def feature_def(self, arg, where: str, env: dict[str, Any] | None = None) -> str:
+        arg = self.resolve_param(arg, env)
         name = arg[1] if arg[0] == "ident" else str(arg)
         if name not in self.feature_defs:
             self.error(where, f"unknown feature {name!r}")
@@ -559,12 +569,18 @@ class PredicateLowerer:
         return f"({name} {', '.join(feats)})"
 
     # -- set/instruction arguments ---------------------------------------
-    def inst_list(self, arg, where: str) -> list[str]:
+    def inst_list(
+        self, arg, where: str, env: dict[str, Any] | None = None
+    ) -> list[str]:
+        arg = self.resolve_param(arg, env)
         if self.sets is not None:
             return self.sets.resolve(arg, "inst", where)
         return self.simple_entity_list(arg, "inst", where)
 
-    def reg_list(self, arg, where: str) -> list[str]:
+    def reg_list(
+        self, arg, where: str, env: dict[str, Any] | None = None
+    ) -> list[str]:
+        arg = self.resolve_param(arg, env)
         if self.sets is not None:
             return self.sets.resolve(arg, "reg", where)
         return self.simple_entity_list(arg, "reg", where)

@@ -156,6 +156,11 @@ def fixture_lowers_to_the_handwritten_records():
     text_again, _ = emit_source(source, strict=True, attrs=attrs)
     assert_true(text == text_again, "emitter is not deterministic")
 
+    # Records that carry a SchedModel must actually be scoped to it.
+    assert_in("let SchedModel = ssdl_sifive_7Model in {", text)
+    assert_in("def W_MULDIV_SEQ : WriteSequence<[W_ALU, W_ALU], 2>;", text)
+    assert_in("def ITINRW_IIC_iALU : ItinRW<[W_ALU, ReadDefault], [IIC_iALU]>;", text)
+
     with tempfile.TemporaryDirectory() as tmp:
         generated = Path(tmp) / "generated.td"
         generated.write_text(text, encoding="utf-8")
@@ -585,6 +590,27 @@ def predicate_and_hook_lowering_shapes():
 
 
 @test
+def predicate_macros_accept_set_and_feature_parameters():
+    source = """
+set ZeroRegs = reg(is_zero);
+predicate IsALUAndZero(ops, regs, i) =
+    all_of(opcode(ops), reg_is(i, regs));
+predicate P = IsALUAndZero([ADD, SUB], ZeroRegs, 1);
+
+feature Xssdl : kind = extension, version = "1.0";
+predicate HasFeat(f) = feature(f);
+predicate S = HasFeat(Xssdl);
+"""
+    text, skips = emit_source(source, strict=True, attrs=attrs_schema())
+    assert_true(skips == [], skips)
+    assert_in(
+        "def P : CheckAll<[CheckOpcode<[ADD, SUB]>, CheckRegOperand<1, X0>]>;",
+        text,
+    )
+    assert_in("def S : FeatureSchedPredicate<FeatureXssdl>;", text)
+
+
+@test
 def hook_lowering_negative_controls():
     cases = [
         (
@@ -614,6 +640,18 @@ def hook_lowering_negative_controls():
             "predicate S = feature(F);\n"
             "tii_predicate T = return S;",
             "an MC context requires an MC predicate",
+        ),
+        (
+            "machine M { write W; write_seq S = [Nope]; }",
+            "write_seq S: unknown write 'Nope'",
+        ),
+        (
+            "machine M { write W; read R; alias W -> Nope; }",
+            "unknown SchedReadWrite 'Nope'",
+        ),
+        (
+            "machine M { write W; map_itin [IIC_Nope] -> [W]; }",
+            "map_itin: unknown itinerary class 'IIC_Nope'",
         ),
         (
             "machine M { write W; map [ADD] -> [W]; }\n"

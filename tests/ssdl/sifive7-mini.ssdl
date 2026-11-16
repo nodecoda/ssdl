@@ -141,7 +141,11 @@ machine ssdl-sifive-7 {
 
     write W_ALU;
     write W_LOAD;
+    write W_MULDIV;
     read  R_ALU;
+
+    write_seq W_MULDIV_SEQ = [W_ALU, W_ALU] repeat = 2;
+    alias W_MULDIV -> W_MULDIV_SEQ;
 
     bind W_ALU  -> [PipeA], latency = 1;
     bind W_LOAD -> [LSU],   latency = 3, release = [3];
@@ -185,6 +189,8 @@ machine ssdl-sifive-7 {
             cycles = [1, 1];
         }
     }
+
+    map_itin [IIC_iALU] -> [W_ALU, read_default];
 }
 
 machine ssdl-sifive-7-alias = ssdl-sifive-7;

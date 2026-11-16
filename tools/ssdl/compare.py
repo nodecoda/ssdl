@@ -24,7 +24,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-DEF_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:\{]", re.MULTILINE)
+DEF_RE = re.compile(r"^[ \t]*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:\{]", re.MULTILINE)
 RECORD_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{", re.MULTILINE)
 
 

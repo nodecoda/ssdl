@@ -96,54 +96,10 @@ def ssdl_generic_rv64 : RISCVProcessorModel<"ssdl-generic-rv64",
                                             [FeatureSSDL64Bit, FeatureStdExtXssdl],
                                             [], "rv64i2p1">;
 
-def PipeA : ProcResource<1>;
-def PipeB : ProcResource<1>;
-def LSU : ProcResource<1> { let BufferSize = 4; }
-
 def W_ALU : SchedWrite;
 def W_LOAD : SchedWrite;
+def W_MULDIV : SchedWrite;
 def R_ALU : SchedRead;
-
-def WR_W_ALU : WriteRes<W_ALU, [PipeA]> {
-  let Latency = 1;
-}
-
-def WR_W_LOAD : WriteRes<W_LOAD, [LSU]> {
-  let Latency = 3;
-  let ReleaseAtCycles = [3];
-}
-
-def RA_R_ALU : ReadAdvance<R_ALU, 1, [W_ALU]>;
-
-def IRW_ADD_SUB_XOR : InstRW<[W_ALU, ReadDefault, ReadDefault],
-                             (instrs ADD, SUB, XOR)>;
-def IRW_LD : InstRW<[W_LOAD, ReadDefault], (instrs LD)>;
-def IRW_REGEX_MUL : InstRW<[W_ALU, ReadDefault, ReadDefault],
-                           (instregex "MUL.*")>;
-def IRW_AND_instrs : InstRW<[W_ALU, ReadDefault], (instrs AND)>;
-def IRW_REGEX_DIV_regex : InstRW<[W_ALU, ReadDefault], (instregex "DIV.*")>;
-
-// A variant is a new SchedWriteVariant record aliased onto the write it
-// specialises.  MC predicates are promoted through MCSchedPredicate.
-def W_ALUVariant : SchedWriteVariant<[
-  SchedVar<MCSchedPredicate<CheckAll<[
-    CheckOpcode<[ADD, SUB, XOR, AND, MUL, DIV]>,
-    CheckSameRegOperand<1, 2>]>>, [W_ALU]>,
-  SchedVar<NoSchedPred, [W_ALU]>]>;
-def SSDLVariantAlias_W_ALU : SchedAlias<W_ALU, W_ALUVariant>;
-
-def R_ALUVariant : SchedReadVariant<[
-  SchedVar<MCSchedPredicate<CheckAll<[
-    CheckOpcode<[AND, XOR, ADD, SUB, MUL, DIV]>,
-    CheckRegOperand<1, X0>]>>, [R_ALU]>,
-  SchedVar<NoSchedPred, [R_ALU]>]>;
-def SSDLVariantAlias_R_ALU : SchedAlias<R_ALU, R_ALUVariant>;
-
-def GPRFile : RegisterFile<180, [GPR, GPRNoX0], [1, 1], [true, true], 4>;
-
-def ssdl_sifive_7RetireUnit : RetireControlUnit<320, 6>;
-def LoadQueue_LSU : LoadQueue<LSU>;
-def StoreQueue_LSU : StoreQueue<LSU>;
 
 def FU_ALU : FuncUnit;
 def no_bypass : Bypass;
@@ -164,6 +120,62 @@ def ssdl_sifive_7Model : SchedMachineModel {
   let CompleteModel = false;
   let UnsupportedFeatures = [HasStdExtZbkb];
   let EnableIntervals = true;
+}
+
+// Everything that carries a SchedModel is scoped to the machine model.
+let SchedModel = ssdl_sifive_7Model in {
+  def PipeA : ProcResource<1>;
+  def PipeB : ProcResource<1>;
+  def LSU : ProcResource<1> { let BufferSize = 4; }
+
+  // WriteSequence is itself a SchedWrite; `repeat = 2` becomes the second
+  // template argument.
+  def W_MULDIV_SEQ : WriteSequence<[W_ALU, W_ALU], 2>;
+  def SchedAlias_W_MULDIV_W_MULDIV_SEQ : SchedAlias<W_MULDIV, W_MULDIV_SEQ>;
+
+  def WR_W_ALU : WriteRes<W_ALU, [PipeA]> {
+    let Latency = 1;
+  }
+
+  def WR_W_LOAD : WriteRes<W_LOAD, [LSU]> {
+    let Latency = 3;
+    let ReleaseAtCycles = [3];
+  }
+
+  def RA_R_ALU : ReadAdvance<R_ALU, 1, [W_ALU]>;
+
+  def IRW_ADD_SUB_XOR : InstRW<[W_ALU, ReadDefault, ReadDefault],
+                               (instrs ADD, SUB, XOR)>;
+  def IRW_LD : InstRW<[W_LOAD, ReadDefault], (instrs LD)>;
+  def IRW_REGEX_MUL : InstRW<[W_ALU, ReadDefault, ReadDefault],
+                             (instregex "MUL.*")>;
+  def IRW_AND_instrs : InstRW<[W_ALU, ReadDefault], (instrs AND)>;
+  def IRW_REGEX_DIV_regex : InstRW<[W_ALU, ReadDefault], (instregex "DIV.*")>;
+
+  // A variant is a new SchedWriteVariant record aliased onto the write it
+  // specialises.  MC predicates are promoted through MCSchedPredicate.
+  def W_ALUVariant : SchedWriteVariant<[
+    SchedVar<MCSchedPredicate<CheckAll<[
+      CheckOpcode<[ADD, SUB, XOR, AND, MUL, DIV]>,
+      CheckSameRegOperand<1, 2>]>>, [W_ALU]>,
+    SchedVar<NoSchedPred, [W_ALU]>]>;
+  def SSDLVariantAlias_W_ALU : SchedAlias<W_ALU, W_ALUVariant>;
+
+  def R_ALUVariant : SchedReadVariant<[
+    SchedVar<MCSchedPredicate<CheckAll<[
+      CheckOpcode<[AND, XOR, ADD, SUB, MUL, DIV]>,
+      CheckRegOperand<1, X0>]>>, [R_ALU]>,
+    SchedVar<NoSchedPred, [R_ALU]>]>;
+  def SSDLVariantAlias_R_ALU : SchedAlias<R_ALU, R_ALUVariant>;
+
+  def GPRFile : RegisterFile<180, [GPR, GPRNoX0], [1, 1], [true, true], 4>;
+
+  def ssdl_sifive_7RetireUnit : RetireControlUnit<320, 6>;
+  def LoadQueue_LSU : LoadQueue<LSU>;
+  def StoreQueue_LSU : StoreQueue<LSU>;
+
+  // `map_itin [IIC_iALU] -> [...]` is an ItinRW record.
+  def ITINRW_IIC_iALU : ItinRW<[W_ALU, ReadDefault], [IIC_iALU]>;
 }
 
 def ssdl_sifive_7 : RISCVProcessorModel<"ssdl-sifive-7", ssdl_sifive_7Model,

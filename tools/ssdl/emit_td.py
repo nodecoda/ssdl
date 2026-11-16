@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import textwrap
 from dataclasses import dataclass
 from typing import Any
 
@@ -282,9 +283,17 @@ class Emitter:
                     names.add("RA_" + item["name"])
                 elif kind == "retire_unit":
                     names.add(f"{info.def_name}RetireUnit")
+                elif kind == "write_seq":
+                    names.add(item["name"])
                 elif kind in ("variant", "read_variant"):
                     names.add(item["name"] + "Variant")
                     names.add("SSDLVariantAlias_" + item["name"])
+                elif kind == "alias":
+                    names.add(td_def_name(f"SchedAlias_{item['src']}_{item['dst']}"))
+                elif kind == "map_itin":
+                    names.add(
+                        td_def_name("ITINRW_" + "_".join(item["itins"]))
+                        if item["itins"] else "ITINRW_")
                 elif kind in ("load_queue", "store_queue"):
                     prefix = "LoadQueue_" if kind == "load_queue" else "StoreQueue_"
                     names.add(prefix + item["resource"])
@@ -600,7 +609,9 @@ class Emitter:
         seen_defs: dict[str, str] = {}
         for info in self.machines.values():
             lowered = self.lower_machine(info)
-            for def_name in re.findall(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)", lowered, re.MULTILINE):
+            for def_name in re.findall(
+                r"^[ \t]*def\s+([A-Za-z_][A-Za-z0-9_]*)", lowered, re.MULTILINE
+            ):
                 if def_name in seen_defs:
                     self.error(
                         f"machine {info.decl.name}",
@@ -677,17 +688,24 @@ class Emitter:
                 self.error(where, f"unknown machine property {key!r}")
 
         skip_messages = {
-            "write_seq": "write_seq is not lowered by the minimal emitter",
-            "combo_func": "combo_func is not lowered by the minimal emitter",
-            "map_itin": "map_itin is not lowered yet",
-            "alias": "scheduling aliases are not lowered by the minimal emitter",
+            "combo_func": "combo_func has no attachment point on ProcessorItineraries",
         }
         for kind, message in skip_messages.items():
             for item in items[kind]:
                 name = item.get("name") or item.get("kind")
                 self.skip(f"{where}.{name}", message)
 
-        out: list[str] = []
+        # Records that carry `SchedModel` must be scoped to this model.  A
+        # single `let SchedModel = ... in { ... }` cannot contain SchedWrite /
+        # SchedRead defs (they have no such field), so the output is split:
+        #   prelude  - func units, bypasses, itinerary classes/data
+        #   unscoped - SchedWrite / SchedRead defs
+        #   scoped   - ProcResource, WriteRes, ReadAdvance, InstRW, SchedAlias,
+        #              SchedVariant, RegisterFile, RetireControlUnit, queues
+        prelude: list[str] = []
+        unscoped: list[str] = []
+        scoped: list[str] = []
+        out = scoped
 
         seen_res: set[str] = set()
         for item in items["resource"]:
@@ -749,27 +767,57 @@ class Emitter:
             if item["name"] in writes:
                 self.error(where, f"duplicate write {item['name']!r}")
             writes.add(item["name"])
-            out.append(f"def {item['name']} : SchedWrite;")
+            unscoped.append(f"def {item['name']} : SchedWrite;")
         for item in items["read"]:
             if item["name"] in reads:
                 self.error(where, f"duplicate read {item['name']!r}")
             reads.add(item["name"])
-            out.append(f"def {item['name']} : SchedRead;")
+            unscoped.append(f"def {item['name']} : SchedRead;")
+
+        # WriteSequence is itself a SchedWrite, so collect the names first to
+        # allow a sequence to refer to another sequence declared later.
+        write_seqs: dict[str, dict[str, Any]] = {}
+        for item in items["write_seq"]:
+            name = item["name"]
+            if name in writes or name in write_seqs:
+                self.error(where, f"duplicate write {name!r}")
+                continue
+            write_seqs[name] = item
+        writes.update(write_seqs)
+        for name, item in write_seqs.items():
+            seq = []
+            for member in item["writes"]:
+                if member not in writes:
+                    self.error(where, f"write_seq {name}: unknown write {member!r}")
+                seq.append(member)
+            args = [join_list(seq)]
+            repeat = item.get("repeat")
+            if repeat is not None and repeat != 1:
+                args.append(str(repeat))
+            scoped.append(f"def {name} : WriteSequence<{', '.join(args)}>;")
 
         declared_units: set[str] = set()
         for item in items["func_unit"]:
             if item["name"] in declared_units:
                 self.error(where, f"duplicate func_unit {item['name']!r}")
             declared_units.add(item["name"])
-            out.append(f"def {item['name']} : FuncUnit;")
+            prelude.append(f"def {item['name']} : FuncUnit;")
         declared_bypasses: set[str] = set()
         for item in items["bypass"]:
             if item["name"] in declared_bypasses:
                 self.error(where, f"duplicate bypass {item['name']!r}")
             declared_bypasses.add(item["name"])
-            out.append(f"def {item['name']} : Bypass;")
+            prelude.append(f"def {item['name']} : Bypass;")
         for item in items["itin_class"]:
-            out.append(f"def {item['name']} : InstrItinClass;")
+            prelude.append(f"def {item['name']} : InstrItinClass;")
+
+        for item in items["alias"]:
+            src, dst = item["src"], item["dst"]
+            resolved = self.resolve_rw([src, dst], writes, reads, f"{where}.alias")
+            if len(resolved) != 2:
+                continue
+            def_name = td_def_name(f"SchedAlias_{src}_{dst}")
+            out.append(f"def {def_name} : SchedAlias<{resolved[0]}, {resolved[1]}>;")
 
         bound: set[str] = set()
         for item in items["bind"]:
@@ -1062,7 +1110,48 @@ class Emitter:
                 declared_units,
                 declared_bypasses,
             )
-            out.extend(texts)
+            prelude.extend(texts)
+
+        if items["map_itin"]:
+            itin_classes = {item["name"] for item in items["itin_class"]}
+            declared_itins: dict[str, str] = {}
+            for block in items["itineraries"]:
+                for entry in block["decl"].items:
+                    if entry["kind"] == "itin":
+                        declared_itins[entry["name"]] = self.itin_class_name(entry["name"])
+
+            def resolve_itin(name: str) -> str | None:
+                if name in itin_classes:
+                    return name
+                if name in declared_itins:
+                    return declared_itins[name]
+                base = name[4:] if name.startswith("IIC_") else name
+                if base in itin_classes:
+                    return base
+                if base in declared_itins:
+                    return declared_itins[base]
+                return None
+
+            for item in items["map_itin"]:
+                resolved = self.resolve_rw(item["rw"], writes, reads, f"{where}.map_itin")
+                classes = []
+                for name in item["itins"]:
+                    cls = resolve_itin(name)
+                    if cls is None:
+                        self.error(
+                            where,
+                            f"map_itin: unknown itinerary class {name!r}",
+                        )
+                        continue
+                    classes.append(cls)
+                if not classes:
+                    self.error(where, "map_itin: empty itinerary class list")
+                    continue
+                def_name = td_def_name("ITINRW_" + "_".join(classes))
+                out.append(
+                    f"def {def_name} : ItinRW<{join_list(resolved)}, "
+                    f"{join_list(classes)}>;"
+                )
 
         model_lets = []
         if itineraries_name is not None:
@@ -1077,14 +1166,15 @@ class Emitter:
             preds = [f"Has{name}" for name in props["unsupported_features"]]
             model_lets.append(f"  let UnsupportedFeatures = {join_list(preds)};")
         if model_lets:
-            out.append(
+            model_text = (
                 f"def {info.def_name}Model : SchedMachineModel {{\n"
                 + "\n".join(model_lets)
                 + "\n}"
             )
         else:
-            out.append(f"def {info.def_name}Model : SchedMachineModel;")
+            model_text = f"def {info.def_name}Model : SchedMachineModel;"
 
+        processor_texts: list[str] = []
         features = props.get("features", [])
         tune = props.get("tune_features", [])
         march = props.get("default_march")
@@ -1102,16 +1192,25 @@ class Emitter:
                 args.append(join_list(targs))
             if march is not None:
                 args.append(td_str(march))
-            out.append(f"def {info.def_name} : RISCVProcessorModel<{', '.join(args)}>;")
+            processor_texts.append(
+                f"def {info.def_name} : RISCVProcessorModel<{', '.join(args)}>;"
+            )
         else:
             if march is not None:
                 self.error(where, "default_march requires at least one feature")
             args = [td_str(decl.name), f"{info.def_name}Model"]
             if tune:
                 args.append(join_list(targs))
-            out.append(f"def {info.def_name} : RISCVTuneProcessorModel<{', '.join(args)}>;")
+            processor_texts.append(
+                f"def {info.def_name} : RISCVTuneProcessorModel<{', '.join(args)}>;"
+            )
 
-        return "\n\n".join(out)
+        chunks = list(prelude) + list(unscoped) + [model_text]
+        if scoped:
+            body = textwrap.indent("\n\n".join(scoped), "  ")
+            chunks.append(f"let SchedModel = {info.def_name}Model in {{\n{body}\n}}")
+        chunks.extend(processor_texts)
+        return "\n\n".join(chunks)
 
 
 def emit(
