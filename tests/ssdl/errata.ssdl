@@ -27,3 +27,6 @@ machine errata-machine-alias = errata-machine;
 sti_function ErrataHook : SomeDecl {
     sched_model = errata-machine;
 }
+
+# S7: a return-only tii_predicate already ends in ';'; no second ';' is needed.
+tii_predicate ErrataTII = return true;

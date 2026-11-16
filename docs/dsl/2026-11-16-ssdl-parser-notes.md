@@ -11,14 +11,14 @@
 
 ## 1. 一句话
 
-这一轮把“可解析性”从断言变成了可执行检查，把“可展开性”从 `norm` 散文变成了 8 个自检；但它没有、也不应该声称 SSDL 1.0 已经语义闭合。评审里的 S1–S5 现在都有对应解析路径，M1/M4/M9/P1-10/P1-11 在**展开器范围内**闭合，其余 M/P 项仍然开放。
+这一轮把“可解析性”从断言变成了可执行检查，把“可展开性”从 `norm` 散文变成了 13 个自检；但它没有、也不应该声称 SSDL 1.0 已经语义闭合。评审里的 S1–S7 现在都有对应解析路径，M1/M4/M9/P1-10/P1-11 在**展开器范围内**闭合；v1.1 又把 M2/M3/M6/M8/M10 做成了可执行的 sort/绑定校验（仍不等于 lowering）。
 
 ---
 
 ## 2. 运行方式与结果
 
 ```bash
-# 8 项自检
+# 13 项自检
 python3 tools/ssdl/check.py
 # ok   spec_example_checked_in_copy_matches_the_document
 # ok   spec_example_parses
@@ -28,7 +28,7 @@ python3 tools/ssdl/check.py
 # ok   errata_syntax_parses
 # ok   unlowered_constructs_are_reported_not_dropped
 # ok   negative_controls
-# 8/8 checks passed
+# 13/13 checks passed
 
 # 只展开
 python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl -o /tmp/generated.td
@@ -78,7 +78,7 @@ tii_predicate isDependencyBreaking: error: TII predicates are not lowered by the
 
 ## 3. 语法 errata：实现接受的六处修正
 
-不修改上游文档，只记录“解析器为了接受文档自己的示例所做的文法修正”。S1–S5 来自评审；S6 是本轮新发现。
+不修改上游文档，只记录“解析器为了接受文档自己的示例所做的文法修正”。S1–S5 来自评审；S6/S7 是后续实现中新发现的。这些修正已经写进 `2026-11-16-ssdl-v1.1-draft.md`。
 
 | ID | 位置 | 文档写法 | 文档 EBNF | 解析器接受的修正 |
 |---|---|---|---|---|
@@ -88,6 +88,7 @@ tii_predicate isDependencyBreaking: error: TII predicates are not lowered by the
 | S4 | 3.12 | `resource LSU : units = 1, buffer = 4;` | 每个属性前独立 `":"` | `resource`/`res_group` 的属性分隔符接受 `":"` 或 `","` |
 | S5 | 2 | `machine generic-rv64`、`siFive7-alias` | `IDENT` 不含 `-` | `IDENT` 首字符后允许 `-`；`->` 优先于“负号 + 数字”识别 |
 | S6 | 3.9 | `sti_function ... { ... }` 后没有 `;` | `"}" ";"` | 尾随 `;` 可选（示例两处都省略） |
+| S7 | 3.10 | `tii_predicate X = return P;` | `statement ";"`，而 `return` 已带 `;` | 尾随 `;` 可选；`return` 形式写一个，`switch` 形式写一个 |
 
 S1 的“参数”目前只是**语法**绑定：`IsZeroReg(i)` 能解析，`IsZeroReg(1)` 也能解析；参数作用域、实参个数与类型检查属于语义层，尚未实现。S2 同理，只保证语法形状，不保证 `i` 会被替换。
 
@@ -196,7 +197,8 @@ machine X = Y;      →  def X : ProcessorAlias<"X", "Y">
 | S3 | 特性字段允许逗号分隔 | 示例与 fixture |
 | S4 | `resource` 属性允许 `:` 与 `,` | fixture 的 `LSU : units = 1, buffer = 4` |
 | S5 | `IDENT` 允许 `-` | `ssdl-sifive-7`、`errata-machine-alias` |
-| S6 | `sti_function` 尾随 `;` 可选 | `errata.ssdl` 最后一个声明 |
+| S6 | `sti_function` 尾随 `;` 可选 | `errata.ssdl` 的 `ErrataHook` |
+| S7 | `tii_predicate` 的 `return` 形式只需一个 `;` | `errata.ssdl` 的 `ErrataTII`；`v1_1_tii_return_semicolon_forms` |
 | M1 | 展开器要求 `plain.mattr`，并确定性推导 `extension`/`tune` 的 `Name` | 第 4.1 节；`-print-records` 的 `Name` 字段 |
 | M4（部分） | `machine` 拆成 `XModel` + `X` + 别名 | 第 4.2 节；记录对拍 |
 | M9 | `unsupported_features` 展开为 `list<Predicate>` | `UnsupportedFeatures = [HasStdExtZbkb]` |
@@ -254,9 +256,36 @@ fixture 里的特性名带 `ssdl` 前缀，是因为生成文件与真实的 `RI
 tools/ssdl/parser.py       # 词法 + 递归下降，覆盖 9 个顶层关键字与六条 errata
 tools/ssdl/emit_td.py      # 最小展开器：feature/machine/resource/write/read/bind/advance/map
 tools/ssdl/compare.py      # -print-records 按 def 名对拍
-tools/ssdl/check.py        # 8 项自检（正向、负控、errata、确定性、非空比较）
+tools/ssdl/check.py        # 13 项自检（正向、负控、errata、sort、itinerary、非空比较）
+tools/ssdl/validate.py     # v1.1 predicate sort + itinerary binding 校验
 tests/ssdl/spec-example.ssdl          # 文档第 5 节逐字副本
 tests/ssdl/sifive7-mini.ssdl          # 可展开的 SiFive7 子集
 tests/ssdl/sifive7-mini.expected.td   # 手写等价物（真实 LLVM 类）
-tests/ssdl/errata.ssdl                # S1–S6 语法用例
+tests/ssdl/errata.ssdl                # S1–S7 语法用例
+tests/ssdl/v1.1.ssdl                  # MC/SCHED 排序与 sched_model 绑定用例
 ```
+
+---
+
+## 10. 2026-11-16 v1.1 增量
+
+v1.1 的规范文本在 `2026-11-16-ssdl-v1.1-draft.md`。本轮只实现其中可判定的部分：
+
+| v1.1 项 | 实现 | 证据 |
+|---|---|---|
+| S1/S2 语法 | 解析器 | `errata.ssdl`、13/13 自检 |
+| S3–S7 | 解析器 | 同上；S7 的 `return`/`switch` 两种形式都有用例 |
+| 谓词 MC/SCHED/SEL | `validate.py` 推断、提升、上下文检查 | `v1_1_predicate_sorts`、`v1_1_sort_negative_controls` |
+| 命名谓词 | 未知引用、参数个数、循环、保留名 | 同上 |
+| `variant` 的 MC 自动提升 | 校验通过；lowering 仍未实现 | `v1.1.ssdl` |
+| `tii_predicate`/STI 的 MC 约束 | 校验 | 负控 `requires an MC predicate` |
+| `mc(...)` / `sched(...)` / `sched_code(...)` | 解析 + sort | `v1.1.ssdl` 的 `SchedPred` |
+| 顶层 `itineraries.sched_model` | 解析 + 绑定校验（必须是 machine 定义，别名不行） | `v1_1_itineraries_binding_parses`、负控 |
+| machine 内禁止 `sched_model` | 校验 | 负控 `must not set sched_model` |
+| `itin` / `itin_class` 重名 | 校验 | 负控 `duplicate itin`、`duplicate itinerary class` |
+| 混合 `map` | 拆成 `(instrs ...)` + `(instregex ...)` 两条 `InstRW` | `v1_1_mixed_map_is_split`、fixture 对拍 |
+| `advance.cycles` 必写/可负 | 展开器 | 负控 `cycles is required` |
+| `attr_expr` 优先级 | 解析器（`!` > 比较 > `&&` > `||`） | `parse_attr_or/and/not/cmp` |
+| `set` 属性契约 | **仅规范**，求值器未实现 | v1.1 §5 |
+
+注意：`validate.py` 通过不等于谓词已经能展开。`variant`、`sti_*`、`tii_predicate` 仍然只校验、不生成 `SchedWriteVariant`/`STIPredicate`/`TIIPredicate` 记录；`set` 仍然只解析。下一步不是继续加关键字，而是先实现 `set` 求值和谓词 lowering，再用 `llvm-tblgen` 对拍。

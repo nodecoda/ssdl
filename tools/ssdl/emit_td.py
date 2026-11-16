@@ -630,9 +630,6 @@ class Emitter:
                 continue
             idents = [i for i in insts if i[0] == "ident"]
             regexes = [i for i in insts if i[0] == "regex"]
-            if idents and regexes:
-                self.error(where, "map: cannot mix instruction names and regex(...) in one InstRW")
-                continue
             resolved = []
             for entry in rw:
                 if entry in RESERVED_RW:
@@ -641,34 +638,53 @@ class Emitter:
                     resolved.append(entry)
                 else:
                     self.error(where, f"map: unknown SchedReadWrite {entry!r}")
-            pieces: list[str] = []
-            if regexes:
-                patterns = []
-                for _, pattern in regexes:
-                    patterns.append(td_str(pattern))
-                    pieces.append("REGEX_" + re.sub(r"[^A-Za-z0-9_]", "", pattern))
-                dag = "(instregex " + ", ".join(patterns) + ")"
+
+            # InstRW carries one dag.  A mixed map is therefore split into one
+            # (instrs ...) record and one (instregex ...) record; the 1.1 norm
+            # requires this split rather than rejecting the map.
+            mixed = bool(idents and regexes)
+            groups: list[tuple[str | None, list[tuple[str, str]]]] = []
+            if mixed:
+                groups.append(("instrs", idents))
+                groups.append(("regex", regexes))
             else:
-                names = []
-                for _, name in idents:
-                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-                        self.error(where, f"map: {name!r} is not a TableGen instruction name")
-                    names.append(name)
-                    pieces.append(name)
-                dag = "(instrs " + ", ".join(names) + ")"
-            def_name = "IRW_" + "_".join(pieces)
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", def_name):
-                def_name = f"IRW_map_{index}"
-            if def_name in map_names:
-                self.error(where, f"map: duplicate emitted record name {def_name!r}")
-                continue
-            map_names.add(def_name)
-            body = ""
-            if item.get("unsupported") is not None:
-                body = f" {{ let Unsupported = {'true' if item['unsupported'] else 'false'}; }}"
-            out.append(
-                f"def {def_name} : InstRW<{join_list(resolved)}, {dag}>{body};"
-            )
+                groups.append((None, insts))
+
+            for group_kind, entries in groups:
+                pieces: list[str] = []
+                if group_kind == "regex" or (group_kind is None and regexes):
+                    patterns = []
+                    for _, pattern in entries:
+                        patterns.append(td_str(pattern))
+                        sanitized = re.sub(r"[^A-Za-z0-9_]", "", pattern) or f"{index}"
+                        pieces.append("REGEX_" + sanitized)
+                    dag = "(instregex " + ", ".join(patterns) + ")"
+                else:
+                    names = []
+                    for _, name in entries:
+                        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                            self.error(where, f"map: {name!r} is not a TableGen instruction name")
+                        names.append(name)
+                        pieces.append(name)
+                    dag = "(instrs " + ", ".join(names) + ")"
+                def_name = "IRW_" + "_".join(pieces)
+                if mixed:
+                    def_name += "_" + group_kind
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", def_name):
+                    def_name = f"IRW_map_{index}"
+                if def_name in map_names:
+                    self.error(where, f"map: duplicate emitted record name {def_name!r}")
+                    continue
+                map_names.add(def_name)
+                body = ""
+                if item.get("unsupported") is not None:
+                    body = (
+                        f" {{ let Unsupported = "
+                        f"{'true' if item['unsupported'] else 'false'}; }}"
+                    )
+                out.append(
+                    f"def {def_name} : InstRW<{join_list(resolved)}, {dag}>{body};"
+                )
 
         model_lets = []
         for key, field in SCHED_MODEL_PROPS.items():

@@ -86,6 +86,7 @@ machine ssdl-sifive-7 {
     map [ADD, SUB, XOR]  -> [W_ALU, read_default, read_default];
     map [LD]             -> [W_LOAD, read_default];
     map [regex("MUL.*")] -> [W_ALU, read_default, read_default];
+    map [AND, regex("DIV.*")] -> [W_ALU, read_default];
 }
 
 machine ssdl-sifive-7-alias = ssdl-sifive-7;

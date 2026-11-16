@@ -49,6 +49,8 @@ def IRW_ADD_SUB_XOR : InstRW<[W_ALU, ReadDefault, ReadDefault],
 def IRW_LD : InstRW<[W_LOAD, ReadDefault], (instrs LD)>;
 def IRW_REGEX_MUL : InstRW<[W_ALU, ReadDefault, ReadDefault],
                            (instregex "MUL.*")>;
+def IRW_AND_instrs : InstRW<[W_ALU, ReadDefault], (instrs AND)>;
+def IRW_REGEX_DIV_regex : InstRW<[W_ALU, ReadDefault], (instregex "DIV.*")>;
 
 def ssdl_generic_rv64Model : SchedMachineModel;
 

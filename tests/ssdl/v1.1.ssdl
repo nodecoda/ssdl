@@ -1,0 +1,46 @@
+# SSDL 1.1 sort and itinerary-binding fixture.
+# This file is validated, not lowered.
+
+set ZeroRegs = [X0];
+
+predicate IsZeroReg(i) = reg_is(i, ZeroRegs);
+predicate IsZeroIdiom = all_of(opcode([ADD]), IsZeroReg(1));
+
+# Explicit MC: mc(...) rejects SCHED children.
+predicate McPred = mc(opcode([ADD]));
+
+# SCHED: a feature, a code predicate, and MC children that get promoted.
+predicate SchedPred =
+    all_of(feature(StdExtXssdl), opcode([ADD]), sched_code([{ MI->getOpcode() == 1 }]));
+
+# Empty combinators are MC and mean true/false.
+predicate AllEmpty = all_of();
+predicate AnyEmpty = any_of();
+
+feature StdExtXssdl : kind = extension, version = "1.0";
+
+machine v11-machine {
+    variant W_ALU {
+        # MC is auto-promoted in a variant case.
+        case all_of(opcode([ADD]), IsZeroReg(1)): [W_ALU];
+        case SchedPred: [W_ALU];
+        default: [W_ALU];
+    }
+
+    write W_ALU;
+}
+
+tii_predicate V11TII =
+    switch opcode {
+        case [ADD]: return IsZeroIdiom;
+        default:    return false;
+    };
+
+itineraries : sched_model = v11-machine : packetizer_namespace = "V11" {
+    func_units = [FU_ALU];
+
+    itin IIC_iALU {
+        stages = [stage(1, [FU_ALU])];
+        cycles = [1, 1];
+    }
+}

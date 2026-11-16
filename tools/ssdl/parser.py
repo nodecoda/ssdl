@@ -89,6 +89,7 @@ class ItinerariesDecl:
     namespace: str | None
     items: list[dict[str, Any]]
     line: int
+    sched_model: str | None = None
 
 
 @dataclass
@@ -740,7 +741,9 @@ class Parser:
         name = self.expect_ident()
         self.expect("=")
         stmt = self.parse_statement()
-        self.expect(";")
+        # Errata S7: the 1.0 grammar's trailing ";" is redundant for a return
+        # statement (which already ends in ";") and required for a switch.
+        self.accept(";")
         return TIIPredicate(name, stmt, line)
 
     def parse_statement(self):
@@ -993,10 +996,19 @@ class Parser:
     def parse_itineraries(self) -> ItinerariesDecl:
         line = self.expect("itineraries").line
         namespace = None
-        if self.accept(":"):
-            self.expect("packetizer_namespace")
+        sched_model = None
+        while self.accept(":"):
+            key = self.expect_ident()
             self.expect("=")
-            namespace = self.expect_string()
+            if key == "packetizer_namespace":
+                namespace = self.expect_string()
+            elif key == "sched_model":
+                sched_model = self.expect_ident()
+            else:
+                tok = self.peek()
+                raise SSDLParseError(
+                    f"unknown itineraries property {key!r}", tok.line, tok.col
+                )
         self.expect("{")
         items = []
         while not self.at("}"):
@@ -1029,7 +1041,7 @@ class Parser:
                 t = self.peek()
                 raise SSDLParseError(f"unexpected itineraries item {key!r}", t.line, t.col)
         self.expect("}")
-        return ItinerariesDecl(namespace, items, line)
+        return ItinerariesDecl(namespace, items, line, sched_model)
 
     def parse_stages(self):
         self.expect("[")

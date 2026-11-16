@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
+from ssdl import validate as validate_mod  # noqa: E402
 from ssdl.emit_td import SSDLEmitError  # noqa: E402
 
 
@@ -214,6 +215,13 @@ def errata_syntax_parses():
     assert_true(hook.decl == "SomeDecl", hook.decl)
     assert_true(hook.items[0] == {"kind": "sched_model", "value": "errata-machine"}, hook.items)
 
+    # S7: return-only tii_predicate needs exactly one ';'.
+    tii = by_name["ErrataTII"]
+    assert_true(
+        tii.statement == {"kind": "return", "expr": ("bool", True)},
+        tii.statement,
+    )
+
 
 @test
 def unlowered_constructs_are_reported_not_dropped():
@@ -301,10 +309,6 @@ def negative_controls():
             ["unknown SchedReadWrite 'W'"],
         ),
         (
-            'machine M { write W; map [ADD, regex("MUL.*")] -> [W]; }',
-            ["cannot mix instruction names and regex"],
-        ),
-        (
             "machine M { write W; map [] -> [W]; }",
             ["empty instruction list"],
         ),
@@ -337,6 +341,144 @@ def negative_controls():
     ]
     for source, expected in cases:
         expect_emit_errors(source, expected)
+
+
+@test
+def v1_1_predicate_sorts():
+    program = parser.parse_file(str(ROOT / "tests/ssdl/v1.1.ssdl"))
+    checker = validate_mod.SortChecker(program)
+    errors = checker.run()
+    assert_true(errors == [], f"unexpected sort errors: {errors}")
+    expected = {
+        "IsZeroReg": "mc",
+        "IsZeroIdiom": "mc",
+        "McPred": "mc",
+        "SchedPred": "sched",
+        "AllEmpty": "mc",
+        "AnyEmpty": "mc",
+    }
+    assert_true(checker.sorts == expected, f"unexpected sorts: {checker.sorts}")
+
+
+@test
+def v1_1_sort_negative_controls():
+    cases = [
+        (
+            "predicate P = feature(F);\ntii_predicate T = return P;",
+            "requires an MC predicate",
+        ),
+        (
+            "predicate Q = mc(feature(F));",
+            "mc(...) requires an MC predicate",
+        ),
+        (
+            "predicate A = B;\npredicate B = A;",
+            "recursive predicate reference",
+        ),
+        (
+            "predicate R(i) = true;\npredicate S = R();",
+            "expects 1 argument",
+        ),
+        (
+            "predicate U = Nope;",
+            "unknown predicate",
+        ),
+        (
+            "predicate Sel { selector = cxx_expr([{ true }]); }\n"
+            "predicate V = Sel;",
+            "selection predicate",
+        ),
+        (
+            "predicate Sel { selector = cxx_expr([{ true }]); }\n"
+            "machine M { variant W { case Sel: [W]; default: [W]; } }",
+            "selection predicate",
+        ),
+        (
+            'itineraries : packetizer_namespace = "X" { func_units = [FU]; }',
+            "must set 'sched_model = IDENT'",
+        ),
+        (
+            "itineraries : sched_model = nope { func_units = [FU]; }",
+            "not a machine definition",
+        ),
+        (
+            "machine M { itineraries : sched_model = M { func_units = [FU]; } }",
+            "must not set sched_model",
+        ),
+        (
+            "machine D { }\nmachine A = D;\n"
+            "itineraries : sched_model = A { func_units = [FU]; }",
+            "not a machine definition",
+        ),
+        (
+            "predicate opcode = true;",
+            "reserved predicate name",
+        ),
+        (
+            "machine M { itin_class IIC; itineraries { itin IIC { } } }",
+            "collides with an itin_class declaration",
+        ),
+        (
+            "machine M { }\n"
+            "itineraries : sched_model = M { itin IIC { } itin IIC { } }",
+            "duplicate itin",
+        ),
+        (
+            "machine M { itin_class IIC; itin_class IIC; }",
+            "duplicate itinerary class",
+        ),
+    ]
+    for source, expected in cases:
+        errors = validate_mod.validate(parser.parse(source))
+        text = "\n".join(errors)
+        assert_in(expected, text)
+
+
+@test
+def v1_1_itineraries_binding_parses():
+    program = parser.parse_file(str(ROOT / "tests/ssdl/v1.1.ssdl"))
+    blocks = [d for d in program.decls if isinstance(d, parser.ItinerariesDecl)]
+    assert_true(len(blocks) == 1, f"expected one itinerary block, got {len(blocks)}")
+    itin = blocks[0]
+    assert_true(itin.sched_model == "v11-machine", itin.sched_model)
+    assert_true(itin.namespace == "V11", itin.namespace)
+    assert_true(itin.items[0] == {"kind": "func_units", "value": ["FU_ALU"]}, itin.items)
+
+
+@test
+def v1_1_mixed_map_is_split():
+    source = """
+machine M {
+    write W;
+    map [ADD, regex("MUL.*")] -> [W, read_default];
+}
+"""
+    text, skips = emit_source(source, strict=True)
+    assert_true(skips == [], skips)
+    assert_in("def IRW_ADD_instrs : InstRW<[W, ReadDefault], (instrs ADD)>;", text)
+    assert_in(
+        'def IRW_REGEX_MUL_regex : InstRW<[W, ReadDefault], (instregex "MUL.*")>;',
+        text,
+    )
+
+
+@test
+def v1_1_tii_return_semicolon_forms():
+    program = parser.parse(
+        "tii_predicate A = return true;\n"
+        "tii_predicate B = return false;;\n"
+    )
+    got = [
+        d.statement for d in program.decls if isinstance(d, parser.TIIPredicate)
+    ]
+    assert_true(
+        got
+        == [
+            {"kind": "return", "expr": ("bool", True)},
+            {"kind": "return", "expr": ("bool", False)},
+        ],
+        got,
+    )
 
 
 def main() -> int:
