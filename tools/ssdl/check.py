@@ -1686,7 +1686,7 @@ def family_expansion_preserves_scheduling_records():
 @test
 def family_coverage_rejects_unbound_members():
     """A bind site that covers more members than the write must be diagnosed."""
-    source = """dimension D = [A, B, C];
+    source = """set D = [A, B, C] : kind = dimension;
 
 machine f(n: INT) {
     write W[D in [A, B]];
@@ -1713,7 +1713,7 @@ machine m : f(4) {
 @test
 def family_add_axis_value_reports_every_uncovered_site():
     """Adding M16 must name every site that does not cover the new member."""
-    source = """dimension D = [A, B];
+    source = """set D = [A, B] : kind = dimension;
 
 machine f(n: INT) {
     write W[D];
@@ -1786,6 +1786,45 @@ def sifive7_vlde_family_matches_upstream_values():
                 have == want,
                 f"{write}.{label}: generated {have!r}, upstream {want!r}",
             )
+
+
+@test
+def family_name_format_makes_multi_axis_names_enumerable():
+    """NF/EEW/LMUL must reproduce upstream names without free-form concatenation.
+
+    WriteVLSEG3e16_M1 is the shape SiFive7 uses today; the axis formats carry
+    the literal separators so the expansion stays a finite, checkable product.
+    """
+    source = """set NF = [3, 4] : kind = dimension, name_format = "{value}";
+set EEW = [8, 16] : kind = dimension, name_format = "e{value}";
+set LMUL = [M1, M2] : kind = dimension, name_format = "_{value}";
+
+machine f {
+    resource P : units = 1;
+    write W[NF, EEW, LMUL];
+    bind  W[NF, EEW, LMUL] -> [P];
+}
+"""
+    flat = family_mod.expand(source)
+    for name in ("W3e8_M1", "W3e16_M1", "W4e8_M2", "W4e16_M2"):
+        assert_in(f"write {name};", flat)
+        assert_in(f"bind {name} -> [P];", flat)
+    assert_true(flat.count("write W") == 8, f"expected 8 products:\n{flat}")
+
+    worst_source = """set A = [X, Y] : kind = dimension;
+
+machine f {
+    resource P : units = 1;
+    write W[A];
+    write W[worst(A)];
+    bind  W[A] -> [P];
+    bind  W[worst(A)] -> [P];
+}
+"""
+    worst_flat = family_mod.expand(worst_source)
+    assert_in("write W_WorstCase;", worst_flat)
+    assert_in("bind W_WorstCase -> [P];", worst_flat)
+    assert_true("W_WorstCase_X" not in worst_flat, "worst expanded into the product")
 
 
 

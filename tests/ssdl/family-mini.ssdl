@@ -1,5 +1,5 @@
 # Compressed family used by check.py: one dimension, one family parameter.
-dimension D = [A, B, C];
+set D = [A, B, C] : kind = dimension;
 
 machine fam(vlen: INT) {
     write W[D];

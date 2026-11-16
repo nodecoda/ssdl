@@ -13,8 +13,9 @@
 新增两个领域构造（不新增顶层关键字）：
 
 ```text
-dimension LMUL = [MF8, MF4, MF2, M1, M2, M4, M8];
-dimension NF   = 2..8;
+set LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] :
+    kind = dimension, name_format = "_{value}";
+set NF = 2..8 : kind = dimension, name_format = "{value}";
 
 machine siFive7(vlen: INT) {
     write  WriteVLDE[LMUL];
@@ -31,8 +32,9 @@ machine sifive-7-series : siFive7(512) {
 
 | 构造 | 语义 |
 |---|---|
-| `dimension D = [a, b]` | 声明有限轴；只有已声明的轴可被索引 |
-| `dimension D = a..b` | 整数范围（`NF = 2..8`） |
+| `set D = [a, b] : kind = dimension` | 声明有限轴；只有已声明的轴可被索引 |
+| `set D = a..b : kind = dimension` | 整数范围（`NF = 2..8`） |
+| `name_format = "_{value}"` | 成员名格式；只允许一个 `{value}` |
 | `W[D]` | 展开为 `W_a`、`W_b` …，一个成员一条语句 |
 | `W[D in [a]]` | **稀疏成员**：只展开列出的成员 |
 | `machine F(p: INT)` | 族声明；参数可用于数值表达式 |
@@ -78,7 +80,8 @@ machine m: write W_C has no bind (line 3)
 `tests/ssdl/sifive7-vlde.ssdl` 压缩了 SiFive7 的 8 条 `WriteVLDE` 记录（`RISCVSchedSiFive7.td:329`、`:836` 的真实产物）：
 
 ```text
-dimension LMUL = [MF8, MF4, MF2, M1, M2, M4, M8, WorstCase];
+set LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] :
+    kind = dimension, name_format = "_{value}";
 machine vlde {
     resource VLEN512SiFive7VCQ : units = 1;
     resource VLEN512SiFive7VL  : units = 1;
@@ -86,7 +89,7 @@ machine vlde {
     bind WriteVLDE[LMUL in [MF8, MF4, MF2]] -> [...], release = [1, 2], ...;
     bind WriteVLDE[LMUL in [M1]]              -> [...], release = [1, 3], ...;
     ...
-    bind WriteVLDE[LMUL in [M8, WorstCase]]   -> [...], release = [1, 17], ...;
+    bind WriteVLDE[worst(LMUL)]               -> [...], release = [1, 17], ...;
 }
 ```
 

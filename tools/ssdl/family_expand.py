@@ -5,7 +5,8 @@ The compressed front end adds exactly two domain constructs; everything else
 is the v1.0 language, so the flat output still goes through ``emit_td.py`` and
 the record table unchanged.
 
-    dimension LMUL = [MF8, MF4, MF2, M1, M2, M4, M8];
+    set LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] :
+        kind = dimension, name_format = "_{value}";
 
     machine siFive7(vlen: INT) {
         write  WriteVLDE[LMUL];
@@ -19,8 +20,9 @@ the record table unchanged.
 
 Rules
 -----
-* ``dimension NAME = [v, ...]`` or ``dimension NAME = a..b`` declares a finite
-  axis.  Only declared axes may be indexed.
+* ``set NAME = [v, ...] : kind = dimension`` declares a finite axis;
+  ``a..b`` is accepted inside the list.  Only declared axes may be indexed.
+  ``name_format`` is the one place a member name is composed (``"_{value}"``).
 * ``NAME[AXIS]`` expands to one identifier per member (``WriteVLDE_MF8`` ...).
   A sparse site writes ``NAME[AXIS in [MF8, MF4, MF2]]``.
 * ``machine F(p: INT, b: BOOL)`` declares a family; ``machine X : F(args)``
@@ -45,11 +47,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
-DIM_RE = re.compile(rf"^\s*dimension\s+({IDENT})\s*=\s*(.+?)\s*;\s*$")
-RANGE_RE = re.compile(r"^(-?\d+)\s*\.\.\s*(-?\d+)$")
-ITEM_RE = re.compile(
-    rf"^(\w+)\s+({IDENT})\s*\[\s*({IDENT})\s*(?:in\s*\[([^\]]*)\])?\s*\]\s*(.*)$"
+SET_DIM_RE = re.compile(
+    rf"^set\s+({IDENT})\s*=\s*(.+?)\s*:\s*kind\s*=\s*dimension"
+    rf'(?:\s*,\s*name_format\s*=\s*"([^"]*)")?\s*;\s*$'
 )
+RANGE_RE = re.compile(r"^(-?\d+)\s*\.\.\s*(-?\d+)$")
+ITEM_HEAD_RE = re.compile(rf"^(write|bind|advance)\s+({IDENT})\s*\[")
+DIM_USE_WORST_RE = re.compile(rf"^worst\(\s*({IDENT})\s*\)$")
+DIM_USE_SUBSET_RE = re.compile(rf"^({IDENT})\s+in\s*\[([^\]]*)\]$")
+DIM_USE_RE = re.compile(rf"^({IDENT})$")
 FAMILY_RE = re.compile(rf"^machine\s+({IDENT})\s*\((.*?)\)\s*\{{")
 INSTANCE_RE = re.compile(rf"^machine\s+({IDENT})\s*:\s*({IDENT})\s*\((.*?)\)\s*\{{")
 PLAIN_RE = re.compile(rf"^machine\s+({IDENT})\s*\{{")
@@ -58,6 +64,17 @@ PARAM_RE = re.compile(rf"^\s*({IDENT})\s*:\s*(INT|BOOL)\s*$")
 
 class ExpandError(Exception):
     pass
+
+
+@dataclass
+class Axis:
+    values: list[str]
+    name_format: str = "_{value}"
+
+    def name(self, member: str) -> str:
+        if "{value}" not in self.name_format:
+            raise ExpandError(f"name_format {self.name_format!r} has no {{value}} placeholder")
+        return self.name_format.replace("{value}", member)
 
 
 @dataclass
@@ -85,6 +102,41 @@ def _strip_comment(line: str) -> str:
             return line[:index]
         out.append(char)
     return line
+
+
+def _parse_item(text: str):
+    """Split ``write W[A, B in [x, y]] rest`` with balanced brackets."""
+    head = ITEM_HEAD_RE.match(text)
+    if not head:
+        return None
+    depth = 1
+    index = head.end()
+    while index < len(text) and depth:
+        if text[index] == "[":
+            depth += 1
+        elif text[index] == "]":
+            depth -= 1
+        index += 1
+    if depth:
+        return None
+    return head.group(1), head.group(2), text[head.end(): index - 1], text[index:].strip()
+
+
+def _split_top_level(text: str) -> list[str]:
+    parts, depth, current = [], 0, []
+    for char in text:
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    if current:
+        parts.append("".join(current).strip())
+    return [part for part in parts if part]
 
 
 def _parse_items(text: str) -> list[str]:
@@ -137,31 +189,50 @@ def _subst_fields(text: str, env: dict[str, object]) -> str:
     return re.sub(r"\b(latency|uops|cycles)\s*=\s*([^,;]+)", repl, text)
 
 
-def split_blocks(text: str) -> tuple[dict[str, list[str]], list[Machine]]:
+def _logical_lines(text: str) -> list[tuple[int, str]]:
+    """Join a ``set`` declaration that spans lines; everything else is one line."""
+    raw_lines = text.splitlines()
+    out: list[tuple[int, str]] = []
+    index = 0
+    while index < len(raw_lines):
+        line = _strip_comment(raw_lines[index]).strip()
+        if line.startswith("set ") and not line.endswith(";"):
+            start = index + 1
+            parts = [line]
+            while index + 1 < len(raw_lines) and not parts[-1].endswith(";"):
+                index += 1
+                parts.append(_strip_comment(raw_lines[index]).strip())
+            out.append((start, " ".join(parts)))
+        else:
+            out.append((index + 1, line))
+        index += 1
+    return out
+
+
+def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine]]:
     """Return (dimensions, machines) from the compressed source."""
-    dimensions: dict[str, list[str]] = {}
+    dimensions: dict[str, Axis] = {}
     machines: list[Machine] = []
     current: Machine | None = None
     depth = 0
-    for line_no, raw in enumerate(text.splitlines(), 1):
-        line = _strip_comment(raw).rstrip()
-        if not line.strip():
+    for line_no, line in _logical_lines(text):
+        if not line:
             continue
         if current is None:
-            match = DIM_RE.match(line)
+            match = SET_DIM_RE.match(line)
             if match:
-                name, rhs = match.group(1), match.group(2)
-                range_match = RANGE_RE.match(rhs)
+                name, rhs, name_format = match.group(1), match.group(2), match.group(3)
+                range_match = RANGE_RE.match(rhs.strip())
                 if range_match:
                     lo, hi = int(range_match.group(1)), int(range_match.group(2))
                     values = [str(v) for v in range(lo, hi + 1)]
                 else:
-                    if not rhs.startswith("["):
-                        raise ExpandError(f"line {line_no}: dimension {name} expects a list or range")
+                    if not rhs.strip().startswith("["):
+                        raise ExpandError(f"line {line_no}: axis {name} expects a list or range")
                     values = _parse_items(rhs)
                 if not values:
-                    raise ExpandError(f"line {line_no}: dimension {name} is empty")
-                dimensions[name] = values
+                    raise ExpandError(f"line {line_no}: axis {name} is empty")
+                dimensions[name] = Axis(values=values, name_format=name_format or "_{value}")
                 continue
             match = FAMILY_RE.match(line)
             if match:
@@ -209,43 +280,91 @@ def split_blocks(text: str) -> tuple[dict[str, list[str]], list[Machine]]:
     return dimensions, machines
 
 
-def _members(axis: str, subset: str | None, dimensions: dict[str, list[str]]) -> list[str]:
-    if axis not in dimensions:
-        raise ExpandError(f"undeclared dimension {axis!r}")
-    declared = dimensions[axis]
-    if subset is None:
-        return list(declared)
-    chosen = _parse_items(subset)
-    unknown = [value for value in chosen if value not in declared]
-    if unknown:
-        raise ExpandError(f"dimension {axis} has no member(s) {unknown}")
-    return chosen
+def _parse_dim_uses(
+    index: str, dimensions: dict[str, Axis]
+) -> list[tuple[str, list[str], bool]]:
+    """Return (axis, members, is_worst) for ``A, B in [..], worst(C)``."""
+    uses = []
+    for item in _split_top_level(index):
+        match = DIM_USE_WORST_RE.match(item)
+        if match:
+            axis = match.group(1)
+            if axis not in dimensions:
+                raise ExpandError(f"undeclared dimension {axis!r}")
+            uses.append((axis, [], True))
+            continue
+        match = DIM_USE_SUBSET_RE.match(item)
+        if match:
+            axis, subset = match.group(1), match.group(2)
+            if axis not in dimensions:
+                raise ExpandError(f"undeclared dimension {axis!r}")
+            chosen = _parse_items(subset)
+            unknown = [value for value in chosen if value not in dimensions[axis].values]
+            if unknown:
+                raise ExpandError(f"dimension {axis} has no member(s) {unknown}")
+            uses.append((axis, chosen, False))
+            continue
+        match = DIM_USE_RE.match(item)
+        if match:
+            axis = match.group(1)
+            if axis not in dimensions:
+                raise ExpandError(f"undeclared dimension {axis!r}")
+            uses.append((axis, list(dimensions[axis].values), False))
+            continue
+        raise ExpandError(f"bad dimension index {item!r}")
+    return uses
 
 
 def _expand_body(
     body: list[Stmt],
     env: dict[str, object],
-    dimensions: dict[str, list[str]],
+    dimensions: dict[str, Axis],
     origins: list[tuple[str, str, int]],
 ) -> list[str]:
     out: list[str] = []
     for stmt in body:
-        match = ITEM_RE.match(stmt.text)
-        if not match:
+        parsed = _parse_item(stmt.text)
+        if parsed is None:
             out.append(_subst_fields(stmt.text, env))
             continue
-        keyword, base, axis, subset, rest = match.groups()
+        keyword, base, index, rest = parsed
         try:
-            members = _members(axis, subset, dimensions)
+            uses = _parse_dim_uses(index, dimensions)
         except ExpandError as exc:
             raise ExpandError(f"line {stmt.line}: {exc}") from exc
-        for member in members:
-            name = f"{base}_{member}"
+        for use_index in _product_index(uses):
+            suffix = "".join(
+                "_WorstCase" if is_worst else dimensions[axis].name(member)
+                for (axis, _members, is_worst), member in zip(uses, use_index)
+            )
+            name = f"{base}{suffix}"
             origins.append((keyword, name, stmt.line))
             tail = rest if rest.startswith(";") else " " + rest
             text = f"{keyword} {name}{tail}".rstrip()
             out.append(_subst_fields(text, env))
     return out
+
+
+def _product_index(uses: list[tuple[str, list[str], bool]]):
+    """Yield one member per axis; ``worst`` contributes the pseudo-member."""
+    if not uses:
+        yield []
+        return
+    def walk(position: int, chosen: list[str]):
+        if position == len(uses):
+            yield list(chosen)
+            return
+        axis, members, is_worst = uses[position]
+        if is_worst:
+            chosen.append("WorstCase")
+            yield from walk(position + 1, chosen)
+            chosen.pop()
+        else:
+            for member in members:
+                chosen.append(member)
+                yield from walk(position + 1, chosen)
+                chosen.pop()
+    yield from walk(0, [])
 
 
 def expand(
@@ -259,8 +378,8 @@ def expand(
         axis, value = add_axis
         if axis not in dimensions:
             raise ExpandError(f"cannot add {value!r}: dimension {axis!r} is not declared")
-        if value not in dimensions[axis]:
-            dimensions[axis].append(value)
+        if value not in dimensions[axis].values:
+            dimensions[axis].values.append(value)
     families = {machine.name: machine for machine in machines if machine.family is None and machine.params}
     if origins is None:
         origins = []
