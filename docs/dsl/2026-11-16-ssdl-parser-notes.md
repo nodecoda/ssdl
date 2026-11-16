@@ -379,7 +379,7 @@ read_variant R { ... }
 ### 11.5 证据
 
 ```bash
-python3 tools/ssdl/check.py                 # 25/25
+python3 tools/ssdl/check.py                 # 26/26
 python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl \
     --strict --attrs tests/ssdl/attrs.json -o /tmp/gen.td
 python3 tools/ssdl/compare.py /tmp/gen.td tests/ssdl/sifive7-mini.expected.td
@@ -441,7 +441,7 @@ fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`pred
 ### 13.2 证据
 
 ```bash
-python3 tools/ssdl/check.py    # 25/25
+python3 tools/ssdl/check.py    # 26/26
 ```
 
 新增自检：
@@ -474,7 +474,7 @@ fixture 对拍仍通过（`compare.py` records match）；`tests/ssdl/sifive7-mi
 ### 14.3 证据
 
 ```bash
-python3 tools/ssdl/check.py    # 25/25
+python3 tools/ssdl/check.py    # 26/26
 ```
 
 新增自检 `unknown_attribute_is_not_false`：同一 schema 下 `inst(may_load == false)` 报错；`inst(!may_load)` 只选中 `may_load = false` 的指令（`SUB`），不选中 unknown 的（`ADD`）。
@@ -483,3 +483,48 @@ python3 tools/ssdl/check.py    # 25/25
 
 - schema 的**来源**（`schema.py` 导出 + `--merge`）已可用，但还没有把在树 RISC-V 的 `--merge` 宿主属性（如 `is_zero`）固化成生成步骤；
 - `unknown` 是否需要一个显式谓词（如 `unknown(may_load)`）尚未定，当前一律禁止比较。
+
+## 15. 2026-11-16 `-gen-subtarget` 验证（stub 目标）
+
+### 15.1 为什么要 stub
+
+`-gen-subtarget` 的失败不是展开器 bug：模型一旦有任何 `WriteRes`，TableGen 要求覆盖该指令集可达的每个 `SchedWrite`（`SubtargetEmitter.cpp:984-989`），而完整 RISC-V 指令集有上百个写。用 `RISCV.td` 做夹具只能得到"必然失败"的结论，无法做回归。
+
+因此新增 `tests/ssdl/stub-target/SSDLStub.td`：一个只含 `ADD`/`SUB`/`MUL` 的最小目标，专门给生成物喂 `-gen-subtarget` / `-gen-instr-info`。
+
+### 15.2 stub 的三条约定
+
+1. **指令在生成记录之前声明，且不写 `SchedRW`**：调度类由 SSDL 的 `map` 生成 `InstRW` 提供。TableGen 的 `(instrs ...)` 是解析期引用，顺序反了会 `Variable not defined`。
+2. **`RISCVProcessorModel` / `RISCVTuneProcessorModel` 是 shim**：映射到 `ProcessorModel`，让生成物原样通过，不需要改展开器。
+3. **`defm : RemapAllTargetPseudoPointerOperands<GPR>;` + `Target.InstructionSet`**：`-gen-instr-info` 对 `ptr_rc` 伪指令和 `InstructionSet` 有硬要求，真实目标都要提供。
+
+### 15.3 用法
+
+```bash
+python3 tools/ssdl/emit_td.py tests/ssdl/stub-mini.ssdl \
+    --strict --target-include SSDLStub.td -o /tmp/gen.td
+llvm-tblgen -gen-subtarget  -I llvm/include -I tests/ssdl/stub-target /tmp/gen.td
+llvm-tblgen -gen-instr-info -I llvm/include -I tests/ssdl/stub-target /tmp/gen.td
+```
+
+`emit_td.py` 新增 `--target-include`（默认 `RISCV.td`），仅影响输出首行的 include。
+
+### 15.4 证据
+
+```text
+python3 tools/ssdl/check.py -> 26/26
+generated_td_passes_gen_subtarget:
+  -gen-subtarget  exit 0；产出含 ADD_SUB、MUL 两个 sched class
+  -gen-instr-info exit 0
+```
+
+`stub-mini.ssdl` 覆盖：目标级词表、`WriteRes`、`ReadAdvance`、`SchedAlias` → `WriteSequence`、两条 `InstRW`。生成的 `ADD_SUB` 是 1 uop / 1 资源，`MUL` 经 4 条 `W_ALU` 的序列展开为 4 uops，说明 alias + sequence 真的被 TableGen 解析了。
+
+反控：同一条管线删除 `bind`（只剩 `resource`）后，`-gen-subtarget` 必须以
+`SchedMachineModel defines ProcResources without defining WriteRes SchedWriteRes`
+失败——测试断言了这条，避免夹具变成"永远通过"。
+
+### 15.5 仍然开放
+
+- stub 只覆盖调度记录，不覆盖 STI/TII 谓词的生成代码是否可编译（需要 C++ 侧夹具）；
+- 真实 CPU 的完整模型验收（全量 SiFive7）仍未做；stub 证明的是"形状与完整性契约"，不是"数值等价"。

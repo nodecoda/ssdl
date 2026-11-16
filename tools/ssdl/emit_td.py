@@ -1328,14 +1328,20 @@ def emit(
     header_comment: str | None = None,
     attrs: AttributeSchema | None = None,
     sorts: dict[str, str] | None = None,
+    target_include: str = "RISCV.td",
 ) -> tuple[str, list[Diagnostic]]:
-    """Lower ``program`` and prepend the includes the output needs to load."""
+    """Lower ``program`` and prepend the includes the output needs to load.
+
+    ``target_include`` is the target description that must be loaded first.
+    It is ``RISCV.td`` for real use; the validation fixture points it at a
+    minimal stub so ``-gen-subtarget`` can be exercised in CI.
+    """
     emitter = Emitter(program, strict=strict, attrs=attrs, sorts=sorts)
     body = emitter.run()
     header = []
     if header_comment:
         header.append(header_comment)
-    header.append('include "RISCV.td"')
+    header.append(f'include "{target_include}"')
     for include in includes:
         header.append(f'include "{include}"')
     return "\n".join(header) + "\n\n" + body, emitter.skips
@@ -1362,6 +1368,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="JSON attribute schema used to evaluate set declarations",
     )
+    ap.add_argument(
+        "--target-include",
+        default="RISCV.td",
+        help="target description included first (default: RISCV.td)",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -1383,6 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
             includes=tuple(args.includes),
             header_comment=f"// Generated from {args.input} by tools/ssdl/emit_td.py.",
             attrs=attrs,
+            target_include=args.target_include,
         )
     except SSDLEmitError as exc:
         for diag in exc.diagnostics:

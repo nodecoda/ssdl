@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -784,6 +785,74 @@ machine B {
     for name in ("A_LoadQueue_P", "B_LoadQueue_Q"):
         assert_in(f"def {name}", text)
     assert_true("def WR_W" not in text, "WriteRes must be namespaced")
+
+
+@test
+def generated_td_passes_gen_subtarget():
+    """The generated records must satisfy the real scheduling-model checks.
+
+    The stub target exists because no *partial* model can satisfy
+    ``-gen-subtarget`` against a full instruction set: once a model defines any
+    ``WriteRes``, every reachable ``SchedWrite`` needs one.  The stub keeps the
+    instruction set small enough that the generated model is complete for it.
+    """
+    try:
+        tblgen = compare_mod.default_tblgen()
+    except compare_mod.CompareError:
+        return  # no llvm-tblgen in this environment; the compare test gates that
+    include_dirs = compare_mod.default_include_dirs()
+    include_dirs.append(str(ROOT / "tests/ssdl/stub-target"))
+
+    def run(text: str, tmp: str, name: str):
+        path = Path(tmp) / f"{name}.td"
+        path.write_text(text, encoding="utf-8")
+        results = {}
+        for gen in ("-gen-subtarget", "-gen-instr-info"):
+            out = Path(tmp) / f"{name}{gen}.inc"
+            cmd = [tblgen, gen]
+            for inc in include_dirs:
+                cmd.extend(["-I", inc])
+            cmd.extend(["-o", str(out), str(path)])
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            results[gen] = (proc, out)
+        return results
+
+    text, skips = emit_td.emit(
+        parser.parse_file(str(ROOT / "tests/ssdl/stub-mini.ssdl")),
+        strict=True,
+        target_include="SSDLStub.td",
+    )
+    assert_true(skips == [], skips)
+
+    broken_source = """
+machine stub-cpu {
+    complete_model = false;
+    resource P : units = 1;
+    write W_ALU;
+    map [ADD] -> [W_ALU, read_default, read_default];
+}
+"""
+    broken, _ = emit_td.emit(
+        parser.parse(broken_source), strict=True, target_include="SSDLStub.td"
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ok = run(text, tmp, "ok")
+        for gen, (proc, out) in ok.items():
+            assert_true(proc.returncode == 0, f"{gen} failed:\n{proc.stderr}")
+            assert_true(
+                out.exists() and out.stat().st_size > 0, f"{gen} produced no output"
+            )
+        subtarget = ok["-gen-subtarget"][1].read_text(encoding="utf-8")
+        assert_in("ADD_SUB", subtarget)
+        assert_in("MUL", subtarget)
+
+        # Negative control: ProcResources without any WriteRes is the exact
+        # failure a partial model produces, and it must stay fatal.
+        bad = run(broken, tmp, "broken")
+        proc = bad["-gen-subtarget"][0]
+        assert_true(proc.returncode != 0, "a model without WriteRes must be rejected")
+        assert_in("without defining WriteRes", proc.stderr)
 
 
 @test

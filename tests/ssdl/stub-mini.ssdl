@@ -1,0 +1,28 @@
+# Minimal SSDL input validated by -gen-subtarget/-gen-instr-info.
+# It exercises: target-level vocabulary, WriteRes, ReadAdvance, SchedAlias to a
+# WriteSequence, and InstRW from `map`.
+
+feature StubBase : kind = plain, mattr = "stub-base",
+                   field = "HasStubBase", value = "true";
+
+machine stub-cpu {
+    features = [StubBase];
+    issue_width = 1;
+    complete_model = false;
+
+    resource P : units = 1;
+
+    write W_ALU;
+    write W_MULDIV;
+    read  R_ALU;
+
+    write_seq W_SEQ = [W_ALU, W_ALU] repeat = 2;
+
+    bind W_ALU -> [P], latency = 1;
+    advance R_ALU : cycles = 1 : writes = [W_ALU];
+
+    alias W_MULDIV -> W_SEQ;
+
+    map [ADD, SUB] -> [W_ALU, read_default, read_default];
+    map [MUL]      -> [W_MULDIV, read_default, read_default];
+}

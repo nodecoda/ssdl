@@ -262,7 +262,7 @@ llvm-tblgen -gen-subtarget -I llvm/include -I llvm/lib/Target/RISCV /tmp/gen.td
 
 正确的验证路径有两条：
 
-- **最小 stub 目标**：新建一个只包含 4–6 条指令、2 个 `SchedWrite`、1 个 `SchedMachineModel` 的 `-gen-subtarget` 夹具，验证展开器的形状（这是能自动化、能进 CI 的那条）。
+- **最小 stub 目标（已落地）**：`tests/ssdl/stub-target/SSDLStub.td` + `tests/ssdl/stub-mini.ssdl`，`check.py` 的 `generated_td_passes_gen_subtarget` 同时跑 `-gen-subtarget` 与 `-gen-instr-info`，并用"去掉 `bind` 必须失败"做反控。它验证形状与完整性契约，能进 CI。注意 stub 要求指令先于调度记录声明且不写 `SchedRW`（调度类由 `map` 的 `InstRW` 提供），并需要 `RemapAllTargetPseudoPointerOperands` 与 `Target.InstructionSet`。
 - **完整模型**：把一个真实 CPU 的整套 `WriteRes` 全部用 SSDL 写出来（SiFive7 的量级），再替换在树 `.td` 做完整构建。这条是产品级验收，不是每轮 CI。
 
 当前 fixture 的价值仅限于 `-print-records` 对拍；它不可能通过 `-gen-subtarget`，也不应该为了通过而放松检查。
