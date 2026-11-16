@@ -25,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
+from ssdl import census_riscv as census_mod  # noqa: E402
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
@@ -1508,6 +1509,71 @@ def record_fields_survive_the_json_table_and_llvm_tblgen():
                 got is not None and normalize_value(got) == normalize_value(value),
                 f"{record.name}.{field}: replay says {got!r}, table says {value!r}",
             )
+
+@test
+def census_separates_explicit_bindings_from_tblgen_fill_ins():
+    """A model with one authored WriteRes must not be credited with the defaults.
+
+    ``-print-records`` emits a ``WriteRes`` for every SchedWrite, so W_B shows
+    up with ``Unsupported = 1`` even though the model never bound it.  The
+    census exists to stop that fill-in from being counted as authored work.
+    The record table is built in memory so the test pins the counting rule
+    without depending on a tblgen checkout.
+    """
+    recs = records_mod.RecordFile()
+    recs.cls = {
+        "TestModel": "SchedMachineModel",
+        "W_A": "SchedWrite",
+        "W_B": "SchedWrite",
+        "R_A": "SchedRead",
+        "R_B": "SchedRead",
+        "anon_wr_a": "WriteRes",
+        "anon_wr_b": "WriteRes",
+        "anon_ra_a": "ReadAdvance",
+        "anon_ra_b": "ReadAdvance",
+        "P": "ProcResource",
+    }
+    scope = "  SchedMachineModel SchedModel = TestModel;"
+    recs.body = {
+        "TestModel": ["  int IssueWidth = 2;"],
+        "anon_wr_a": ["  int Latency = 1;", "  bit Unsupported = 0;", scope],
+        "anon_wr_b": ["  int Latency = 1;", "  bit Unsupported = 1;", scope],
+        "anon_ra_a": ["  int Cycles = 1;", "  bit Unsupported = 0;", scope],
+        "anon_ra_b": ["  int Cycles = 1;", "  bit Unsupported = 1;", scope],
+        "P": ["  int NumUnits = 1;", scope],
+    }
+    rows, _files = census_mod.census(recs, riscv_dir=None)
+    assert_true([row["model"] for row in rows] == ["TestModel"], f"models: {rows}")
+    row = rows[0]
+    assert_true(row["write_res_explicit"] == 1, f"explicit writes: {row}")
+    assert_true(row["read_advance_explicit"] == 1, f"explicit reads: {row}")
+    assert_true(row["proc_resources"] == 1, f"resources: {row}")
+    defs = census_mod.index_by_model(recs)["TestModel"]
+    total = sum(1 for name in defs if recs.cls.get(name) == "WriteRes")
+    assert_true(total == 2, f"expected one default fill-in, got {total} WriteRes")
+
+
+@test
+def riscv_census_matches_the_committed_table():
+    """The Step 1 table must be reproducible from the pinned records dump.
+
+    Skipped when the dump or the LLVM checkout is absent, exactly like the
+    schema test; the committed CSV carries the LLVM commit it was taken from.
+    """
+    dump = Path("/tmp/riscv.rec")
+    src = Path(os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"))
+    table = ROOT / "data/riscv-sched-census.csv"
+    if not dump.is_file() or not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
+        return
+    recs = records_mod.load(str(dump))
+    rows, _files = census_mod.census(recs, riscv_dir=src / "lib/Target/RISCV")
+    text = census_mod.render(rows, census_mod.llvm_commit(src))
+    assert_true(
+        text == table.read_text(),
+        "census table is stale; regenerate with tools/ssdl/census_riscv.py "
+        "--records /tmp/riscv.rec --llvm <llvm>",
+    )
+
 
 
 def main() -> int:
