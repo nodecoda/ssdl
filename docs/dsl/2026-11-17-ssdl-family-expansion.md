@@ -1,9 +1,9 @@
 # 族/维度展开器与无损验证（Step 3）
 
 - date: 2026-11-17
-- status: **Implemented + pilot verified（全模型重生成待完成）**
+- status: **Implemented + 4 models verified（SiFive7 ×3 + Andes45）**
 - 工具：`tools/ssdl/family_expand.py`
-- 测试：`check.py` 60/60
+- 测试：`check.py` 64/64
 - 源：LLVM `700e551714cc`
 
 ## 1. 实现了什么
@@ -150,7 +150,7 @@ machine vlde {
 
 ## 4.2 从 base 还原压缩源：发射器与第一条等价性诊断
 
-`family_mine.py --emit` 把 340 个 base 还原成 `docs/examples/sifive7-family-writes.ssdl`（1143 行）：
+`family_mine.py --emit` 把 340 个 base 还原成 `docs/examples/sifive7-family.ssdl`（历史版本 1143 行）：
 
 | 指标 | 值 |
 |---|---:|
@@ -171,11 +171,40 @@ machine vlde {
 
 结论：压缩前端的形状是对的（3772 条 bind 全部还原），但「等价」还差三类记录。这不是公式问题，是 Step 3.4 的范围问题：ReadAdvance 的维度化（`advance R[LMUL] : cycles = ...`）、`variant`、`map` 尚未进入压缩源。
 
+## 4.3 全模型压缩源与四组无损对拍（Step A–E）
+
+`family_mine.py --emit --profile sifive7-512` 现在发射完整模型：write/read 两半、variant、InstRW、资源、机器属性、processor features/tunes。压缩源 `docs/examples/sifive7-family.ssdl` 为 **3746 行**，展开为 **12375 行**。
+
+| 压缩站点 | 条数 | 展开后记录 |
+|---|---:|---:|
+| `write` | 1287 | 4338 `SchedWrite` |
+| `bind` | 1243 | 4246 `WriteRes` |
+| `read` | 466 | 1755 `SchedRead` |
+| `advance` | 538 | 1638 `ReadAdvance` |
+| `variant` | 26 | 92 `SchedWriteVariant` |
+| `map` | 1 | 1 `InstRW` |
+| `set`（轴视图） | 67 | 0（编译期） |
+
+四组 `equiv.py` 全部 `records match`：
+
+```text
+SiFive7VLEN512Model    4246 writes, 1638 reads, 92 variants, 1 InstRW, 8 resources
+SiFive7VLEN128X100Model 4246 writes, 1638 reads, 92 variants, 1 InstRW, 8 resources
+SiFive7VLEN1024X300Model 4246 writes, 1638 reads, 92 variants, 1 InstRW, 9 resources
+Andes45Model            4200 writes, 1638 reads,  0 variants, 0 InstRW, 16 resources
+```
+
+machine props、resource buffer、processor name/features/tunes/default_march 同在这四组比较范围内。Andes45 没有 `variant`/`InstRW`，但有 641 条上游 `Unsupported = 1` 的 WriteRes，由 `emit_unsupported` 逐条表达。
+
+**压缩比的口径**：整模型 3746 → 12375 是 **3.3×**，低于 §1.4 用「只发射 WriteRes 半边」估出的 6.4×。原因不是回退，而是当时的 1925 行并不是完整模型：它没有 variant 子写（474）、分支写（474）、unsupported 写（300）、variant 谓词，也没有把 read 的真实成员展开。完整模型里 1 条 `bind` 平均表达 3.4 条 `WriteRes`；真正的收益仍是「加一个维度值只改一处」，行数比只作为参考。
+
+注意：processor 名 `sifive-7-series` 含 `-`，不是 SSDL 标识符；生成侧写作 `sifive_7_series`，`equiv.py` 在比较时统一折叠 `-` → `_`（记录本身仍由 `--in-processor/--gen-processor` 指定）。
+
 ## 5. 剩余工作（Step 3 未完成项）
 
-1. **全模型压缩源**：WriteRes 半边已完成（1143 行 → 3772 条）；ReadAdvance（1638）、`variant`（92）、`InstRW` 仍缺。
+1. ~~全模型压缩源~~ → 已完成：3746 行 → 12375 行，四类记录齐全（§4.3）。
 2. ~~公式库~~ → 已收敛为 `units` + `cdiv/max/min`，不再是自由投影（上游 `!cond(mx)` 就是同一组整数运算）。
-3. **四组 `equiv.py`**：`SiFive7VLEN512/128X100/1024X300` + `Andes45Model` 全部 `records match`。当前只做了子族字段级比较。
+3. ~~四组 `equiv.py`~~ → 已完成：SiFive7 ×3 + Andes45 全部 `records match`（§4.3）。
 4. ~~`WorstCase` 语义~~ → 已实现 `worst(D)`：伪成员、不参与计数、数值取最宽成员。
 
 这四项是 Step 4 定语法前必须回答的问题；第 3 项是 AC3 的唯一判据。
@@ -186,5 +215,5 @@ machine vlde {
 cd /home/ubuntu/llvm/llvm-dev
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
-python3 tools/ssdl/check.py   # 60/60
+python3 tools/ssdl/check.py   # 64/64
 ```

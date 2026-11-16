@@ -2036,6 +2036,91 @@ def family_catalogue_leaves_no_record_unexplained():
     assert_true(unexplained == [], f"unexplained bases: {unexplained}")
     assert_true(explained_records == 3772, f"explained records: {explained_records}")
 
+@test
+def family_variant_is_one_statement_per_member():
+    """``variant W[D]`` expands to one subject per member, not a template."""
+    flat = family_mod.expand(
+        """
+set D = [A, B] : kind = dimension, name_format = "_{value}", units = [1, 2];
+machine m {
+    write W[D];
+    bind W[D] -> [P], latency = 1;
+    variant W[D] {
+        case opcode([X]): [W];
+        default: [W];
+    }
+}
+"""
+    )
+    assert_in("variant W_A {", flat)
+    assert_in("variant W_B {", flat)
+    assert_true("variant W[" not in flat, flat)
+
+
+@test
+def family_read_keeps_members_and_worst_case():
+    """A read axis with a worst case expands to members plus ``_WorstCase``."""
+    flat = family_mod.expand(
+        """
+set LMUL = [MF8, M1] : kind = dimension, name_format = "_{value}", units = [1, 8];
+machine m {
+    read R[LMUL];
+    advance R[LMUL] : cycles = 1;
+    read R[worst(LMUL)];
+    advance R[worst(LMUL)] : cycles = 2;
+}
+"""
+    )
+    for name in ("read R_MF8;", "read R_M1;", "read R_WorstCase;"):
+        assert_in(name, flat)
+    assert_in("advance R_WorstCase : cycles = 2;", flat)
+
+
+@test
+def family_map_survives_expansion_unchanged():
+    """``map`` carries instruction names, which are not axis-indexed."""
+    flat = family_mod.expand(
+        """
+machine m {
+    write W_A;
+    read R_A;
+    map [ADD, SUB] -> [W_A, R_A] : unsupported = true;
+}
+"""
+    )
+    assert_in("map [ADD, SUB] -> [W_A, R_A] : unsupported = true;", flat)
+
+
+@test
+def profiles_name_every_instance_the_miner_generates():
+    """The four verified models each have a profile with all launch fields."""
+    table = ROOT / "data/riscv-sched-profiles.json"
+    data = json.loads(table.read_text())
+    profiles = data["profiles"]
+    expected = {
+        "sifive7-512": ("SiFive7VLEN512Model", 512, "sifive_7_series", "SIFIVE_7"),
+        "sifive7-128x100": (
+            "SiFive7VLEN128X100Model",
+            128,
+            "sifive_x160",
+            "SIFIVE_X160",
+        ),
+        "sifive7-1024x300": (
+            "SiFive7VLEN1024X300Model",
+            1024,
+            "sifive_x390",
+            "SIFIVE_X390",
+        ),
+        "andes45": ("Andes45Model", 128, "andes_a45", "ANDES_A45"),
+    }
+    for name, (model, vlen, instance, processor) in expected.items():
+        profile = profiles[name]
+        assert_true(profile["model"] == model, f"{name}: {profile}")
+        assert_true(profile["vlen"] == vlen, f"{name}: {profile}")
+        assert_true(profile["instance"] == instance, f"{name}: {profile}")
+        assert_true(profile["processor"] == processor, f"{name}: {profile}")
+        assert_true(profile["lmul"][0] == "MF8" and profile["lmul"][-1] == "M8", name)
+
 
 def main() -> int:
     failures = 0
