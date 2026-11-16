@@ -1,0 +1,20 @@
+{
+  "order": {
+    "inst": ["ADD", "SUB", "XOR", "AND", "LD", "MUL", "DIV"],
+    "reg": ["X0", "X1", "X2"]
+  },
+  "inst": {
+    "ADD": {"category": "alu", "is_pseudo": false},
+    "SUB": {"category": "alu", "is_pseudo": false},
+    "XOR": {"category": "alu", "is_pseudo": false},
+    "AND": {"category": "alu", "is_pseudo": false},
+    "LD":  {"category": "mem", "is_pseudo": false},
+    "MUL": {"category": "alu", "is_pseudo": false},
+    "DIV": {"category": "alu", "is_pseudo": false}
+  },
+  "reg": {
+    "X0": {"is_zero": true},
+    "X1": {"is_zero": false},
+    "X2": {"is_zero": false}
+  }
+}

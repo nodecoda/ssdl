@@ -11,12 +11,21 @@ existing TableGen records:
   bind      -> WriteRes
   advance   -> ReadAdvance
   map       -> InstRW
+  variant   -> SchedWriteVariant / SchedReadVariant + SchedAlias
+  reg_file  -> RegisterFile
+  queues    -> LoadQueue / StoreQueue, RetireControlUnit
+  itineraries -> FuncUnit / Bypass / InstrItinClass / InstrItinData /
+                 ProcessorItineraries
+  predicate / predicate_prolog / sti_decl / sti_function / tii_predicate
+            -> MCInstPredicate / SchedPredicateBase / Predicate /
+               AssemblerPredicate / PredicateProlog / STIPredicate /
+               TIIPredicate (see ``predicates.py``)
 
-Everything else (``set``, the predicate body forms, ``sti_*``, ``tii_predicate``,
-``variant``, ``reg_file``, ``itineraries`` ...) parses but is reported as
-"skipped" rather than lowered.  With ``--strict`` every skipped construct is an
-error, which is how the test suite proves that the section 5 example is *not*
-lowerable as written.
+``set`` declarations are compile-time only and are evaluated against a host
+attribute schema (``sets.py``); they emit no records.  Constructs that still
+have no landing spot (``write_seq``, ``map_itin``, scheduling aliases,
+``sti_function.delegates``) are reported as "skipped"; with ``--strict`` every
+skip is an error, which is how the test suite proves which parts are open.
 
 Record names are deterministic so that ``llvm-tblgen -print-records`` output can
 be compared against a hand-written .td file.
@@ -28,6 +37,17 @@ import re
 import sys
 from dataclasses import dataclass
 from typing import Any
+
+if __package__ in (None, ""):
+    import validate as validate_mod  # type: ignore
+    from predicates import PredicateError, PredicateLowerer  # type: ignore
+    from sets import AttributeSchema, SetEvaluator  # type: ignore
+    from tdutil import join_list, td_def_name, td_str  # type: ignore
+else:
+    from . import validate as validate_mod
+    from .predicates import PredicateError, PredicateLowerer
+    from .sets import AttributeSchema, SetEvaluator
+    from .tdutil import join_list, td_def_name, td_str
 
 if __package__ in (None, ""):
     from parser import (  # type: ignore
@@ -137,29 +157,26 @@ SCHED_MODEL_PROPS = {
 }
 
 
-def td_str(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def td_def_name(name: str) -> str:
-    out = re.sub(r"[^A-Za-z0-9_]", "_", name)
-    if not out or out[0].isdigit():
-        out = "_" + out
-    return out
-
-
-def join_list(items: list[str]) -> str:
-    return "[" + ", ".join(items) + "]"
-
-
 class Emitter:
-    def __init__(self, program: Program, strict: bool = False):
+    def __init__(
+        self,
+        program: Program,
+        strict: bool = False,
+        attrs: AttributeSchema | None = None,
+        sorts: dict[str, str] | None = None,
+    ):
         self.program = program
         self.strict = strict
+        self.attrs = attrs
+        self.sorts = sorts
         self.errors: list[Diagnostic] = []
         self.skips: list[Diagnostic] = []
         self.features: dict[str, FeatureInfo] = {}
         self.machines: dict[str, MachineInfo] = {}
+        # ProcessorItineraries emitted for a top-level block, keyed by the
+        # machine name its ``sched_model`` names.
+        self.top_itineraries: dict[str, str] = {}
+        self.top_itin_text: list[str] = []
 
     # -- diagnostics -----------------------------------------------------
     def error(self, where: str, message: str) -> None:
@@ -175,29 +192,47 @@ class Emitter:
     # -- driver ----------------------------------------------------------
     def run(self) -> str:
         self.collect_features()
-        self.collect_machines()
-        # Collect the global "not lowered" diagnostics before bailing out so a
-        # failing file reports every unlowered construct, not just the first
-        # class of error.
-        for decl in self.program.decls:
-            if isinstance(decl, SetDecl):
-                self.skip(f"set {decl.name}", "attribute-filtered sets are not lowered (norm 4.1)")
-            elif isinstance(decl, PredicateDecl):
-                self.skip(f"predicate {decl.name}", "predicates are not lowered by the minimal emitter")
-            elif isinstance(decl, PredicateProlog):
-                self.skip("predicate_prolog", "predicate prologs are not lowered by the minimal emitter")
-            elif isinstance(decl, STIDecl):
-                self.skip(f"sti_decl {decl.name}", "STI declarations are not lowered by the minimal emitter")
-            elif isinstance(decl, STIFunction):
-                self.skip(f"sti_function {decl.name}", "STI functions are not lowered by the minimal emitter")
-            elif isinstance(decl, TIIPredicate):
-                self.skip(f"tii_predicate {decl.name}", "TII predicates are not lowered by the minimal emitter")
-            elif isinstance(decl, ItinerariesDecl):
-                self.skip("itineraries", "itineraries are not lowered by the minimal emitter")
-            elif isinstance(decl, (FeatureDecl, MachineDecl)):
-                pass
-            else:  # pragma: no cover - parser only produces the above
-                self.error(type(decl).__name__, "unknown declaration kind")
+        self.declare_machines()
+        self.lower_top_itineraries()
+
+        self.set_evaluator = (
+            SetEvaluator(self.program, self.attrs) if self.attrs is not None else None
+        )
+        if self.set_evaluator is not None:
+            # Evaluate every declared set eagerly so an unused cycle or type
+            # error is still diagnosed.
+            for decl in self.program.decls:
+                if isinstance(decl, SetDecl):
+                    self.set_evaluator.expand_set(decl.name, f"set {decl.name}")
+        elif any(isinstance(d, SetDecl) for d in self.program.decls):
+            for decl in self.program.decls:
+                if isinstance(decl, SetDecl):
+                    self.skip(
+                        f"set {decl.name}",
+                        "requires the host attribute schema (--attrs); sets emit no records",
+                    )
+
+        self.predicates = PredicateLowerer(
+            program=self.program,
+            feature_defs={name: info.def_name for name, info in self.features.items()},
+            sets=self.set_evaluator,
+            sorts=self.collect_sorts(),
+            machine_models={
+                name: f"{info.def_name}Model"
+                for name, info in self.machines.items()
+                if info.decl.alias is None
+            },
+            reserved_names=self.reserved_def_names(),
+        )
+        early = self.predicates.lower_early()
+
+        self.lower_machines()
+        late = self.predicates.lower_late()
+        try:
+            self.predicates.finish()
+        except PredicateError as exc:
+            for message in exc.errors:
+                self.error("lowering", message)
 
         if self.errors:
             raise SSDLEmitError(self.errors)
@@ -205,9 +240,60 @@ class Emitter:
         chunks: list[str] = []
         for info in self.features.values():
             chunks.append(info.text)
+        chunks.extend(self.top_itin_text)
+        chunks.extend(early)
         for info in self.machines.values():
             chunks.append(info.text)
+        chunks.extend(late)
         return "\n".join(c for c in chunks if c).rstrip() + "\n"
+
+    def collect_sorts(self) -> dict[str, str]:
+        if self.sorts is not None:
+            return self.sorts
+        checker = validate_mod.SortChecker(self.program)
+        checker.run()  # sort errors are reported by ``validate.py``; lowering
+        return checker.sorts  # needs only the inferred map.
+
+    def reserved_def_names(self) -> set[str]:
+        """Def names the machine lowering will emit.
+
+        The predicate lowerer refuses to emit a record whose name is already
+        taken; feeding it the names the emitter itself plans to declare keeps
+        that check from firing on legitimate predicate names.
+        """
+        names: set[str] = set()
+        for info in self.features.values():
+            names.add(info.def_name)
+        for info in self.machines.values():
+            names.add(info.def_name)
+            if info.decl.alias is not None:
+                continue
+            names.add(f"{info.def_name}Model")
+            for item in info.decl.items:
+                kind = item.get("kind")
+                if kind in ("resource", "res_group", "func_unit", "bypass",
+                            "itin_class", "reg_file"):
+                    names.add(item["name"])
+                elif kind == "write":
+                    names.add(item["name"])
+                    names.add("WR_" + item["name"])
+                elif kind == "read":
+                    names.add(item["name"])
+                    names.add("RA_" + item["name"])
+                elif kind == "retire_unit":
+                    names.add(f"{info.def_name}RetireUnit")
+                elif kind in ("variant", "read_variant"):
+                    names.add(item["name"] + "Variant")
+                    names.add("SSDLVariantAlias_" + item["name"])
+                elif kind in ("load_queue", "store_queue"):
+                    prefix = "LoadQueue_" if kind == "load_queue" else "StoreQueue_"
+                    names.add(prefix + item["resource"])
+                elif kind == "itineraries":
+                    names.update(self.itinerary_names(item["decl"], info.def_name))
+        for text in self.top_itin_text:
+            for name in re.findall(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)", text, re.MULTILINE):
+                names.add(name)
+        return names
 
     # -- features --------------------------------------------------------
     def collect_features(self) -> None:
@@ -360,8 +446,147 @@ class Emitter:
             args.append(inline)
         return f"def {info.def_name} : RISCVTuneFeature<{', '.join(args)}>;"
 
+    # -- itineraries -----------------------------------------------------
+    def itinerary_def_name(self, decl: ItinerariesDecl, owner_def: str) -> str:
+        if decl.sched_model is not None:
+            return td_def_name(decl.sched_model) + "Itineraries"
+        return owner_def + "Itineraries"
+
+    def itin_class_name(self, name: str) -> str:
+        base = td_def_name(name)
+        return base if base.startswith("IIC_") else "IIC_" + base
+
+    def itinerary_names(self, decl: ItinerariesDecl, owner_def: str) -> set[str]:
+        names = {self.itinerary_def_name(decl, owner_def)}
+        for item in decl.items:
+            if item["kind"] in ("func_units", "bypasses"):
+                names.update(item["value"])
+            elif item["kind"] == "itin":
+                names.add(self.itin_class_name(item["name"]))
+        return names
+
+    def lower_stage(self, stage: dict[str, Any], where: str, units: set[str]) -> str:
+        for unit in stage["units"]:
+            if unit not in units:
+                self.error(where, f"stage names unknown functional unit {unit!r}")
+        args = [str(stage["cycles"]), join_list(stage["units"])]
+        if stage["timeinc"] is not None or stage["kind"] is not None:
+            args.append(str(stage["timeinc"]) if stage["timeinc"] is not None else "-1")
+        if stage["kind"] is not None:
+            kind = {"required": "Required", "reserved": "Reserved"}.get(stage["kind"])
+            if kind is None:
+                self.error(where, f"unknown stage kind {stage['kind']!r}")
+                kind = "Required"
+            args.append(kind)
+        return f"InstrStage<{', '.join(args)}>"
+
+    def lower_itineraries(
+        self,
+        decl: ItinerariesDecl,
+        owner_def: str,
+        where: str,
+        declared_units: set[str],
+        declared_bypasses: set[str],
+    ) -> tuple[list[str], str]:
+        out: list[str] = []
+        func_units: list[str] = []
+        bypasses: list[str] = []
+        itins: list[dict[str, Any]] = []
+        for item in decl.items:
+            if item["kind"] == "func_units":
+                func_units = list(item["value"])
+            elif item["kind"] == "bypasses":
+                bypasses = list(item["value"])
+            elif item["kind"] == "itin":
+                itins.append(item)
+
+        known_units = set(func_units) | set(declared_units)
+        known_bypasses = set(bypasses) | set(declared_bypasses)
+        for unit in func_units:
+            if unit not in declared_units:
+                out.append(f"def {unit} : FuncUnit;")
+        for bypass in bypasses:
+            if bypass not in declared_bypasses:
+                out.append(f"def {bypass} : Bypass;")
+
+        iid: list[str] = []
+        seen_itins: set[str] = set()
+        for item in itins:
+            name = item["name"]
+            if name in seen_itins:
+                self.error(where, f"duplicate itin {name!r}")
+                continue
+            seen_itins.add(name)
+            cls = self.itin_class_name(name)
+            out.append(f"def {cls} : InstrItinClass;")
+            fields = item["fields"]
+            raw_stages = fields.get("stages", ("stages", []))
+            stages = [self.lower_stage(stage, f"{where}.{name}", known_units) for stage in raw_stages[1]]
+            cycles = [int(x) for x in fields.get("cycles", [])]
+            itin_bypasses = list(fields.get("bypasses", []))
+            for bypass in itin_bypasses:
+                if bypass not in known_bypasses:
+                    self.error(where, f"itin {name}: unknown bypass {bypass!r}")
+            uops = int(fields.get("uops", 1))
+            args = [cls, join_list(stages)]
+            if cycles or itin_bypasses or uops != 1:
+                args.append(join_list([str(c) for c in cycles]))
+            if itin_bypasses or uops != 1:
+                args.append(join_list(itin_bypasses))
+            if uops != 1:
+                args.append(str(uops))
+            iid.append(f"InstrItinData<{', '.join(args)}>")
+
+        def_name = self.itinerary_def_name(decl, owner_def)
+        head = (
+            f"def {def_name} : ProcessorItineraries<{join_list(func_units)}, "
+            f"{join_list(bypasses)}, {join_list(iid)}>"
+        )
+        if decl.namespace:
+            out.append(
+                head
+                + " {\n  let PacketizerNamespace = "
+                + td_str(decl.namespace)
+                + ";\n}"
+            )
+        else:
+            out.append(head + ";")
+        return out, def_name
+
+    def lower_top_itineraries(self) -> None:
+        for decl in self.program.decls:
+            if not isinstance(decl, ItinerariesDecl):
+                continue
+            where = "itineraries"
+            if decl.sched_model is None:
+                self.error(where, "top-level itineraries must set 'sched_model = IDENT'")
+                continue
+            if decl.sched_model not in self.machines:
+                self.error(
+                    where, f"sched_model {decl.sched_model!r} is not a declared machine"
+                )
+                continue
+            info = self.machines[decl.sched_model]
+            if info.decl.alias is not None:
+                self.error(
+                    where,
+                    f"sched_model {decl.sched_model!r} is not a machine definition",
+                )
+                continue
+            if decl.sched_model in self.top_itineraries:
+                self.error(
+                    where,
+                    f"duplicate top-level itineraries for machine {decl.sched_model!r}",
+                )
+                continue
+            texts, def_name = self.lower_itineraries(
+                decl, info.def_name, f"itineraries({decl.sched_model})", set(), set()
+            )
+            self.top_itin_text.extend(texts)
+            self.top_itineraries[decl.sched_model] = def_name
+
     # -- machines --------------------------------------------------------
-    def collect_machines(self) -> None:
+    def declare_machines(self) -> None:
         for decl in self.program.decls:
             if not isinstance(decl, MachineDecl):
                 continue
@@ -370,6 +595,7 @@ class Emitter:
                 continue
             self.machines[decl.name] = MachineInfo(decl, td_def_name(decl.name))
 
+    def lower_machines(self) -> None:
         # Alias targets may be declared later, so resolve in a second pass.
         seen_defs: dict[str, str] = {}
         for info in self.machines.values():
@@ -382,6 +608,19 @@ class Emitter:
                     )
                 seen_defs[def_name] = f"machine {info.decl.name}"
             info.text = lowered
+
+    def resolve_rw(
+        self, entries: list[str], writes: set[str], reads: set[str], where: str
+    ) -> list[str]:
+        resolved = []
+        for entry in entries:
+            if entry in RESERVED_RW:
+                resolved.append(RESERVED_RW[entry])
+            elif entry in writes or entry in reads:
+                resolved.append(entry)
+            else:
+                self.error(where, f"unknown SchedReadWrite {entry!r}")
+        return resolved
 
     def lower_machine(self, info: MachineInfo) -> str:
         decl = info.decl
@@ -439,19 +678,9 @@ class Emitter:
 
         skip_messages = {
             "write_seq": "write_seq is not lowered by the minimal emitter",
-            "func_unit": "func_unit is not lowered by the minimal emitter",
-            "bypass": "bypass is not lowered by the minimal emitter",
-            "itin_class": "itin_class is not lowered by the minimal emitter",
             "combo_func": "combo_func is not lowered by the minimal emitter",
-            "map_itin": "map_itin is not lowered by the minimal emitter",
+            "map_itin": "map_itin is not lowered yet",
             "alias": "scheduling aliases are not lowered by the minimal emitter",
-            "variant": "SchedWriteVariant is not lowered by the minimal emitter",
-            "read_variant": "SchedReadVariant is not lowered by the minimal emitter",
-            "reg_file": "reg_file is not lowered by the minimal emitter",
-            "retire_unit": "retire_unit is not lowered by the minimal emitter",
-            "load_queue": "load_queue is not lowered by the minimal emitter",
-            "store_queue": "store_queue is not lowered by the minimal emitter",
-            "itineraries": "itineraries are not lowered by the minimal emitter",
         }
         for kind, message in skip_messages.items():
             for item in items[kind]:
@@ -526,6 +755,21 @@ class Emitter:
                 self.error(where, f"duplicate read {item['name']!r}")
             reads.add(item["name"])
             out.append(f"def {item['name']} : SchedRead;")
+
+        declared_units: set[str] = set()
+        for item in items["func_unit"]:
+            if item["name"] in declared_units:
+                self.error(where, f"duplicate func_unit {item['name']!r}")
+            declared_units.add(item["name"])
+            out.append(f"def {item['name']} : FuncUnit;")
+        declared_bypasses: set[str] = set()
+        for item in items["bypass"]:
+            if item["name"] in declared_bypasses:
+                self.error(where, f"duplicate bypass {item['name']!r}")
+            declared_bypasses.add(item["name"])
+            out.append(f"def {item['name']} : Bypass;")
+        for item in items["itin_class"]:
+            out.append(f"def {item['name']} : InstrItinClass;")
 
         bound: set[str] = set()
         for item in items["bind"]:
@@ -686,7 +930,143 @@ class Emitter:
                     f"def {def_name} : InstRW<{join_list(resolved)}, {dag}>{body};"
                 )
 
+        for kind in ("variant", "read_variant"):
+            for item in items[kind]:
+                name = item["name"]
+                cls = "SchedWriteVariant" if kind == "variant" else "SchedReadVariant"
+                target_ok = name in writes if kind == "variant" else name in reads
+                if not target_ok:
+                    expected = "write" if kind == "variant" else "read"
+                    self.error(
+                        f"{where}.{name}",
+                        f"{kind} must name a declared {expected}",
+                    )
+                    continue
+                if item["default"] is None:
+                    self.error(
+                        f"{where}.{name}",
+                        "variant requires an explicit default case (P1-12)",
+                    )
+                    continue
+                cases = []
+                for case in item["cases"]:
+                    pred = self.predicates.to_sched(
+                        case["pred"], {}, f"{where}.{name}"
+                    ) if self.predicates is not None else "NoSchedPred"
+                    selected = self.resolve_rw(
+                        case["selected"], writes, reads, f"{where}.{name}"
+                    )
+                    cases.append(f"SchedVar<{pred}, {join_list(selected)}>")
+                default = self.resolve_rw(
+                    item["default"], writes, reads, f"{where}.{name}"
+                )
+                cases.append(f"SchedVar<NoSchedPred, {join_list(default)}>")
+                body = ""
+                if item.get("variadic"):
+                    body = " {\n  let Variadic = true;\n}"
+                out.append(
+                    f"def {name}Variant : {cls}<{join_list(cases)}>{body};"
+                )
+                out.append(
+                    f"def SSDLVariantAlias_{name} : SchedAlias<{name}, {name}Variant>;"
+                )
+
+        for item in items["reg_file"]:
+            name = item["name"]
+            fields = item["fields"]
+            for key in fields:
+                if key not in (
+                    "num_phys",
+                    "classes",
+                    "costs",
+                    "allow_move_elim",
+                    "max_move_elim_per_cy",
+                    "allow_zero_elim_only",
+                ):
+                    self.error(where, f"reg_file {name}: unknown field {key!r}")
+            if "num_phys" not in fields:
+                self.error(where, f"reg_file {name}: num_phys is required")
+                continue
+            args = [str(fields["num_phys"])]
+            classes = list(fields.get("classes", []))
+            costs = list(fields.get("costs", []))
+            allow = list(fields.get("allow_move_elim", []))
+            max_moves = fields.get("max_move_elim_per_cy")
+            zero_only = fields.get("allow_zero_elim_only")
+            if costs and len(costs) != len(classes):
+                self.error(
+                    where,
+                    f"reg_file {name}: costs has {len(costs)} entries for "
+                    f"{len(classes)} classes",
+                )
+            if allow and len(allow) != len(classes):
+                self.error(
+                    where,
+                    f"reg_file {name}: allow_move_elim has {len(allow)} entries "
+                    f"for {len(classes)} classes",
+                )
+            if classes or costs or allow or max_moves is not None or zero_only:
+                args.append(join_list(classes))
+            if costs or allow or max_moves is not None or zero_only:
+                args.append(join_list([str(c) for c in costs]))
+            if allow or max_moves is not None or zero_only:
+                args.append(join_list(["true" if b else "false" for b in allow]))
+            if max_moves is not None or zero_only:
+                args.append(str(max_moves if max_moves is not None else 0))
+            if zero_only:
+                args.append("true" if zero_only else "false")
+            out.append(f"def {name} : RegisterFile<{', '.join(args)}>;")
+
+        for item in items["retire_unit"]:
+            fields = item["fields"]
+            for key in fields:
+                if key not in ("buffer", "max_per_cycle"):
+                    self.error(where, f"retire_unit: unknown field {key!r}")
+            if "buffer" not in fields:
+                self.error(where, "retire_unit: buffer is required")
+                continue
+            if "max_per_cycle" not in fields:
+                self.error(
+                    where,
+                    "retire_unit: max_per_cycle is required (RetireControlUnit "
+                    "takes both arguments)",
+                )
+                continue
+            out.append(
+                f"def {info.def_name}RetireUnit : RetireControlUnit<"
+                f"{fields['buffer']}, {fields['max_per_cycle']}>;"
+            )
+
+        for kind, cls, prefix in (
+            ("load_queue", "LoadQueue", "LoadQueue_"),
+            ("store_queue", "StoreQueue", "StoreQueue_"),
+        ):
+            for item in items[kind]:
+                res = item["resource"]
+                if res not in seen_res:
+                    self.error(where, f"{kind}: unknown resource {res!r}")
+                out.append(f"def {prefix}{res} : {cls}<{res}>;")
+
+        itineraries_name = self.top_itineraries.get(decl.name)
+        for item in items["itineraries"]:
+            if itineraries_name is not None:
+                self.error(
+                    where,
+                    "itineraries are declared both top-level and inside the machine",
+                )
+                break
+            texts, itineraries_name = self.lower_itineraries(
+                item["decl"],
+                info.def_name,
+                f"{where}.itineraries",
+                declared_units,
+                declared_bypasses,
+            )
+            out.extend(texts)
+
         model_lets = []
+        if itineraries_name is not None:
+            model_lets.append(f"  let Itineraries = {itineraries_name};")
         for key, field in SCHED_MODEL_PROPS.items():
             if key in props:
                 value = props[key]
@@ -739,9 +1119,11 @@ def emit(
     strict: bool = False,
     includes: tuple[str, ...] = (),
     header_comment: str | None = None,
+    attrs: AttributeSchema | None = None,
+    sorts: dict[str, str] | None = None,
 ) -> tuple[str, list[Diagnostic]]:
     """Lower ``program`` and prepend the includes the output needs to load."""
-    emitter = Emitter(program, strict=strict)
+    emitter = Emitter(program, strict=strict, attrs=attrs, sorts=sorts)
     body = emitter.run()
     header = []
     if header_comment:
@@ -768,7 +1150,18 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="extra TableGen file to include (repeatable)",
     )
+    ap.add_argument(
+        "--attrs",
+        default=None,
+        help="JSON attribute schema used to evaluate set declarations",
+    )
     args = ap.parse_args(argv)
+
+    try:
+        attrs = AttributeSchema.load(args.attrs) if args.attrs else None
+    except (OSError, ValueError) as exc:
+        print(f"{args.attrs}: {exc}", file=sys.stderr)
+        return 2
 
     try:
         program = parse_file(args.input)
@@ -782,6 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
             strict=args.strict,
             includes=tuple(args.includes),
             header_comment=f"// Generated from {args.input} by tools/ssdl/emit_td.py.",
+            attrs=attrs,
         )
     except SSDLEmitError as exc:
         for diag in exc.diagnostics:

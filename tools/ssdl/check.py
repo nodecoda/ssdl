@@ -14,6 +14,7 @@ diagnostic the emitter is supposed to produce, so "unsupported" can never mean
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import traceback
@@ -24,6 +25,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
+from ssdl import sets as sets_mod  # noqa: E402
 from ssdl import validate as validate_mod  # noqa: E402
 from ssdl.emit_td import SSDLEmitError  # noqa: E402
 
@@ -50,8 +52,12 @@ def assert_in(needle: str, haystack: str) -> None:
         raise Failure(f"expected {needle!r} in:\n{haystack}")
 
 
-def emit_source(source: str, strict: bool = False):
-    return emit_td.emit(parser.parse(source), strict=strict)
+def attrs_schema() -> "sets_mod.AttributeSchema":
+    return sets_mod.AttributeSchema.load(str(ROOT / "tests/ssdl/attrs.json"))
+
+
+def emit_source(source: str, strict: bool = False, attrs=None):
+    return emit_td.emit(parser.parse(source), strict=strict, attrs=attrs)
 
 
 def expect_emit_errors(source: str, expectations: list[str]) -> None:
@@ -121,19 +127,22 @@ def spec_example_is_not_lowerable_as_written():
         raise Failure("the section 5 example unexpectedly lowered cleanly")
 
     # The example is an AArch64 idiom model wearing RISC-V feature names, omits
-    # the -mattr name the grammar cannot express, and uses constructs the
-    # minimal emitter deliberately does not lower.
+    # the -mattr name the grammar cannot express for a plain feature, and uses
+    # sets whose host attribute schema is not part of the example.  The 1.1
+    # lowering now accepts the predicate/STI/TII/variant/reg_file/itineraries
+    # syntax, so these are the blockers that remain.
     for expected in [
         "feature Feature64Bit: error: kind = plain requires field 'mattr'",
-        "feature StdExtZicntr: error: unknown feature 'StdExtZicsr'",
+        "set ZeroRegs: error: requires the host attribute schema",
+        "machine generic-rv64: error: unknown feature 'StdExtZicsr'",
         "machine generic-rv64: error: unknown feature 'StdExtZifencei'",
-        "machine siFive7.W_ALU: error: SchedWriteVariant is not lowered",
-        "machine siFive7.GPRFile: error: reg_file is not lowered",
-        "machine siFive7.itineraries: error: itineraries are not lowered",
-        "set ZeroRegs: error: attribute-filtered sets are not lowered",
-        "predicate IsZeroReg: error: predicates are not lowered",
-        "sti_decl isZeroIdiom: error: STI declarations are not lowered",
-        "tii_predicate isDependencyBreaking: error: TII predicates are not lowered",
+        "machine siFive7: error: unknown feature 'StdExtM'",
+        "machine siFive7.itineraries: error: itin IIC_iLoad: unknown bypass "
+        "'Bypass_ALU_LD'",
+        "lowering: error: tii_predicate isDependencyBreaking.IsZeroReg: "
+        "set 'ZeroRegs' requires the attribute schema",
+        "lowering: error: sti_function SiFive7DepBreaking.OrrXzrXzr: "
+        "emitted def 'OrrXzrXzr' already exists",
     ]:
         assert_in(expected, text)
 
@@ -141,9 +150,10 @@ def spec_example_is_not_lowerable_as_written():
 @test
 def fixture_lowers_to_the_handwritten_records():
     source = (ROOT / "tests/ssdl/sifive7-mini.ssdl").read_text(encoding="utf-8")
-    text, skips = emit_source(source, strict=True)
+    attrs = attrs_schema()
+    text, skips = emit_source(source, strict=True, attrs=attrs)
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
-    text_again, _ = emit_source(source, strict=True)
+    text_again, _ = emit_source(source, strict=True, attrs=attrs)
     assert_true(text == text_again, "emitter is not deterministic")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -164,7 +174,7 @@ def comparator_is_not_vacuous():
     mutated = expected.replace("let Latency = 3;", "let Latency = 4;", 1)
     assert_true(mutated != expected, "test mutation did not apply")
     source = (ROOT / "tests/ssdl/sifive7-mini.ssdl").read_text(encoding="utf-8")
-    text, _ = emit_source(source, strict=True)
+    text, _ = emit_source(source, strict=True, attrs=attrs_schema())
     with tempfile.TemporaryDirectory() as tmp:
         generated = Path(tmp) / "generated.td"
         generated.write_text(text, encoding="utf-8")
@@ -226,20 +236,23 @@ def errata_syntax_parses():
 @test
 def unlowered_constructs_are_reported_not_dropped():
     source = """
-set S = [ADD];
+set S = inst(category == "alu");
 machine Empty { }
 """
     text, skips = emit_source(source)
     assert_in("def EmptyModel : SchedMachineModel;", text)
     assert_true(
-        any("attribute-filtered sets are not lowered" in d.message for d in skips),
+        any("requires the host attribute schema" in d.message for d in skips),
         f"skips: {skips}",
     )
     # strict mode turns the same skip into an error
     try:
         emit_source(source, strict=True)
     except SSDLEmitError as exc:
-        assert_in("attribute-filtered sets are not lowered", "\n".join(d.render() for d in exc.diagnostics))
+        assert_in(
+            "requires the host attribute schema",
+            "\n".join(d.render() for d in exc.diagnostics),
+        )
     else:
         raise Failure("--strict did not turn a skip into an error")
 
@@ -479,6 +492,161 @@ def v1_1_tii_return_semicolon_forms():
         ],
         got,
     )
+
+
+@test
+def set_evaluation_matches_the_host_order():
+    program = parser.parse(
+        """
+set ZeroRegs = reg(is_zero);
+set ALUInsts = inst(category == "alu");
+set Logical  = [AND, XOR, ...ALUInsts];
+set LowRegs  = [X0, X1];
+"""
+    )
+    ev = sets_mod.SetEvaluator(program, attrs_schema())
+    assert_true(ev.expand_set("ZeroRegs", "test") == ("reg", ["X0"]), "ZeroRegs")
+    assert_true(
+        ev.expand_set("ALUInsts", "test")
+        == ("inst", ["ADD", "SUB", "XOR", "AND", "MUL", "DIV"]),
+        "ALUInsts",
+    )
+    # Stable host order, stable deduplication: AND/XOR come first because they
+    # are written first, and the repeated ADD/XOR/MUL/DIV members disappear.
+    assert_true(
+        ev.expand_set("Logical", "test")
+        == ("inst", ["AND", "XOR", "ADD", "SUB", "MUL", "DIV"]),
+        "Logical",
+    )
+    assert_true(ev.expand_set("LowRegs", "test") == ("reg", ["X0", "X1"]), "LowRegs")
+    ev.finish()
+
+
+@test
+def set_evaluation_negative_controls():
+    cases = [
+        ('set A = inst(nope == true);', "attribute 'nope' is not declared"),
+        ('set A = inst(category < 3);', "operator < requires int operands"),
+        ('set A = [ADD]; set B = [A];', "is a set; write '...A'"),
+        ("set A = [X0, ADD];", "cannot mix inst and reg"),
+        ("set A = [NOPE];", "unknown instruction or register 'NOPE'"),
+        ("set A = [...B]; set B = [...A];", "recursive set reference"),
+    ]
+    for source, expected in cases:
+        program = parser.parse(source)
+        ev = sets_mod.SetEvaluator(program, attrs_schema())
+        declared = [d.name for d in program.decls if isinstance(d, parser.SetDecl)]
+        ev.expand_set(declared[-1], "test")
+        try:
+            ev.finish()
+        except sets_mod.SetError as exc:
+            text = "\n".join(exc.errors)
+            assert_in(expected, text)
+        else:
+            raise Failure(f"expected a set error for:\n{source}")
+
+
+@test
+def predicate_and_hook_lowering_shapes():
+    source = (ROOT / "tests/ssdl/v1.1.ssdl").read_text(encoding="utf-8")
+    text, skips = emit_source(source, strict=True, attrs=attrs_schema())
+    assert_true(skips == [], skips)
+    # MC / SCHED / SEL forms from 1.1 §4.
+    assert_in("def IsZeroIdiom : CheckAll<[CheckOpcode<[ADD]>, CheckRegOperand<1, X0>]>;", text)
+    assert_in("def McPred : CheckOpcode<[ADD]>;", text)
+    assert_in(
+        "def SchedPred : AllOfSchedPreds<[FeatureSchedPredicate<FeatureStdExtXssdl>, "
+        "MCSchedPredicate<CheckOpcode<[ADD]>>, "
+        "SchedPredicate<[{ MI->getOpcode() == 1 }]>]>;",
+        text,
+    )
+    assert_in("def AllEmpty : CheckAll<[TruePred]>;", text)
+    assert_in("def AnyEmpty : CheckAll<[FalsePred]>;", text)
+    # MC is promoted to SCHED in a variant case; a SCHED case is used directly.
+    assert_in(
+        "SchedWriteVariant<[SchedVar<MCSchedPredicate<CheckAll<[CheckOpcode<[ADD]>, "
+        "CheckRegOperand<1, X0>]>>, [W_ALU]>, SchedVar<SchedPred, [W_ALU]>, "
+        "SchedVar<NoSchedPred, [W_ALU]>]>",
+        text,
+    )
+    # Top-level itineraries are attached to the machine model.
+    assert_in("def v11_machineItineraries : ProcessorItineraries<", text)
+    assert_in("let Itineraries = v11_machineItineraries;", text)
+    assert_in('def V11TII : TIIPredicate<"V11TII", MCOpcodeSwitchStatement<', text)
+    # ... and the whole file is valid TableGen.
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "v11.td"
+        generated.write_text(text, encoding="utf-8")
+        compare_mod.run_tblgen(
+            compare_mod.default_tblgen(),
+            str(generated),
+            compare_mod.default_include_dirs(),
+        )
+
+
+@test
+def hook_lowering_negative_controls():
+    cases = [
+        (
+            "sti_decl D { }\nsti_function F : D { delegates = [D]; }",
+            "sti_function.delegates has no landing spot on STIPredicate (M7)",
+        ),
+        (
+            "machine M { write W; variant W { case true: [W]; } }",
+            "variant requires an explicit default case",
+        ),
+        (
+            "machine M { write W; variant Nope { default: [W]; } }",
+            "variant must name a declared write",
+        ),
+        (
+            "machine M { read R; read_variant R { default: [R]; } }\n"
+            "machine N { write W; read_variant W { default: [W]; } }",
+            "read_variant must name a declared read",
+        ),
+        (
+            "machine M { resource P; retire_unit { buffer = 8; } }",
+            "retire_unit: max_per_cycle is required",
+        ),
+        (
+            "feature F : kind = tune, positive_directive = \"t\", field = \"F\", "
+            "value = \"true\";\n"
+            "predicate S = feature(F);\n"
+            "tii_predicate T = return S;",
+            "an MC context requires an MC predicate",
+        ),
+        (
+            "machine M { write W; map [ADD] -> [W]; }\n"
+            "predicate P = reg_is(1, [X0], map = f);",
+            "map= is not lowered yet",
+        ),
+    ]
+    for source, expected in cases:
+        expect_emit_errors(source, [expected])
+
+
+@test
+def anonymous_records_are_canonicalized():
+    a = 'include "RISCV.td"\ndef X : CheckAll<[CheckOpcode<[ADD]>]>;\n'
+    b = 'include "RISCV.td"\ndef X : CheckAll<[CheckOpcode<[ADD]>]>;\n'
+    c = 'include "RISCV.td"\ndef X : CheckAll<[CheckOpcode<[SUB]>]>;\n'
+    with tempfile.TemporaryDirectory() as tmp:
+        pa = Path(tmp) / "a.td"
+        pb = Path(tmp) / "b.td"
+        pc = Path(tmp) / "c.td"
+        for path, text in ((pa, a), (pb, b), (pc, c)):
+            path.write_text(text, encoding="utf-8")
+        same = compare_mod.compare(
+            str(pa), str(pb), compare_mod.default_tblgen(), compare_mod.default_include_dirs()
+        )
+        assert_true(same.ok(), "identical nested predicates did not compare equal")
+        diff = compare_mod.compare(
+            str(pa), str(pc), compare_mod.default_tblgen(), compare_mod.default_include_dirs()
+        )
+    assert_true(not diff.ok(), "nested predicate mutation was not detected")
+    rendered = diff.render()
+    hashes = set(re.findall(r"anon#[0-9a-f]{12}", rendered))
+    assert_true(len(hashes) == 2, f"expected two distinct anon hashes:\n{rendered}")
 
 
 def main() -> int:

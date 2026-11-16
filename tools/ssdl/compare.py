@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import os
 import re
 import shutil
@@ -42,30 +43,77 @@ def declared_defs(source: str) -> list[str]:
     return DEF_RE.findall("\n".join(lines))
 
 
-def extract_records(dump: str, names: list[str]) -> dict[str, str]:
-    """Extract the textual record block for each requested name."""
-    wanted = set(names)
-    out: dict[str, str] = {}
-    lines = dump.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        m = RECORD_RE.match(line)
-        if not m or m.group(1) not in wanted:
+class DumpIndex:
+    """Nameless records (``anonymous_N``) normalized by content.
+
+    ``llvm-tblgen -print-records`` numbers anonymous records in parse order.
+    Two semantically identical files can therefore differ in those numbers, and
+    nested instantiations such as ``CheckAll<[CheckOpcode<[ADD]>]>`` or
+    ``SchedVar<...>`` would never compare equal.  Each anonymous record is
+    replaced by ``anon#<hash of its canonical body>``, so only the structure and
+    field values matter.
+    """
+
+    def __init__(self, dump: str):
+        self.lines = dump.splitlines()
+        self.blocks: dict[str, tuple[int, int]] = {}
+        self.memo: dict[str, str] = {}
+        self.stack: list[str] = []
+        i = 0
+        n = len(self.lines)
+        while i < n:
+            match = RECORD_RE.match(self.lines[i])
+            if not match:
+                i += 1
+                continue
+            start = i
+            depth = self.lines[i].count("{") - self.lines[i].count("}")
             i += 1
-            continue
-        name = m.group(1)
-        block = [line]
-        depth = line.count("{") - line.count("}")
-        i += 1
-        while i < len(lines) and depth > 0:
-            block.append(lines[i])
-            depth += lines[i].count("{") - lines[i].count("}")
-            i += 1
-        if depth != 0:
-            raise CompareError(f"unbalanced braces while reading def {name!r}")
-        out[name] = normalize(block)
-    return out
+            while depth > 0 and i < n:
+                depth += self.lines[i].count("{") - self.lines[i].count("}")
+                i += 1
+            self.blocks[match.group(1)] = (start, i)
+
+    def _block_lines(self, name: str) -> list[str]:
+        start, end = self.blocks[name]
+        return self.lines[start:end]
+
+    def _body(self, name: str) -> str:
+        lines = self._block_lines(name)
+        text = "\n".join(lines)
+        text = re.sub(r"^def\s+[A-Za-z_][A-Za-z0-9_]*\s*\{", "", text)
+        text = text.rstrip()
+        if text.endswith("}"):
+            text = text[:-1]
+        return text
+
+    def _replace_anonymous(self, text: str) -> str:
+        def repl(match: re.Match[str]) -> str:
+            return self.canonical(match.group(0))
+
+        return re.sub(r"\banonymous_\d+\b", repl, text)
+
+    def canonical(self, name: str) -> str:
+        if name in self.memo:
+            return self.memo[name]
+        if name not in self.blocks:
+            raise CompareError(f"record {name!r} not found in llvm-tblgen output")
+        if name in self.stack:
+            return "anon#cycle"
+        self.stack.append(name)
+        if name.startswith("anonymous_"):
+            body = self._replace_anonymous(self._body(name))
+            digest = hashlib.sha1(body.encode("utf-8")).hexdigest()[:12]
+            result = f"anon#{digest}"
+        else:
+            block = normalize(self._block_lines(name))
+            result = self._replace_anonymous(block)
+        self.stack.pop()
+        self.memo[name] = result
+        return result
+
+    def records(self, names: list[str]) -> dict[str, str]:
+        return {name: self.canonical(name) for name in names if name in self.blocks}
 
 
 def normalize(block: list[str]) -> str:
@@ -137,8 +185,10 @@ def compare(
     if len(set(exp_names)) != len(exp_names):
         raise CompareError(f"{expected_path}: duplicate def names")
 
-    gen_records = extract_records(run_tblgen(tblgen, generated_path, include_dirs), gen_names)
-    exp_records = extract_records(run_tblgen(tblgen, expected_path, include_dirs), exp_names)
+    gen_index = DumpIndex(run_tblgen(tblgen, generated_path, include_dirs))
+    exp_index = DumpIndex(run_tblgen(tblgen, expected_path, include_dirs))
+    gen_records = gen_index.records(gen_names)
+    exp_records = exp_index.records(exp_names)
 
     missing_in_expected = [n for n in gen_names if n not in exp_records]
     missing_in_generated = [n for n in exp_names if n not in gen_records]

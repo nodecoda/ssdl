@@ -13,6 +13,12 @@
 # Covered parser errata (docs/dsl/2026-11-16-ssdl-parser-notes.md):
 #   S3 comma-separated feature fields, S4 comma-separated resource properties,
 #   S5 hyphenated identifiers.
+#
+# Covered 1.1 lowering: set evaluation against tests/ssdl/attrs.json, MC/SCHED/
+# SEL predicates and macros, predicate_prolog, sti_decl/sti_function, the TII
+# switch form, SchedWriteVariant/SchedReadVariant + SchedAlias, RegisterFile,
+# RetireControlUnit, LoadQueue/StoreQueue, and both machine-local and top-level
+# itineraries.
 
 feature FeatureSSDL64Bit :
     kind = plain,
@@ -54,6 +60,65 @@ feature TuneSSDLPostRA :
     value = "true",
     desc = "Schedule again after register allocation";
 
+# ============ compile-time sets (tests/ssdl/attrs.json) ============
+set ZeroRegs = reg(is_zero);
+set ALUInsts = inst(category == "alu");
+set Logical  = [AND, XOR, ...ALUInsts];
+
+# ============ predicates ============
+predicate IsZeroReg(i) = reg_is(i, ZeroRegs);
+predicate IsALU = opcode(ALUInsts);
+predicate IsALUAndZero(i) = all_of(opcode(Logical), IsZeroReg(i));
+predicate HasXssdl = feature(StdExtXssdl);
+
+predicate SelNoXssdl {
+    selector = cxx_expr([{ !Subtarget->hasStdExtXssdl() }]);
+    assembler = none_of([StdExtXssdl]);
+    desc = "SSDL base extension is absent";
+    recompute_per_function = true;
+}
+
+predicate_prolog([{
+    [[maybe_unused]] const RISCVInstrInfo *TII =
+        static_cast<const RISCVInstrInfo*>(SchedModel->getInstrInfo());
+}]);
+
+# ============ STI ============
+sti_decl isZeroIdiom {
+    default = false;
+    opcode_mask = true;
+}
+
+sti_decl isDependencyBreaking {
+    default = false;
+    opcode_mask = true;
+    delegates = [isZeroIdiom];
+}
+
+sti_function SSDLZeroIdiom : isZeroIdiom {
+    sched_model = ssdl-sifive-7;
+    dep_breaking_class XorX0X0(
+        [XOR],
+        all_of(opcode([XOR]), IsZeroReg(1), IsZeroReg(2)),
+        [1, 2]
+    );
+}
+
+sti_function SSDLDepBreaking : isDependencyBreaking {
+    sched_model = ssdl-sifive-7;
+    dep_breaking_class XorSelf(
+        [XOR],
+        all_of(opcode([XOR]), same_reg(1, 2)),
+        [1, 2]
+    );
+}
+
+tii_predicate isXorZeroIdiom =
+    switch opcode {
+        case [XOR]: return all_of(opcode([XOR]), IsZeroReg(1));
+        default:    return false;
+    };
+
 machine ssdl-generic-rv64 {
     features = [FeatureSSDL64Bit, StdExtXssdl];
     default_march = "rv64i2p1";
@@ -87,6 +152,55 @@ machine ssdl-sifive-7 {
     map [LD]             -> [W_LOAD, read_default];
     map [regex("MUL.*")] -> [W_ALU, read_default, read_default];
     map [AND, regex("DIV.*")] -> [W_ALU, read_default];
+
+    variant W_ALU {
+        case all_of(opcode(ALUInsts), same_reg(1, 2)): [W_ALU];
+        default: [W_ALU];
+    }
+
+    read_variant R_ALU {
+        case all_of(opcode(Logical), IsZeroReg(1)): [R_ALU];
+        default: [R_ALU];
+    }
+
+    reg_file GPRFile {
+        num_phys = 180;
+        classes = [GPR, GPRNoX0];
+        costs = [1, 1];
+        allow_move_elim = [true, true];
+        max_move_elim_per_cy = 4;
+        allow_zero_elim_only = false;
+    }
+
+    retire_unit { buffer = 320; max_per_cycle = 6; }
+    load_queue  : resource = LSU;
+    store_queue : resource = LSU;
+
+    itineraries : packetizer_namespace = "SSDL" {
+        func_units = [FU_ALU];
+        bypasses   = [no_bypass];
+
+        itin IIC_iALU {
+            stages = [stage(1, [FU_ALU])];
+            cycles = [1, 1];
+        }
+    }
 }
 
 machine ssdl-sifive-7-alias = ssdl-sifive-7;
+
+machine ssdl-itin-rv64 {
+    features = [FeatureSSDL64Bit];
+}
+
+itineraries : sched_model = ssdl-itin-rv64 : packetizer_namespace = "SSDLTop" {
+    func_units = [FU_TOP];
+    bypasses   = [no_bypass_top];
+
+    itin IIC_iTop {
+        stages = [stage(1, [FU_TOP]), stage(2, [FU_TOP], 1, reserved)];
+        cycles = [1, 3];
+        bypasses = [no_bypass_top];
+        uops = 2;
+    }
+}

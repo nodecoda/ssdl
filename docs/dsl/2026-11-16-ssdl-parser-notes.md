@@ -253,16 +253,20 @@ fixture 里的特性名带 `ssdl` 前缀，是因为生成文件与真实的 `RI
 ## 9. 文件清单
 
 ```text
-tools/ssdl/parser.py       # 词法 + 递归下降，覆盖 9 个顶层关键字与六条 errata
-tools/ssdl/emit_td.py      # 最小展开器：feature/machine/resource/write/read/bind/advance/map
-tools/ssdl/compare.py      # -print-records 按 def 名对拍
-tools/ssdl/check.py        # 13 项自检（正向、负控、errata、sort、itinerary、非空比较）
+tools/ssdl/parser.py       # 词法 + 递归下降，覆盖 9 个顶层关键字与七条 errata
+tools/ssdl/emit_td.py      # 展开器：feature/machine/调度/reg_file/itineraries + 谓词接线
+tools/ssdl/predicates.py   # 谓词/STI/TII lowering（MC/SCHED/SEL）
+tools/ssdl/sets.py         # set 求值器 + 宿主属性 schema
+tools/ssdl/tdutil.py       # TableGen 文本工具
+tools/ssdl/compare.py      # -print-records 按 def 名对拍（匿名记录规范化）
+tools/ssdl/check.py        # 18 项自检（正向、负控、errata、sort、lowering、非空比较）
 tools/ssdl/validate.py     # v1.1 predicate sort + itinerary binding 校验
 tests/ssdl/spec-example.ssdl          # 文档第 5 节逐字副本
 tests/ssdl/sifive7-mini.ssdl          # 可展开的 SiFive7 子集
 tests/ssdl/sifive7-mini.expected.td   # 手写等价物（真实 LLVM 类）
 tests/ssdl/errata.ssdl                # S1–S7 语法用例
 tests/ssdl/v1.1.ssdl                  # MC/SCHED 排序与 sched_model 绑定用例
+tests/ssdl/attrs.json                 # set 求值用的 inst/reg 属性 schema
 ```
 
 ---
@@ -288,4 +292,105 @@ v1.1 的规范文本在 `2026-11-16-ssdl-v1.1-draft.md`。本轮只实现其中�
 | `attr_expr` 优先级 | 解析器（`!` > 比较 > `&&` > `||`） | `parse_attr_or/and/not/cmp` |
 | `set` 属性契约 | **仅规范**，求值器未实现 | v1.1 §5 |
 
-注意：`validate.py` 通过不等于谓词已经能展开。`variant`、`sti_*`、`tii_predicate` 仍然只校验、不生成 `SchedWriteVariant`/`STIPredicate`/`TIIPredicate` 记录；`set` 仍然只解析。下一步不是继续加关键字，而是先实现 `set` 求值和谓词 lowering，再用 `llvm-tblgen` 对拍。
+注意：§10 记录的是“校验先行”的中间状态。`set` 求值与谓词 lowering 已在 §11 落地；§10 中“仍未实现/只解析”的表述由 §11 取代。
+
+---
+
+## 11. 2026-11-16 v1.1 lowering 落地
+
+§11 关闭 §10 留下的 lowering 缺口：`set` 求值、谓词/STI/TII lowering、`variant`、寄存器文件、retire/queue、itineraries 都已生成真实记录，并由 `llvm-tblgen -print-records` 对拍。
+
+### 11.1 新增文件与职责
+
+```text
+tools/ssdl/sets.py        # set 求值器 + 宿主属性 schema（JSON）
+tools/ssdl/predicates.py  # 谓词/STI/TII lowering（MC/SCHED/SEL 三路）
+tools/ssdl/tdutil.py      # 共享的 TableGen 文本转义/命名工具
+tests/ssdl/attrs.json     # fixture 的属性 schema（inst/reg 顺序、属性值）
+```
+
+`emit_td.py` 的 `emit()` 新增 `attrs=` 与 `sorts=`；命令行新增 `--attrs PATH`。不传 schema 时，`set` 仍按“未求值”报告 skip，谓词里引用 `set` 是错误；`--strict` 下两者都是错误。
+
+### 11.2 `set` 求值契约（v1.1 §5）
+
+输入 schema：
+
+```json
+{"order": {"inst": ["ADD", "..."], "reg": ["X0", "..."]},
+ "inst": {"ADD": {"category": "alu", "...": "..."}},
+ "reg":  {"X0":  {"is_zero": true}}}
+```
+
+实现要点：
+
+- `inst(expr)` / `reg(expr)` 按 `order` 稳定遍历，只保留条件为真的实体；
+- 比较必须同型：`==`/`!=` 同型，`< > <= >=` 仅 int；未知属性、缺失属性、未知实体都是错误；
+- 结果按宿主顺序稳定去重；`...Set` 拼接保持“先出现者在前”；
+- 裸列表混用 inst/reg 是错误；set 循环引用报告完整链（`A -> B -> A`）；
+- 空裸列表无法推断 kind，是错误；`[a..b]` 的 `a>b` 是错误。
+
+### 11.3 谓词 lowering 与命名
+
+| SSDL | 生成的 TableGen |
+|---|---|
+| `predicate P = MC 表达式;` | `def P : CheckAll<...>` 等 `MCInstPredicate` 子类 |
+| `predicate P(i) = ...;` | 宏；调用处内联，不生成记录 |
+| `predicate P = SCHED 表达式;` | `FeatureSchedPredicate` / `SchedPredicate` / `AllOfSchedPreds` 等 |
+| `predicate P { selector = ...; }` | `def P : Predicate<"...">` |
+| `predicate P { selector = ...; assembler = ...; }` | 再加 `AssemblerPredicate<(all_of ...), "desc">` |
+| `predicate_prolog([{...}]);` | `def SSDLPredicateProlog : PredicateProlog<[{...}]>`（多个时加数字后缀） |
+| `sti_decl D { ... }` | `def DDecl : STIPredicateDecl<"D", default, overrides, expandForMC, opcode_mask, [delegates]>` |
+| `sti_function F : D { ... }` | `def F : STIPredicate<DDecl, [classes]>`，有 `sched_model` 时前置 `let SchedModel = <machine>Model in` |
+| `dep_breaking_class C(...)` | `def C : DepBreakingClass<[opcodes], pred[, operands]>` |
+| `equiv_class C(...)` | `def C : InstructionEquivalenceClass<[opcodes], pred[, operands]>` |
+| `tii_predicate T = return P;` | `def T : TIIPredicate<"T", MCReturnStatement<P>>` |
+| `tii_predicate T = switch opcode {...}` | `MCOpcodeSwitchStatement<[...], default>` |
+
+实现细节：
+
+- 表达式谓词不会生成 `Predicate<...>`；只有块形式 `selector` 才走指令选择谓词（v1.0 §4.4 的修正）；
+- `true`/`false` 作为**命名谓词**时生成 `CheckAll<[TruePred]>` / `CheckAll<[FalsePred]>`，因为 `TruePred`/`FalsePred` 是 def 不是 class，`def P : TruePred;` 会被 TableGen 拒绝；
+- `variant` case 用 `to_sched`：MC 自动包成 `MCSchedPredicate<...>`，SCHED 直接使用，SEL 是错误；
+- MC 上下文（`sti_decl.default`、`tii_predicate.return`、`equiv_class` 谓词）拒绝 SCHED/SEL，lowering 与 `validate.py` 双重检查；
+- `func(...)`/`func_tii(...)` 映射到 `CheckFunctionPredicate` / `CheckFunctionPredicateWithTII`；`map=` 仍显式报“not lowered yet”。
+
+### 11.4 `variant` / 寄存器文件 / 队列 / itineraries
+
+```text
+variant W { case P: [RW]; default: [RW]; }
+  -> def WVariant : SchedWriteVariant<[SchedVar<to_sched(P), [RW]>,
+                                      SchedVar<NoSchedPred, [RW]>]>;
+     def SSDLVariantAlias_W : SchedAlias<W, WVariant>;
+read_variant R { ... }
+  -> SchedReadVariant + SchedAlias
+```
+
+- `default` 必须显式写出（P1-12），否则报错；
+- `variadic = true` 生成 `let Variadic = true;`；
+- `reg_file F { ... }` → `RegisterFile<num_phys, [classes], [costs], [allow_move_elim], max_move_elim_per_cy, allow_zero_elim_only>`；
+- `retire_unit { buffer; max_per_cycle; }` → `<Machine>RetireUnit : RetireControlUnit<b, m>`，两者都必写（P1-13）；
+- `load_queue`/`store_queue` → `LoadQueue_<Resource>` / `StoreQueue_<Resource>`；
+- `func_unit` / `bypass` / `itin_class` → `FuncUnit` / `Bypass` / `InstrItinClass`；
+- `itineraries { func_units; bypasses; itin ... }`：为列表中的名字补 `FuncUnit`/`Bypass`（机器已声明则不重复），`itin X` 生成 `IIC_X`（已带 `IIC_` 前缀则不重复加）与内联 `InstrItinData`，最后生成 `<Machine>Itineraries : ProcessorItineraries<...>` 并加 `let PacketizerNamespace`；
+- 顶层 `itineraries : sched_model = M` 生成 `<M>Itineraries`，通过 `let Itineraries = <M>Itineraries;` 挂到 `MModel`；机器内外同时声明同一模型的 itineraries 是错误。
+
+### 11.5 证据
+
+```bash
+python3 tools/ssdl/check.py                 # 18/18
+python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl \
+    --strict --attrs tests/ssdl/attrs.json -o /tmp/gen.td
+python3 tools/ssdl/compare.py /tmp/gen.td tests/ssdl/sifive7-mini.expected.td
+```
+
+fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`predicate_prolog`、`sti_decl` + 两条 `sti_function`（`SchedModel` 绑定、`DepBreakingClass`）、`tii_predicate` 的 switch、`variant`/`read_variant`、`RegisterFile`、`RetireControlUnit`、`LoadQueue`/`StoreQueue`、机器内与顶层两套 itineraries。`v1.1.ssdl` 还验证 MC→SCHED 提升与顶层 itinerary 绑定。
+
+### 11.6 仍然开放
+
+- **M5 属性 schema 来源**：`attrs.json` 是测试夹具，真实实现需要从 `RISCVInstrInfo`/`RISCVRegisterInfo` 或生成器导出；schema 的词法/位置未定。
+- **`map=`**：`reg_is`/`imm_is` 等的函数映射没有对应 SSDL 语义，lowering 直接报错。
+- **宏参数**：参数目前只在操作数下标位置替换；用参数传 opcode/寄存器集合尚未支持。
+- **`write_seq` / `combo_func` / `map_itin` / 调度 `alias`**：仍 skip（`--strict` 报错）。`map_itin` 已有明确的 `ItinRW` 落点，下一轮可补。
+- **`sti_function.delegates`（M7）**：`STIPredicate` 没有 delegates 字段，仍然显式报错。
+- **SchedModel 绑定**：本轮沿用既有扁平输出，`WriteRes`/`InstRW`/`RegisterFile` 等记录没有统一包在 `let SchedModel = ... in`；真实接入前需要补这一层。`STIPredicate` 是例外，因为 SSDL 显式写了 `sched_model`。
+- **验证深度**：只做 `-print-records`，没有跑 `-gen-subtarget`/`-gen-instr-info`，也没有替换在树 `RISCV*.td` 做完整构建。
