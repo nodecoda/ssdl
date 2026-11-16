@@ -41,11 +41,13 @@ from typing import Any
 
 if __package__ in (None, ""):
     import validate as validate_mod  # type: ignore
+    from record_ir import Base, DuplicateRecord, Record, RecordSet  # type: ignore
     from predicates import PredicateError, PredicateLowerer  # type: ignore
     from sets import AttributeSchema, SetEvaluator  # type: ignore
     from tdutil import join_list, td_def_name, td_str  # type: ignore
 else:
     from . import validate as validate_mod
+    from .record_ir import Base, DuplicateRecord, Record, RecordSet
     from .predicates import PredicateError, PredicateLowerer
     from .sets import AttributeSchema, SetEvaluator
     from .tdutil import join_list, td_def_name, td_str
@@ -114,6 +116,12 @@ class MachineInfo:
     # across machines and emitted once; see ``Emitter.collect_global_vocabulary``.
     globals: list[str] = field(default_factory=list)
 
+
+class _Unset:
+    """Marker type for `define(scope=...)`: use the current machine scope."""
+
+
+_UNSET = _Unset()
 
 INLINE_BEHAVIOR = {
     "ignore": "InlineIgnore",
@@ -189,6 +197,11 @@ class Emitter:
         # Def name -> declaring machine, for resources and res groups, so a
         # cross-machine collision can explain the rule instead of just firing.
         self.resource_defs: dict[str, str] = {}
+        # The record table this lowering denotes.  Every `def` is registered
+        # here and rendered from here, so `--records-json` cannot drift from
+        # the printed TableGen.
+        self.records = RecordSet()
+        self.current_scope: str | None = None
 
     # -- diagnostics -----------------------------------------------------
     def error(self, where: str, message: str) -> None:
@@ -200,6 +213,51 @@ class Emitter:
             self.errors.append(Diagnostic("error", where, message))
         else:
             self.skips.append(diag)
+
+    # -- record table ----------------------------------------------------
+    def define(
+        self,
+        where: str,
+        name: str,
+        cls: str | None = None,
+        args: tuple[str, ...] | list[str] = (),
+        fields: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+        *,
+        bases: tuple | list = (),
+        style: str = "block",
+        suffix: str = "",
+        scope: str | None | _Unset = _UNSET,
+    ) -> str:
+        """Register a definition in the record table and return its text.
+
+        ``cls``/``args`` describe the usual single-class def; ``bases`` adds
+        further instantiations (``feature`` with a bitmask) or replaces the
+        class list entirely when ``cls`` is None.  A duplicate name keeps the
+        first record and still renders: the emitters already report genuine
+        collisions (``seen_defs``, ``global_text``) with better messages, and
+        a repeated identically-rendered global def is deduplicated later.
+        """
+        all_bases: list[Base] = []
+        if cls is not None:
+            all_bases.append(Base(cls, tuple(args)))
+        for base in bases:
+            all_bases.append(base if isinstance(base, Base) else Base.parse(base))
+        record = Record(
+            name=name,
+            bases=tuple(all_bases),
+            fields=tuple((field, str(value)) for field, value in fields),
+            scope=self.current_scope if isinstance(scope, _Unset) else scope,
+            style=style,
+            suffix=suffix,
+            origin=where,
+        )
+        try:
+            self.records.add(name, list(all_bases), record.fields,
+                             scope=record.scope, style=style, suffix=suffix,
+                             origin=where)
+        except DuplicateRecord:
+            pass
+        return record.render()
 
     # -- driver ----------------------------------------------------------
     def run(self) -> str:
@@ -236,6 +294,7 @@ class Emitter:
                 if info.decl.alias is None
             },
             reserved_names=self.reserved_def_names(),
+            records=self.records,
         )
         early = self.predicates.lower_early()
 
@@ -417,7 +476,7 @@ class Emitter:
                 if not implies:
                     args.append("[]")
                 args.append(inline)
-            return f"def {info.def_name} : SubtargetFeature<{', '.join(args)}>;"
+            return self.define(where, info.def_name, "SubtargetFeature", args)
 
         if info.kind == "extension":
             version = fields.get("version")
@@ -448,7 +507,7 @@ class Emitter:
                 args.append(td_str(fields.get("value", "true")))
             elif "value" in fields:
                 self.error(where, "value requires field for kind = extension")
-            bases = [f"{cls}<{', '.join(args)}>"]
+            bases = [Base(cls, tuple(args))]
             mask = fields.get("bitmask")
             if mask is not None:
                 group, bit = mask
@@ -456,8 +515,8 @@ class Emitter:
                     self.error(where, f"bitmask group {group} does not fit bits<3> (0..7)")
                 if bit < 0:
                     self.error(where, f"bitmask bit {bit} must be non-negative")
-                bases.append(f"RISCVExtensionBitmask<{group}, {bit}>")
-            return f"def {info.def_name} : {', '.join(bases)};"
+                bases.append(Base("RISCVExtensionBitmask", (str(group), str(bit))))
+            return self.define(where, info.def_name, bases=bases)
 
         # kind == tune
         positive = fields.get("positive_directive")
@@ -478,7 +537,7 @@ class Emitter:
             if not implies:
                 args.append("[]")
             args.append(inline)
-        return f"def {info.def_name} : RISCVTuneFeature<{', '.join(args)}>;"
+        return self.define(where, info.def_name, "RISCVTuneFeature", args)
 
     # -- itineraries -----------------------------------------------------
     def itinerary_def_name(self, decl: ItinerariesDecl, owner_def: str) -> str:
@@ -538,10 +597,10 @@ class Emitter:
         known_bypasses = set(bypasses) | set(declared_bypasses)
         for unit in func_units:
             if unit not in declared_units:
-                out.append(f"def {unit} : FuncUnit;")
+                out.append(self.define(where, unit, "FuncUnit", scope=None))
         for bypass in bypasses:
             if bypass not in declared_bypasses:
-                out.append(f"def {bypass} : Bypass;")
+                out.append(self.define(where, bypass, "Bypass", scope=None))
 
         iid: list[str] = []
         seen_itins: set[str] = set()
@@ -552,7 +611,7 @@ class Emitter:
                 continue
             seen_itins.add(name)
             cls = self.itin_class_name(name)
-            out.append(f"def {cls} : InstrItinClass;")
+            out.append(self.define(where, cls, "InstrItinClass", scope=None))
             fields = item["fields"]
             raw_stages = fields.get("stages", ("stages", []))
             stages = [self.lower_stage(stage, f"{where}.{name}", known_units) for stage in raw_stages[1]]
@@ -572,19 +631,21 @@ class Emitter:
             iid.append(f"InstrItinData<{', '.join(args)}>")
 
         def_name = self.itinerary_def_name(decl, owner_def)
-        head = (
-            f"def {def_name} : ProcessorItineraries<{join_list(func_units)}, "
-            f"{join_list(bypasses)}, {join_list(iid)}>"
+        fields = (
+            [("PacketizerNamespace", td_str(decl.namespace))]
+            if decl.namespace
+            else []
         )
-        if decl.namespace:
-            out.append(
-                head
-                + " {\n  let PacketizerNamespace = "
-                + td_str(decl.namespace)
-                + ";\n}"
+        out.append(
+            self.define(
+                where,
+                def_name,
+                "ProcessorItineraries",
+                [join_list(func_units), join_list(bypasses), join_list(iid)],
+                fields,
+                scope=None,
             )
-        else:
-            out.append(head + ";")
+        )
         return out, def_name
 
     def lower_top_itineraries(self) -> None:
@@ -729,8 +790,13 @@ class Emitter:
                 self.error(where, f"alias target {decl.alias!r} is not a declared machine")
                 return "", []
             return (
-                f"def {info.def_name} : ProcessorAlias<{td_str(decl.name)}, "
-                f"{td_str(decl.alias)}>;",
+                self.define(
+                    where,
+                    info.def_name,
+                    "ProcessorAlias",
+                    [td_str(decl.name), td_str(decl.alias)],
+                    scope=None,
+                ),
                 [],
             )
 
@@ -801,6 +867,9 @@ class Emitter:
         # WriteVariant); we do the same with the machine def name as prefix so
         # two models can be described from the same vocabulary.
         prefix = info.def_name + "_"
+        # Everything below until the machine model record is scoped to this
+        # model through one `let SchedModel = ... in {}` block.
+        self.current_scope = f"{info.def_name}Model"
 
         seen_res: set[str] = set()
         for item in items["resource"]:
@@ -821,13 +890,10 @@ class Emitter:
                     r["name"] == super_name for r in items["resource"]
                 ):
                     self.error(where, f"resource {name}: unknown super {super_name!r}")
-                body.append(f"  let Super = {super_name};")
+                body.append(("Super", str(super_name)))
             if "buffer" in res_props:
-                body.append(f"  let BufferSize = {res_props['buffer']};")
-            if body:
-                out.append(f"def {name} : ProcResource<{units}> {{\n" + "\n".join(body) + "\n}")
-            else:
-                out.append(f"def {name} : ProcResource<{units}>;")
+                body.append(("BufferSize", str(res_props["buffer"])))
+            out.append(self.define(where, name, "ProcResource", [str(units)], body))
 
         for item in items["res_group"]:
             name = item["name"]
@@ -846,15 +912,10 @@ class Emitter:
                     self.error(where, f"res_group {name}: unknown property {key!r}")
             body = []
             if "buffer" in res_props:
-                body.append(f"  let BufferSize = {res_props['buffer']};")
-            if body:
-                out.append(
-                    f"def {name} : ProcResGroup<{join_list(members)}> {{\n"
-                    + "\n".join(body)
-                    + "\n}"
-                )
-            else:
-                out.append(f"def {name} : ProcResGroup<{join_list(members)}>;")
+                body.append(("BufferSize", str(res_props["buffer"])))
+            out.append(
+                self.define(where, name, "ProcResGroup", [join_list(members)], body)
+            )
 
         writes: set[str] = {
             name for name, (kind, _) in self.global_rw.items() if kind != "read"
@@ -893,14 +954,14 @@ class Emitter:
                 self.error(where, f"duplicate write {item['name']!r}")
                 continue
             local_writes.add(item["name"])
-            global_out.append(f"def {item['name']} : SchedWrite;")
+            global_out.append(self.define(where, item["name"], "SchedWrite", scope=None))
         local_reads: set[str] = set()
         for item in items["read"]:
             if item["name"] in local_reads:
                 self.error(where, f"duplicate read {item['name']!r}")
                 continue
             local_reads.add(item["name"])
-            global_out.append(f"def {item['name']} : SchedRead;")
+            global_out.append(self.define(where, item["name"], "SchedRead", scope=None))
 
         # WriteSequence is itself a SchedWrite, so collect the names first to
         # allow a sequence to refer to another sequence declared later.
@@ -929,22 +990,26 @@ class Emitter:
             repeat = item.get("repeat")
             if repeat is not None and repeat != 1:
                 args.append(str(repeat))
-            global_out.append(f"def {name} : WriteSequence<{', '.join(args)}>;")
+            global_out.append(
+                self.define(where, name, "WriteSequence", args, scope=None)
+            )
 
         declared_units: set[str] = set()
         for item in items["func_unit"]:
             if item["name"] in declared_units:
                 self.error(where, f"duplicate func_unit {item['name']!r}")
             declared_units.add(item["name"])
-            global_out.append(f"def {item['name']} : FuncUnit;")
+            global_out.append(self.define(where, item["name"], "FuncUnit", scope=None))
         declared_bypasses: set[str] = set()
         for item in items["bypass"]:
             if item["name"] in declared_bypasses:
                 self.error(where, f"duplicate bypass {item['name']!r}")
             declared_bypasses.add(item["name"])
-            global_out.append(f"def {item['name']} : Bypass;")
+            global_out.append(self.define(where, item["name"], "Bypass", scope=None))
         for item in items["itin_class"]:
-            global_out.append(f"def {item['name']} : InstrItinClass;")
+            global_out.append(
+                self.define(where, item["name"], "InstrItinClass", scope=None)
+            )
 
         for item in items["alias"]:
             src, dst = item["src"], item["dst"]
@@ -952,7 +1017,9 @@ class Emitter:
             if len(resolved) != 2:
                 continue
             def_name = td_def_name(f"{prefix}SchedAlias_{src}_{dst}")
-            out.append(f"def {def_name} : SchedAlias<{resolved[0]}, {resolved[1]}>;")
+            out.append(
+                self.define(where, def_name, "SchedAlias", [resolved[0], resolved[1]])
+            )
 
         bound: set[str] = set()
         for item in items["bind"]:
@@ -1001,31 +1068,30 @@ class Emitter:
                         value = "true" if value else "false"
                     elif isinstance(value, list):
                         value = join_list([str(v) for v in value])
-                    body.append(f"  let {field} = {value};")
+                    body.append((field, value))
             resources_text = join_list(resources)
             if write in variant_writes:
                 # Variant subjects are aliased away, so their own binding has
                 # to survive as a standalone SchedWriteRes (see the note above).
-                if body:
-                    out.append(
-                        f"def {prefix}WRes_{write} : SchedWriteRes<{resources_text}> {{\n"
-                        + "\n".join(body)
-                        + "\n}"
-                    )
-                else:
-                    out.append(
-                        f"def {prefix}WRes_{write} : SchedWriteRes<{resources_text}>;"
-                    )
-                concrete_rw[write] = f"{prefix}WRes_{write}"
-            elif body:
                 out.append(
-                    f"def {prefix}WR_{write} : WriteRes<{write}, {resources_text}> {{\n"
-                    + "\n".join(body)
-                    + "\n}"
+                    self.define(
+                        where,
+                        f"{prefix}WRes_{write}",
+                        "SchedWriteRes",
+                        [resources_text],
+                        body,
+                    )
                 )
+                concrete_rw[write] = f"{prefix}WRes_{write}"
             else:
                 out.append(
-                    f"def {prefix}WR_{write} : WriteRes<{write}, {resources_text}>;"
+                    self.define(
+                        where,
+                        f"{prefix}WR_{write}",
+                        "WriteRes",
+                        [write, resources_text],
+                        body,
+                    )
                 )
 
         advanced: set[str] = set()
@@ -1059,13 +1125,15 @@ class Emitter:
                     args.append(join_list(valid_writes))
                 if tunables:
                     args.append(join_list([str(t) for t in tunables]))
-                body = ""
-                if adv_props.get("unsupported"):
-                    body = " { let Unsupported = true; }"
                 out.append(
-                    f"def {prefix}RAdv_{read} : SchedReadAdvance<{', '.join(args)}>"
-                    + body
-                    + ("" if body else ";")
+                    self.define(
+                        where,
+                        f"{prefix}RAdv_{read}",
+                        "SchedReadAdvance",
+                        args,
+                        [("Unsupported", "true")] if adv_props.get("unsupported") else [],
+                        style="inline",
+                    )
                 )
                 concrete_rw[read] = f"{prefix}RAdv_{read}"
             else:
@@ -1074,13 +1142,15 @@ class Emitter:
                     args.append(join_list(valid_writes))
                 if tunables:
                     args.append(join_list([str(t) for t in tunables]))
-                body = ""
-                if adv_props.get("unsupported"):
-                    body = " { let Unsupported = true; }"
                 out.append(
-                    f"def {prefix}RA_{read} : ReadAdvance<{', '.join(args)}>"
-                    + body
-                    + ("" if body else ";")
+                    self.define(
+                        where,
+                        f"{prefix}RA_{read}",
+                        "ReadAdvance",
+                        args,
+                        [("Unsupported", "true")] if adv_props.get("unsupported") else [],
+                        style="inline",
+                    )
                 )
 
         map_names: set[str] = set()
@@ -1142,14 +1212,20 @@ class Emitter:
                     self.error(where, f"map: duplicate emitted record name {def_name!r}")
                     continue
                 map_names.add(def_name)
-                body = ""
-                if item.get("unsupported") is not None:
-                    body = (
-                        f" {{ let Unsupported = "
-                        f"{'true' if item['unsupported'] else 'false'}; }}"
-                    )
+                fields = (
+                    [("Unsupported", "true" if item["unsupported"] else "false")]
+                    if item.get("unsupported") is not None
+                    else []
+                )
                 out.append(
-                    f"def {def_name} : InstRW<{join_list(resolved)}, {dag}>{body};"
+                    self.define(
+                        where,
+                        def_name,
+                        "InstRW",
+                        [join_list(resolved), dag],
+                        fields,
+                        style="inline",
+                    )
                 )
 
         # A read with no `advance` already means "read as usual", which is
@@ -1221,14 +1297,24 @@ class Emitter:
                     for other in resolved_all
                     if other in variant_subjects and other != name
                 }
-                body = ""
-                if item.get("variadic"):
-                    body = " {\n  let Variadic = true;\n}"
+                variadic = bool(item.get("variadic"))
                 out.append(
-                    f"def {prefix}{name}Variant : {cls}<{join_list(cases)}>{body};"
+                    self.define(
+                        where,
+                        f"{prefix}{name}Variant",
+                        cls,
+                        [join_list(cases)],
+                        [("Variadic", "true")] if variadic else [],
+                        suffix=";" if variadic else "",
+                    )
                 )
                 out.append(
-                    f"def {prefix}SSDLVariantAlias_{name} : SchedAlias<{name}, {prefix}{name}Variant>;"
+                    self.define(
+                        where,
+                        f"{prefix}SSDLVariantAlias_{name}",
+                        "SchedAlias",
+                        [name, f"{prefix}{name}Variant"],
+                    )
                 )
 
         # Chained references are legal, but a cycle makes llvm-tblgen expand
@@ -1295,7 +1381,7 @@ class Emitter:
                 args.append(str(max_moves if max_moves is not None else 0))
             if zero_only:
                 args.append("true" if zero_only else "false")
-            out.append(f"def {name} : RegisterFile<{', '.join(args)}>;")
+            out.append(self.define(where, name, "RegisterFile", args))
 
         for item in items["retire_unit"]:
             fields = item["fields"]
@@ -1313,8 +1399,12 @@ class Emitter:
                 )
                 continue
             out.append(
-                f"def {info.def_name}RetireUnit : RetireControlUnit<"
-                f"{fields['buffer']}, {fields['max_per_cycle']}>;"
+                self.define(
+                    where,
+                    f"{info.def_name}RetireUnit",
+                    "RetireControlUnit",
+                    [str(fields["buffer"]), str(fields["max_per_cycle"])],
+                )
             )
 
         for kind, cls, queue_prefix in (
@@ -1325,7 +1415,9 @@ class Emitter:
                 res = item["resource"]
                 if res not in seen_res:
                     self.error(where, f"{kind}: unknown resource {res!r}")
-                out.append(f"def {prefix}{queue_prefix}{res} : {cls}<{res}>;")
+                out.append(
+                    self.define(where, f"{prefix}{queue_prefix}{res}", cls, [res])
+                )
 
         itineraries_name = self.top_itineraries.get(decl.name)
         for item in items["itineraries"]:
@@ -1381,30 +1473,28 @@ class Emitter:
                     continue
                 def_name = td_def_name(f"{prefix}ITINRW_" + "_".join(classes))
                 out.append(
-                    f"def {def_name} : ItinRW<{join_list(resolved)}, "
-                    f"{join_list(classes)}>;"
+                    self.define(
+                        where, def_name, "ItinRW", [join_list(resolved), join_list(classes)]
+                    )
                 )
 
-        model_lets = []
+        # The machine model record is not itself scoped: it *is* the scope.
+        self.current_scope = None
+        model_fields: list[tuple[str, str]] = []
         if itineraries_name is not None:
-            model_lets.append(f"  let Itineraries = {itineraries_name};")
+            model_fields.append(("Itineraries", itineraries_name))
         for key, field in SCHED_MODEL_PROPS.items():
             if key in props:
                 value = props[key]
                 if isinstance(value, bool):
                     value = "true" if value else "false"
-                model_lets.append(f"  let {field} = {value};")
+                model_fields.append((field, str(value)))
         if "unsupported_features" in props:
             preds = [f"Has{name}" for name in props["unsupported_features"]]
-            model_lets.append(f"  let UnsupportedFeatures = {join_list(preds)};")
-        if model_lets:
-            model_text = (
-                f"def {info.def_name}Model : SchedMachineModel {{\n"
-                + "\n".join(model_lets)
-                + "\n}"
-            )
-        else:
-            model_text = f"def {info.def_name}Model : SchedMachineModel;"
+            model_fields.append(("UnsupportedFeatures", join_list(preds)))
+        model_text = self.define(
+            where, f"{info.def_name}Model", "SchedMachineModel", (), model_fields
+        )
 
         processor_texts: list[str] = []
         features = props.get("features", [])
@@ -1431,7 +1521,7 @@ class Emitter:
             if march is not None:
                 args.append(td_str(march))
             processor_texts.append(
-                f"def {info.def_name} : RISCVProcessorModel<{', '.join(args)}>;"
+                self.define(where, info.def_name, "RISCVProcessorModel", args)
             )
         else:
             if march is not None:
@@ -1440,7 +1530,7 @@ class Emitter:
             if tune:
                 args.append(join_list(targs))
             processor_texts.append(
-                f"def {info.def_name} : RISCVTuneProcessorModel<{', '.join(args)}>;"
+                self.define(where, info.def_name, "RISCVTuneProcessorModel", args)
             )
 
         chunks = list(prelude) + [model_text]
@@ -1459,6 +1549,7 @@ def emit(
     attrs: AttributeSchema | None = None,
     sorts: dict[str, str] | None = None,
     target_include: str = "RISCV.td",
+    records: RecordSet | None = None,
 ) -> tuple[str, list[Diagnostic]]:
     """Lower ``program`` and prepend the includes the output needs to load.
 
@@ -1468,6 +1559,9 @@ def emit(
     """
     emitter = Emitter(program, strict=strict, attrs=attrs, sorts=sorts)
     body = emitter.run()
+    if records is not None:
+        records.records.extend(emitter.records.records)
+        records.by_name.update(emitter.records.by_name)
     header = []
     if header_comment:
         header.append(header_comment)
@@ -1503,6 +1597,11 @@ def main(argv: list[str] | None = None) -> int:
         default="RISCV.td",
         help="target description included first (default: RISCV.td)",
     )
+    ap.add_argument(
+        "--records-json",
+        default=None,
+        help="write the record table this lowering denotes (see record_ir.py)",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -1517,9 +1616,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.input}: {exc}", file=sys.stderr)
         return 2
 
+    records = RecordSet()
     try:
         text, skips = emit(
             program,
+            records=records,
             strict=args.strict,
             includes=tuple(args.includes),
             header_comment=f"// Generated from {args.input} by tools/ssdl/emit_td.py.",
@@ -1533,6 +1634,10 @@ def main(argv: list[str] | None = None) -> int:
 
     for diag in skips:
         print(diag.render(), file=sys.stderr)
+
+    if args.records_json:
+        with open(args.records_json, "w", encoding="utf-8") as f:
+            f.write(records.dumps())
 
     output = text
     if args.output:

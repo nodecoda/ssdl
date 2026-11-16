@@ -700,3 +700,30 @@ scope: writes, reads, variants, InstRW, resources, machine props,
 - `advance_unsupported_is_lowered`：两条展开路径都带 `let Unsupported = true`，且未知属性仍报错；
 - `machine_name_is_the_mcpu_string`：`machine sifive-7-series` → `RISCVTuneProcessorModel<"sifive-7-series", ...>`，即 `-mcpu` 名字不因合法 def 名而改变；
 - `from_records_round_trips_the_stub_model`：`stub-mini.ssdl` → TD → records → SSDL → TD → records，`equiv.py` 逐字段相等（含 `WriteSequence` alias、`read_variant` 的 `SchedReadAdvance` 物化、处理器特性）。
+
+---
+
+## 18. 2026-11-16 记录层：`.td` 是打印器，不是产物
+
+**结论**：SSDL 的直接产物是 record 表，不是 `.td` 文本。`emit_td.py` 与
+`predicates.py` 的每个 `def` 都先写进 `RecordSet`（`tools/ssdl/record_ir.py`），
+再由同一条 record 渲染成文本，所以文本不可能与表漂移；
+`check.py` 的 `every_def_in_the_output_belongs_to_the_record_table` 把这条不变量
+固定成"文本里的 def 名集合 == 表里的 def 名集合"。
+
+**证据**：`--records-json` 输出表，`record_ir.py` 只用表重放 TableGen，
+三个 SiFive7 模型的 `-print-records` dump 与文本路径**逐字节相同**
+（12063 / 12118 / 12130 条记录），`equiv.py` 对 `/tmp/riscv.rec` 仍是三个模型
+全部 `records match`。字段级另有两条：表里每个字段都在 tblgen dump 里且值相等；
+表里出现的 `(class, field)` 必须由该类的 TD 声明提供。
+
+**同一轮修掉的两个真问题**：内联 def 结尾的 `;` 在 tblgen 里是 error（旧发射器
+给 `InstRW ... unsupported` 生成的正是这种形状，从未被覆盖）；`STIPredicate.SchedModel`
+从 `let ... in` 前缀改成字段（`TargetInstrPredicate.td:415-420` 本来就是字段）。
+
+**后端绑定普查**：8 个 emitter 源文件里 493 处字符串绑定（去重 245 个
+`(kind, name)`），0 个未在 TD 声明。`td_schema.py --check` 现在是可执行形式，
+`check.py` 用 `backend_bindings_are_declared_in_the_schema` 固定（含 240 的下界，
+正则失效不会伪装成通过）。
+
+细节见 `2026-11-16-ssdl-record-layer.md`。`check.py` 现在 39/39。

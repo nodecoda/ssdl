@@ -13,6 +13,7 @@ diagnostic the emitter is supposed to produce, so "unsupported" can never mean
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -28,8 +29,10 @@ from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import emit_td, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
 from ssdl import from_records as from_records_mod  # noqa: E402
+from ssdl import record_ir as record_ir_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
 from ssdl import sets as sets_mod  # noqa: E402
+from ssdl import td_schema as td_schema_mod  # noqa: E402
 from ssdl import validate as validate_mod  # noqa: E402
 from ssdl.emit_td import SSDLEmitError  # noqa: E402
 
@@ -887,8 +890,8 @@ sti_function F : isOptimizableRegisterMove {
     # Binding, not redeclaration: the only declaration records are upstream's.
     assert_true("isZeroIdiomDecl : STIPredicateDecl" not in text, text)
     assert_true("IsDepBreakingDecl : STIPredicateDecl" not in text, text)
-    assert_in("def F : STIPredicate<IsOptimizableRegisterMoveDecl, [C]>;", text)
-    assert_in("let SchedModel = mModel in", text)
+    assert_in("def F : STIPredicate<IsOptimizableRegisterMoveDecl, [C]> {", text)
+    assert_in("let SchedModel = mModel;", text)
 
     # TargetInstrPredicate.td scopes UpdatesOpcodeMask to the first two hooks.
     expect_emit_errors(
@@ -1177,6 +1180,234 @@ def from_records_round_trips_the_stub_model():
         equiv_mod.build_processor(generated, "stub_cpu"),
     )
     assert_true(code == 0, "records -> SSDL -> records did not round trip")
+
+
+# ---------------------------------------------------------------- records
+def dump_records(td_text: str, tmp: str, name: str, include_dirs: list[str]) -> "records_mod.RecordFile":
+    """Run llvm-tblgen -print-records on ``td_text`` and parse the dump."""
+    try:
+        tblgen = compare_mod.default_tblgen()
+    except compare_mod.CompareError as exc:  # pragma: no cover - no tblgen here
+        raise Failure(str(exc)) from exc
+    td_path = Path(tmp) / f"{name}.td"
+    td_path.write_text(td_text, encoding="utf-8")
+    rec_path = Path(tmp) / f"{name}.rec"
+    cmd = [tblgen, "-print-records"]
+    for inc in include_dirs:
+        cmd.extend(["-I", inc])
+    cmd.extend(["-o", str(rec_path), str(td_path)])
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert_true(proc.returncode == 0, f"-print-records failed:\n{proc.stderr}")
+    return records_mod.load(str(rec_path))
+
+
+def dump_field(recs: "records_mod.RecordFile", name: str, field: str) -> str | None:
+    """Value of ``field`` in a -print-records body line, or None."""
+    for line in recs.body.get(name, ()):
+        text = line.strip()
+        if not text.endswith(";"):
+            continue
+        lhs, sep, value = text[:-1].partition(" = ")
+        if not sep:
+            continue
+        if lhs.split()[-1] == field:
+            return value.strip()
+    return None
+
+
+def normalize_value(value: str) -> str:
+    """Compare TableGen values as printed: bits are 1/0, lists drop padding."""
+    value = value.strip()
+    if value == "true":
+        return "1"
+    if value == "false":
+        return "0"
+    return re.sub(r",\s+", ", ", value)
+
+
+def tblgen_include_dirs() -> list[str]:
+    include_dirs = compare_mod.default_include_dirs()
+    include_dirs.append(str(ROOT / "tests/ssdl/stub-target"))
+    return include_dirs
+
+
+@test
+def backend_bindings_are_declared_in_the_schema():
+    """The strings the emitters bind to must exist in the TD declarations.
+
+    This is the executable form of "the keywords have no public spec": the
+    schema is parsed from the same headers the backend includes, so a binding
+    that drifts from its declaration fails here instead of silently reading a
+    default.
+    """
+    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    if not Path(src, "utils/TableGen").is_dir():
+        return  # no LLVM checkout; the rest of the checks do not need one
+    schema = td_schema_mod.parse_files(td_schema_mod.default_sources(src))
+    bindings, scanned = td_schema_mod.census(src)
+    assert_true(len(scanned) >= 6, f"only scanned {len(scanned)} emitter files")
+    undeclared = [
+        binding for binding in bindings if not schema.resolve(binding)
+    ]
+    assert_true(
+        undeclared == [],
+        "undeclared backend bindings: "
+        + ", ".join(
+            f"{b.file}:{b.line}:{b.kind} {b.name}" for b in undeclared
+        ),
+    )
+    # The count is a regression guard: a pattern that stops matching (layout
+    # change in the emitter) must not look like a clean census.
+    assert_true(
+        len({(b.kind, b.name) for b in bindings}) >= 240,
+        f"census found only {len(bindings)} bindings; patterns may have drifted",
+    )
+
+
+@test
+def inst_rw_unsupported_is_lowered():
+    """`map ... : unsupported = true` reaches InstRW.Unsupported and compiles.
+
+    Inline bodies carry no trailing semicolon: llvm-tblgen rejects
+    ``def ... { ... };`` outright, so the previous shape never reached a test.
+    """
+    text, skips = emit_source(
+        """
+machine m {
+    write W_ALU;
+    map [ADD] -> [W_ALU] : unsupported = true;
+    map [SUB] -> [W_ALU] : unsupported = false;
+}
+"""
+    )
+    assert_true(skips == [], skips)
+    assert_in(
+        "def m_IRW_ADD : InstRW<[W_ALU], (instrs ADD)> { let Unsupported = true; }",
+        text,
+    )
+    assert_in(
+        "def m_IRW_SUB : InstRW<[W_ALU], (instrs SUB)> { let Unsupported = false; }",
+        text,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        # `text` already starts with `include "RISCV.td"`; SSDLStub.td
+        # includes the same file, so adding it here would define ValueType
+        # twice.  InstRW needs only the instruction names from RISCV.td.
+        recs = dump_records(text, tmp, "inst_rw_unsupported", tblgen_include_dirs())
+    assert_true(dump_field(recs, "m_IRW_ADD", "Unsupported") == "1", "Unsupported bit")
+    assert_true(dump_field(recs, "m_IRW_SUB", "Unsupported") == "0", "Unsupported bit")
+
+
+@test
+def record_table_fields_are_declared_by_their_classes():
+    """Every field binding the emitter writes exists on the class it names.
+
+    ``emit_td.py`` holds the SSDL-to-TD field mapping as Python constants
+    (``latency`` -> ``Latency`` ...).  The record table makes that mapping
+    checkable: a renamed or misspelled field would land on a class that does
+    not declare it, and llvm-tblgen would silently use the default.
+    """
+    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    if not Path(src, "include/llvm/Target/TargetSchedule.td").is_file():
+        return
+    schema = td_schema_mod.parse_files(td_schema_mod.default_sources(src))
+    records = record_ir_mod.RecordSet()
+    emit_td.emit(
+        parser.parse_file(str(ROOT / "tests/ssdl/stub-mini.ssdl")),
+        strict=True,
+        target_include="SSDLStub.td",
+        records=records,
+    )
+    unknown = []
+    for record in records:
+        for field_name, _ in record.fields:
+            declared = set()
+            for base in record.bases:
+                declared.update(schema.fields_of(base.name))
+            if field_name not in declared:
+                unknown.append(f"{record.name}.{field_name}")
+    assert_true(unknown == [], f"fields not declared by their class: {unknown}")
+
+
+@test
+def every_def_in_the_output_belongs_to_the_record_table():
+    """The printed TableGen is a rendering of the table, not a second source."""
+    records = record_ir_mod.RecordSet()
+    text, skips = emit_td.emit(
+        parser.parse_file(str(ROOT / "tests/ssdl/stub-mini.ssdl")),
+        strict=True,
+        target_include="SSDLStub.td",
+        records=records,
+    )
+    assert_true(skips == [], skips)
+    printed = set(re.findall(r"^[ \t]*def\s+([A-Za-z_][A-Za-z0-9_]*)", text, re.M))
+    registered = {record.name for record in records}
+    assert_true(
+        printed == registered,
+        f"text and record table disagree: only in text {printed - registered}, "
+        f"only in table {registered - printed}",
+    )
+
+
+@test
+def record_fields_survive_the_json_table_and_llvm_tblgen():
+    """Records -> JSON -> TableGen reaches the same RecordKeeper.
+
+    Every record's declared fields are first checked against the dump of the
+    text the emitter printed, then the table alone is replayed through
+    ``record_ir.py`` and the two dumps are compared record by record.
+    """
+    records = record_ir_mod.RecordSet()
+    text, _ = emit_td.emit(
+        parser.parse_file(str(ROOT / "tests/ssdl/stub-mini.ssdl")),
+        strict=True,
+        target_include="SSDLStub.td",
+        records=records,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        original = dump_records(text, tmp, "table_original", tblgen_include_dirs())
+
+        # 1. The table agrees with what llvm-tblgen read from the printed text.
+        for record in records:
+            assert_true(record.name in original.cls, f"{record.name} missing from dump")
+            for base in record.bases:
+                assert_true(
+                    base.name in original.cls[record.name],
+                    f"{record.name}: class {base.name} not in "
+                    f"{original.cls[record.name]!r}",
+                )
+            for field, value in record.fields:
+                printed = dump_field(original, record.name, field)
+                assert_true(
+                    printed is not None,
+                    f"{record.name}.{field} missing from the dump",
+                )
+                assert_true(
+                    normalize_value(printed) == normalize_value(value),
+                    f"{record.name}.{field}: table says {value!r}, "
+                    f"llvm-tblgen printed {printed!r}",
+                )
+
+        # 2. The JSON table alone reproduces the same records.
+        replay = record_ir_mod.RecordSet.from_json(json.loads(records.dumps()))
+        replay_text = 'include "SSDLStub.td"\n\n' + replay.render()
+        replayed = dump_records(replay_text, tmp, "table_replay", tblgen_include_dirs())
+    assert_true(
+        set(replayed.cls) >= {record.name for record in records},
+        "the replay lost records",
+    )
+    for record in records:
+        assert_true(
+            replayed.cls[record.name] == original.cls[record.name],
+            f"{record.name}: base chain changed on replay "
+            f"({original.cls[record.name]!r} -> {replayed.cls[record.name]!r})",
+        )
+        for field, value in record.fields:
+            got = dump_field(replayed, record.name, field)
+            assert_true(
+                got is not None and normalize_value(got) == normalize_value(value),
+                f"{record.name}.{field}: replay says {got!r}, table says {value!r}",
+            )
 
 
 def main() -> int:

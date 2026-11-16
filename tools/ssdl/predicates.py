@@ -34,6 +34,7 @@ if __package__ in (None, ""):
         STIFunction,
         TIIPredicate,
     )
+    from record_ir import Base, DuplicateRecord, Record, RecordSet  # type: ignore
     from sets import SetError, SetEvaluator
     from tdutil import join_list, td_code, td_def_name, td_str
 else:
@@ -47,6 +48,7 @@ else:
         STIFunction,
         TIIPredicate,
     )
+    from .record_ir import Base, DuplicateRecord, Record, RecordSet
     from .sets import SetError, SetEvaluator
     from .tdutil import join_list, td_code, td_def_name, td_str
 
@@ -124,6 +126,9 @@ class PredicateLowerer:
     sorts: dict[str, str]
     machine_models: dict[str, str]
     reserved_names: set[str] = field(default_factory=set)
+    # The table `emit_td.py` collects; predicate records share it with the
+    # machine records so `--records-json` describes the whole module.
+    records: RecordSet = field(default_factory=RecordSet)
 
     def __post_init__(self) -> None:
         self.predicates: dict[str, PredicateDecl] = {
@@ -150,6 +155,38 @@ class PredicateLowerer:
         self.def_names: set[str] = set(self.reserved_names)
         self.errors: list[str] = []
         self.stack: list[str] = []
+
+    # -- record table ----------------------------------------------------
+    def define(
+        self,
+        where: str,
+        name: str,
+        cls: str | None = None,
+        args: tuple[str, ...] | list[str] = (),
+        fields: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+        *,
+        bases: tuple | list = (),
+        style: str = "block",
+    ) -> str:
+        """Register a predicate-side definition and return its TableGen text."""
+        all_bases: list[Base] = []
+        if cls is not None:
+            all_bases.append(Base(cls, tuple(args)))
+        for base in bases:
+            all_bases.append(base if isinstance(base, Base) else Base.parse(base))
+        record = Record(
+            name=name,
+            bases=tuple(all_bases),
+            fields=tuple((field, str(value)) for field, value in fields),
+            style=style,
+            origin=where,
+        )
+        try:
+            self.records.add(name, list(all_bases), record.fields,
+                             style=style, origin=where)
+        except DuplicateRecord:
+            pass
+        return record.render()
 
     # -- diagnostics -----------------------------------------------------
     def error(self, where: str, message: str) -> None:
@@ -235,13 +272,17 @@ class PredicateLowerer:
             sort = self.sorts.get(name, MC)
             if sort == SEL:
                 self.error(where, "block-form predicates cannot have an expression body")
-                text = f"def {def_name} : FalsePred;"
+                text = self.define(where, def_name, "FalsePred")
             elif sort == SCHED:
                 body = self.lower_sched(decl.expr, {}, where)
-                text = f"def {def_name} : {self.predicate_base(body, SCHED)};"
+                text = self.define(
+                    where, def_name, bases=[self.predicate_base(body, SCHED)]
+                )
             else:
                 body = self.lower_mc(decl.expr, {}, where)
-                text = f"def {def_name} : {self.predicate_base(body, MC)};"
+                text = self.define(
+                    where, def_name, bases=[self.predicate_base(body, MC)]
+                )
         self.stack.pop()
         self.register_def(def_name, where)
         self.named_defs[name] = def_name
@@ -575,11 +616,14 @@ class PredicateLowerer:
                 bases.append(f"AssemblerPredicate<{dag}, {td_str(desc)}>")
             else:
                 bases.append(f"AssemblerPredicate<{dag}>")
-        body = ""
-        if fields.get("recompute_per_function"):
-            body = " {\n  let RecomputePerFunction = true;\n}"
-            return f"def {def_name} : {', '.join(bases)}{body}"
-        return f"def {def_name} : {', '.join(bases)};"
+        return self.define(
+            where,
+            def_name,
+            bases=bases,
+            fields=[("RecomputePerFunction", "true")]
+            if fields.get("recompute_per_function")
+            else [],
+        )
 
     def lower_feature_expr(self, expr, where: str) -> str:
         if expr[0] == "not":
@@ -658,10 +702,18 @@ class PredicateLowerer:
                 self.error(where, f"unknown delegate {name!r}")
             else:
                 delegates.append(self.sti_decl_defs[name])
-        text = (
-            f"def {def_name} : STIPredicateDecl<{td_str(decl.name)}, {default}, "
-            f"{_bool(overrides)}, {_bool(expand)}, {_bool(opcode_mask)}, "
-            f"{join_list(delegates)}>;"
+        text = self.define(
+            where,
+            def_name,
+            "STIPredicateDecl",
+            [
+                td_str(decl.name),
+                default,
+                _bool(overrides),
+                _bool(expand),
+                _bool(opcode_mask),
+                join_list(delegates),
+            ],
         )
         self.register_def(def_name, where)
         self.global_defs.append((def_name, text))
@@ -739,7 +791,9 @@ class PredicateLowerer:
                 args = [join_list(opcodes), pred]
                 if operands:
                     args.append(join_list([str(n) for n in operands]))
-                text = f"def {class_name} : {base}<{', '.join(args)}>;"
+                text = self.define(
+                    f"{where}.{item['name']}", class_name, base, args
+                )
                 previous = self.class_defs.get(class_name)
                 if previous is not None:
                     if previous != text:
@@ -775,9 +829,13 @@ class PredicateLowerer:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", decl.name):
             self.error(where, f"{decl.name!r} is not a valid TableGen/C++ name")
         decl_def = self.sti_decl_defs.get(decl.decl, "FalsePred")
-        sti = f"def {fn_name} : STIPredicate<{decl_def}, {join_list(class_defs)}>;"
-        if model_def is not None:
-            sti = f"let SchedModel = {model_def} in\n" + sti
+        sti = self.define(
+            where,
+            fn_name,
+            "STIPredicate",
+            [decl_def, join_list(class_defs)],
+            [("SchedModel", model_def)] if model_def is not None else [],
+        )
         self.register_def(fn_name, where)
         self.global_defs.append((fn_name, sti))
 
@@ -808,7 +866,9 @@ class PredicateLowerer:
             self.error(where, f"{decl.name!r} is not a valid C++ predicate name")
         body = self.lower_statement(decl.statement, where)
         def_name = td_def_name(decl.name)
-        text = f"def {def_name} : TIIPredicate<{td_str(decl.name)}, {body}>;"
+        text = self.define(
+            where, def_name, "TIIPredicate", [td_str(decl.name), body]
+        )
         self.register_def(def_name, where)
         self.global_defs.append((def_name, text))
 
@@ -834,7 +894,9 @@ class PredicateLowerer:
     def lower_prolog(self, decl: PredicateProlog) -> None:
         index = sum(1 for name, _ in self.global_defs if name.startswith("SSDLPredicateProlog"))
         def_name = "SSDLPredicateProlog" if index == 0 else f"SSDLPredicateProlog{index}"
-        text = f"def {def_name} : PredicateProlog<{td_code(decl.code)}>;"
+        text = self.define(
+            "predicate_prolog", def_name, "PredicateProlog", [td_code(decl.code)]
+        )
         self.register_def(def_name, "predicate_prolog")
         self.global_defs.append((def_name, text))
 
