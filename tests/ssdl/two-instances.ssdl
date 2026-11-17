@@ -1,0 +1,14 @@
+# AC4: one family body, two instances, one resource name.  The identity is
+# (machine, resource, PipeA); the spelling gains the instance prefix so the
+# two ProcResource defs do not collide.
+set D = [A] : kind = dimension;
+
+machine fam(vlen: INT) {
+    resource PipeA : units = 1;
+    write W[D];
+    bind W[D] -> [PipeA], latency = vlen / 128;
+    load_queue : resource = PipeA;
+}
+
+machine small : fam(128) { }
+machine big : fam(256) { }

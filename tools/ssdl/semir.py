@@ -83,6 +83,7 @@ class Decl:
     text: str
     line: int = 0
     phase: Phase = Phase.ELAB
+    spelling: str = ""
 
 
 @dataclass

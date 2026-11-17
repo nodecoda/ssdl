@@ -2160,6 +2160,80 @@ def semantic_ir_carries_identity_line_and_phase():
 
 
 @test
+def family_instances_spell_resources_per_scope():
+    """AC4: one resource name in two instances gets two spellings.
+
+    The identity stays ``(small, resource, PipeA)``; only the lowering name
+    gains the instance prefix, so ``emit_td`` sees distinct ProcResource defs
+    instead of reporting a global collision.
+    """
+    source = (ROOT / "tests/ssdl/two-instances.ssdl").read_text()
+    program = elaborate_mod.elaborate(source)
+    resources = {
+        machine.name: (decl.symbol.name, decl.spelling)
+        for machine in program.machines
+        for decl in machine.decls
+        if decl.symbol.kind == "resource"
+    }
+    assert_true(
+        resources
+        == {"small": ("PipeA", "small_PipeA"), "big": ("PipeA", "big_PipeA")},
+        resources,
+    )
+    flat = elaborate_mod.render(program)
+    assert_in("resource small_PipeA : units = 1;", flat)
+    assert_in("resource big_PipeA : units = 1;", flat)
+    assert_in("bind W_A -> [small_PipeA], latency = 1;", flat)
+    assert_in("bind W_A -> [big_PipeA], latency = 2;", flat)
+    text, _ = emit_source(flat, strict=True)
+    assert_in("def small_PipeA", text)
+    assert_in("def big_PipeA", text)
+
+
+@test
+def resource_name_template_uses_family_parameters():
+    """An explicit ``name = "PipeA_{vlen}"`` is a spelling, not a new identity."""
+    source = """
+set D = [A] : kind = dimension;
+machine fam(vlen: INT) {
+    resource P : units = 1, name = "PipeA_{vlen}";
+    write W[D];
+    bind W[D] -> [P], latency = 1;
+}
+machine small : fam(128) { }
+machine big : fam(256) { }
+"""
+    flat = parser.expand_source(source)
+    assert_in("resource PipeA_128 : units = 1;", flat)
+    assert_in("resource PipeA_256 : units = 1;", flat)
+    assert_in("bind W_A -> [PipeA_128]", flat)
+    assert_true("name = " not in flat, "the name directive is compile-time only")
+
+
+@test
+def colliding_resource_spellings_name_both_identities():
+    """AC5: one spelling for two identities is a hard error, not a warning."""
+    source = """
+set D = [A] : kind = dimension;
+machine fam(vlen: INT) {
+    resource P : units = 1, name = "Same";
+    write W[D];
+    bind W[D] -> [P], latency = 1;
+}
+machine small : fam(1) { }
+machine big : fam(2) { }
+"""
+    try:
+        parser.expand_source(source)
+    except family_mod.ExpandError as exc:
+        message = str(exc)
+        assert_in("machine small/resource P", message)
+        assert_in("machine big/resource P", message)
+        return
+    raise Failure("expected a resource spelling collision")
+
+
+@test
 def family_expansions_match_the_golden_manifest():
     """The v1.2 expansion of every family source is pinned byte-for-byte (AC2).
 

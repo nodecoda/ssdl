@@ -15,7 +15,10 @@ implementation of norm rules, so the IR path is byte-identical by construction;
 from __future__ import annotations
 
 import argparse
+import re
+import string
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +26,141 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import family_expand as fe  # noqa: E402
 from ssdl import golden, semir  # noqa: E402
+
+
+
+RESOURCE_HEAD_RE = re.compile(r"^(resource|res_group)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
+NAME_PROP_RE = re.compile(r'(?:^|[,:]\s*)name\s*=\s*"([^"]*)"')
+IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _template(template: str, env: dict[str, object], where: str) -> str:
+    """Expand ``{param}`` placeholders; only known ELAB names are allowed."""
+    out: list[str] = []
+    for literal, field, spec, conversion in string.Formatter().parse(template):
+        out.append(literal)
+        if field is None:
+            continue
+        if spec or conversion:
+            raise fe.ExpandError(f"{where}: name template {template!r} may not use format specs")
+        if field not in env:
+            raise fe.ExpandError(
+                f"{where}: name template {template!r} uses unknown parameter {field!r}"
+            )
+        out.append(str(env[field]))
+    return "".join(out)
+
+
+def _strip_name(line: str) -> tuple[str, str | None]:
+    """Remove an inline ``name = "..."`` property from a resource declaration."""
+    match = RESOURCE_HEAD_RE.match(line)
+    if match is None:
+        return line, None
+    tail = match.group(3)
+    prop = NAME_PROP_RE.search(tail)
+    if prop is None:
+        return line, None
+    template = prop.group(1)
+    rest = (tail[: prop.start()] + tail[prop.end() :]).strip()
+    if rest.startswith(","):
+        rest = ":" + rest[1:]
+    if not rest or rest.startswith(";"):
+        return f"{match.group(1)} {match.group(2)};", template
+    return f"{match.group(1)} {match.group(2)} {rest}", template
+
+
+def _rename_idents(segment: str, renames: dict[str, str]) -> str:
+    if not renames:
+        return segment
+    return IDENT_RE.sub(lambda m: renames.get(m.group(0), m.group(0)), segment)
+
+
+def _matching_bracket(text: str, start: int) -> int:
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "[":
+            depth += 1
+        elif text[index] == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise fe.ExpandError(f"unbalanced [ in {text!r}")
+
+
+def _rename_line(line: str, renames: dict[str, str]) -> str:
+    """Rewrite resource references in one rendered statement."""
+    if not renames:
+        return line
+    match = RESOURCE_HEAD_RE.match(line)
+    if match is not None:
+        kind, local = match.group(1), match.group(2)
+        head = f"{kind} {renames.get(local, local)}"
+        return head + _rename_idents(line[match.end(2) :], renames)
+    kind, _name = _head(line)
+    if kind == "bind":
+        arrow = line.find("->")
+        if arrow < 0:
+            return line
+        open_at = line.find("[", arrow)
+        if open_at < 0:
+            return line
+        close_at = _matching_bracket(line, open_at)
+        inner = _rename_idents(line[open_at + 1 : close_at], renames)
+        return line[: open_at + 1] + inner + line[close_at:]
+    if kind in ("load_queue", "store_queue"):
+        eq = line.rfind("=")
+        if eq < 0:
+            return line
+        return line[: eq + 1] + _rename_idents(line[eq + 1 :], renames)
+    return line
+
+
+def _collect_resources(
+    lines: list[str], env: dict[str, object], where: str
+) -> list[tuple[str, str, str | None]]:
+    """(kind, local name, explicit name template) for one machine."""
+    specs: list[tuple[str, str, str | None]] = []
+    for line in lines:
+        cleaned, template = _strip_name(line)
+        match = RESOURCE_HEAD_RE.match(cleaned)
+        if match is None:
+            continue
+        if template is not None:
+            template = _template(template, env, where)
+        specs.append((match.group(1), match.group(2), template))
+    return specs
+
+
+def _spellings(
+    per_machine: list[tuple[str, list[tuple[str, str, str | None]]]],
+) -> dict[str, dict[str, str]]:
+    """Assign one spelling per resource identity and check injectivity."""
+    counts: Counter[str] = Counter()
+    for _name, specs in per_machine:
+        counts.update(local for _kind, local, _template in specs)
+
+    result: dict[str, dict[str, str]] = {}
+    seen: dict[str, list[str]] = {}
+    for name, specs in per_machine:
+        renames: dict[str, str] = {}
+        for kind, local, explicit in specs:
+            if explicit is not None:
+                spelling = explicit
+            elif counts[local] > 1:
+                spelling = f"{name}_{local}"
+            else:
+                spelling = local
+            identity = f"machine {name}/{kind} {local}"
+            previous = seen.setdefault(spelling, [])
+            if previous:
+                raise fe.ExpandError(
+                    f"spelling {spelling!r} is shared by {previous[0]} and {identity}"
+                )
+            previous.append(identity)
+            if spelling != local:
+                renames[local] = spelling
+        result[name] = renames
+    return result
 
 
 def _head(text: str) -> tuple[str, str]:
@@ -46,8 +184,10 @@ def _decls(
     lines: list[str],
     line_of: dict[tuple[str, str], int],
     scope: str,
+    renames: dict[str, str] | None = None,
 ) -> list[semir.Decl]:
     """Turn rendered statements into declarations, grouping brace blocks."""
+    renames = renames or {}
     out: list[semir.Decl] = []
     index = 0
     while index < len(lines):
@@ -63,19 +203,26 @@ def _decls(
                 index += 1
             if depth != 0:
                 raise fe.ExpandError(f"unterminated block in expanded machine {scope}")
+            spelled = "\n".join(_rename_line(item, renames) for item in block)
             out.append(
                 semir.Decl(
                     semir.Symbol(scope, kind, name),
-                    "\n".join(block),
+                    spelled,
                     line_of.get((kind, name), 0),
+                    spelling=renames.get(name, name)
+                    if kind in ("resource", "res_group")
+                    else name,
                 )
             )
             continue
         out.append(
             semir.Decl(
                 semir.Symbol(scope, kind, name),
-                line,
+                _rename_line(line, renames),
                 line_of.get((kind, name), 0),
+                spelling=renames.get(name, name)
+                if kind in ("resource", "res_group")
+                else name,
             )
         )
         index += 1
@@ -120,6 +267,14 @@ def elaborate(
         for machine in machines
         if machine.family is None and machine.params
     }
+    pending: list[
+        tuple[
+            semir.Machine,
+            list[str],
+            list[tuple[str, str, str | None]],
+            dict[tuple[str, str], int],
+        ]
+    ] = []
     for machine in machines:
         if machine.family is not None:
             base = families.get(machine.family.name)
@@ -150,16 +305,27 @@ def elaborate(
         lines = fe._expand_body(body, env, dimensions, local)
         if origins is not None:
             origins.extend(local)
+        specs = _collect_resources(lines, env, f"machine {machine.name}")
+        cleaned = [_strip_name(line)[0] for line in lines]
         line_of = {(kind, name): line for kind, name, line in local}
-        program.machines.append(
-            semir.Machine(
-                name=machine.name,
-                params=params,
-                family=family,
-                args=args,
-                decls=_decls(lines, line_of, machine.name),
+        pending.append(
+            (
+                semir.Machine(
+                    name=machine.name,
+                    params=params,
+                    family=family,
+                    args=args,
+                ),
+                cleaned,
+                specs,
+                line_of,
             )
         )
+
+    spellings = _spellings([(machine.name, specs) for machine, _l, specs, _lo in pending])
+    for machine, lines, _specs, line_of in pending:
+        machine.decls = _decls(lines, line_of, machine.name, spellings[machine.name])
+        program.machines.append(machine)
     return program
 
 
