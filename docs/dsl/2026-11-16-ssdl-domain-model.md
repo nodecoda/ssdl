@@ -163,7 +163,7 @@ machine B: error: emitted def 'WR_W_ALU' collides with 'machine A'
 | SSDL | TD | 消费者层 | 关键语义 |
 |---|---|---|---|
 | `resource R : units = n, buffer = m` | `ProcResourceUnits` | codegen 资源表 + MCA | `BufferSize` 决定乱序窗口建模；有资源但无 `WriteRes` 是 fatal（`SubtargetEmitter.cpp:1531`） |
-| `bind W -> [R], latency = n, uops = m, release = [...], acquire = [...], begin_grp, end_grp, single, retire_ooo, unsupported` | `WriteRes` | codegen / MCA | `release` 为空 ⇒ 每个资源各占 `Latency` 拍；`acquire` 为空 ⇒ 0 拍（`SubtargetEmitter.cpp:1254-1258`）；两个数组长度必须相等（`:1263-1266`）；`single` 在发射时折进 `BeginGroup/EndGroup`（`:1214-1215`），无独立运行时字段；`retire_ooo` 只被 MCA 读（`MCA/InstrBuilder.cpp:713`） |
+| `bind W -> [R], latency = n, uops = m, release = [...], acquire = [...], begin_grp, end_grp, single, retire_ooo, unsupported` | `WriteRes` | codegen / MCA | `release` 为空 ⇒ 每个资源各占 **1 拍**，不是 `Latency`（`SubtargetEmitter.cpp:1251-1254`；2026-11-17 更正）；`acquire` 为空 ⇒ 0 拍（`:1256-1260`）；两个数组长度必须相等（`:1263-1266`）；`single` 在发射时折进 `BeginGroup/EndGroup`（`:1214-1215`），无独立运行时字段；`retire_ooo` 只被 MCA 读（`MCA/InstrBuilder.cpp:713`） |
 | `advance R : cycles = n, writes = [...], tunables = [...]` | `ReadAdvance` | codegen | `cycles` 可负；`tunables` 长度不得超过 `writes`（`TargetSchedule.td:335-337` 的 assert） |
 | `map [...] -> [RW...]` | `InstRW` | codegen | **覆盖**该 CPU 上指令的 `SchedRW`（`SubtargetEmitter.cpp:1150-1166`）；要求指令已有 sched class，否则 fatal `No sched class for instruction.`（`CodeGenSchedule.cpp:1013`）；`Unsupported` 死字段 |
 | `map_itin [...] -> [RW...]` | `ItinRW` | codegen | 只在 `Writes.empty()` 时被查（审计结论；属 itinerary 兼容路径） |
