@@ -909,6 +909,24 @@ def expand(
     add_axis: tuple[str, str] | None = None,
     origins: list[tuple[str, str, int]] | None = None,
 ) -> str:
+    """Render flat v1.0 text through the semantic IR (``elaborate.py``).
+
+    ``expand_legacy`` keeps the v1.2 text path for debugging and parity checks.
+    """
+    tools = str(Path(__file__).resolve().parents[1])
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    from ssdl.elaborate import expand_text
+
+    return expand_text(text, add_axis=add_axis, origins=origins)
+
+
+def expand_legacy(
+    text: str,
+    *,
+    add_axis: tuple[str, str] | None = None,
+    origins: list[tuple[str, str, int]] | None = None,
+) -> str:
     dimensions, machines, globals_ = split_blocks(text)
     if add_axis:
         axis, value = add_axis
@@ -979,6 +997,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-o", "--out")
     parser.add_argument("--check-coverage", action="store_true")
     parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="use the v1.2 text expander instead of the semantic IR",
+    )
+    parser.add_argument(
         "--add-axis-value",
         metavar="AXIS=VALUE",
         help="append a member before checking coverage",
@@ -995,7 +1018,8 @@ def main(argv: list[str] | None = None) -> int:
 
     origins: list[tuple[str, str, int]] = []
     try:
-        flat = expand(Path(args.input).read_text(), add_axis=add_axis, origins=origins)
+        expander = expand_legacy if args.legacy else expand
+        flat = expander(Path(args.input).read_text(), add_axis=add_axis, origins=origins)
     except ExpandError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

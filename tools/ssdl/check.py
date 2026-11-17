@@ -28,6 +28,7 @@ from ssdl import census_riscv as census_mod  # noqa: E402
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import diagnose as diagnose_mod  # noqa: E402
 from ssdl import effects as effects_mod  # noqa: E402
+from ssdl import elaborate as elaborate_mod  # noqa: E402
 from ssdl import emit_td, expand_records as expand_mod, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
 from ssdl import paths as paths_mod  # noqa: E402
@@ -40,6 +41,7 @@ from ssdl import golden as golden_mod  # noqa: E402
 from ssdl import record_ir as record_ir_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
 from ssdl import sets as sets_mod  # noqa: E402
+from ssdl import semir as semir_mod  # noqa: E402
 from ssdl import td_schema as td_schema_mod  # noqa: E402
 from ssdl import td_types as td_types_mod  # noqa: E402
 from ssdl import validate as validate_mod  # noqa: E402
@@ -2129,6 +2131,32 @@ def mined_family_sources_expand_to_reparsable_v1_0():
             )
         checked += 1
     assert_true(checked == 14, f"models: {checked}")
+
+
+@test
+def semantic_ir_carries_identity_line_and_phase():
+    """The elaborator yields structured identities, not just flat text.
+
+    Rendering must still match the legacy text path byte-for-byte, so the IR
+    can be the default without a semantic change.
+    """
+    source = (ROOT / "tests/ssdl/family-mini.ssdl").read_text()
+    program = elaborate_mod.elaborate(source)
+    symbols = {symbol.render() for symbol in program.symbols()}
+    for expected in ("m512/write/W_A", "m512/bind/W_C", "m512/resource/P"):
+        assert_true(expected in symbols, f"missing {expected}: {sorted(symbols)}")
+    assert_true(program.dimensions["D"].values == ("A", "B", "C"), program.dimensions)
+    decls = {decl.symbol.render(): decl for machine in program.machines for decl in machine.decls}
+    assert_true(decls["m512/write/W_A"].line == 5, decls["m512/write/W_A"].line)
+    assert_true(decls["m512/bind/W_A"].line == 6, decls["m512/bind/W_A"].line)
+    assert_true(
+        all(decl.phase is semir_mod.Phase.ELAB for decl in decls.values()),
+        "phase 1b has no runtime values",
+    )
+    assert_true(
+        elaborate_mod.render(program) == family_mod.expand_legacy(source),
+        "IR rendering differs from the legacy expander",
+    )
 
 
 @test
