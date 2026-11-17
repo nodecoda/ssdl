@@ -23,10 +23,10 @@ import argparse
 import sys
 
 if __package__ in (None, ""):
-    from diagnose import ERROR, NOTE, diagnose  # type: ignore
+    from diagnose import ERROR, NOTE, diagnose, render_findings  # type: ignore
     from parser import MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, parse_file  # type: ignore
 else:
-    from .diagnose import ERROR, NOTE, diagnose
+    from .diagnose import ERROR, NOTE, diagnose, render_findings
     from .parser import (
         ItinerariesDecl,
         MachineDecl,
@@ -335,12 +335,14 @@ def main(argv: list[str] | None = None) -> int:
     errors, findings = validate_all(program)
     for error in errors:
         print(error, file=sys.stderr)
-    for finding in findings:
-        if finding.level == ERROR:
-            continue
-        if finding.level == NOTE and not args.verbose:
-            continue
-        print(finding.render(), file=sys.stderr)
+    shown = [
+        finding
+        for finding in findings
+        if finding.level != ERROR
+        and (args.verbose or finding.level != NOTE)
+    ]
+    for line in render_findings(shown):
+        print(line, file=sys.stderr)
     return 1 if errors else 0
 
 

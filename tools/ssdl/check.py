@@ -1667,6 +1667,28 @@ machine M {
 
 
 @test
+def effect_diagnostics_fold_repeats_into_one_line():
+    """A field set on thousands of writes should print once, with a count."""
+    source = """
+machine M {
+  read R;
+  write W1;
+  write W2;
+  write W3;
+  bind W1 -> [R], acquire = [0], release = [2];
+  bind W2 -> [R], acquire = [0], release = [2];
+  bind W3 -> [R], acquire = [0], release = [2];
+}
+"""
+    findings = diagnose_mod.diagnose(parser.parse(source))
+    lines = diagnose_mod.render_findings(findings)
+    acquire = [line for line in lines if "acquire is read only by CodeGen" in line]
+    assert_true(len(acquire) == 1, lines)
+    assert_true(acquire[0].endswith("(x3)"), acquire)
+    assert_true(acquire[0].startswith("machine M.bind W1.acquire: note:"), acquire)
+
+
+@test
 def record_values_match_the_declared_types():
     """Values are typed against the TD declarations, not just carried as text.
 

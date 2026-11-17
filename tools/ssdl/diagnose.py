@@ -66,6 +66,32 @@ class Finding:
         return f"{self.where}: {self.level}: {self.message}{suffix}"
 
 
+def render_findings(findings: list[Finding]) -> list[str]:
+    """Render one line per distinct message, folding repeats into ``(xN)``.
+
+    A real model sets the same field on thousands of writes, so a per-write
+    line is noise.  The first occurrence keeps its ``where`` prefix; the count
+    says how many sites the message covers.
+    """
+    order: list[tuple[str, str, str | None]] = []
+    first: dict[tuple[str, str, str | None], Finding] = {}
+    count: dict[tuple[str, str, str | None], int] = {}
+    for finding in findings:
+        key = (finding.level, finding.message, finding.effect)
+        if key not in first:
+            first[key] = finding
+            count[key] = 0
+            order.append(key)
+        count[key] += 1
+    lines = []
+    for key in order:
+        line = first[key].render()
+        if count[key] > 1:
+            line += f" (x{count[key]})"
+        lines.append(line)
+    return lines
+
+
 def _f(
     level: str,
     where: str,
@@ -522,13 +548,15 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true", help="include notes")
     args = ap.parse_args()
     program = parse_file(args.input)
-    errors = 0
-    for finding in diagnose(program):
-        if finding.level == NOTE and not args.verbose:
-            continue
-        print(finding.render(), file=sys.stderr)
-        errors += finding.level == ERROR
-    return 1 if errors else 0
+    findings = diagnose(program)
+    shown = [
+        finding
+        for finding in findings
+        if args.verbose or finding.level != NOTE
+    ]
+    for line in render_findings(shown):
+        print(line, file=sys.stderr)
+    return 1 if any(f.level == ERROR for f in findings) else 0
 
 
 if __name__ == "__main__":

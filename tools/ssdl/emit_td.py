@@ -53,7 +53,12 @@ else:
     from .tdutil import join_list, td_def_name, td_str
 
 if __package__ in (None, ""):
-    from diagnose import ERROR as FINDING_ERROR, NOTE as FINDING_NOTE, diagnose as diagnose_program  # type: ignore
+    from diagnose import (  # type: ignore
+        ERROR as FINDING_ERROR,
+        NOTE as FINDING_NOTE,
+        diagnose as diagnose_program,
+        render_findings,
+    )
     from parser import (  # type: ignore
         FeatureDecl,
         ItinerariesDecl,
@@ -68,7 +73,12 @@ if __package__ in (None, ""):
         parse_file,
     )
 else:
-    from .diagnose import ERROR as FINDING_ERROR, NOTE as FINDING_NOTE, diagnose as diagnose_program
+    from .diagnose import (
+        ERROR as FINDING_ERROR,
+        NOTE as FINDING_NOTE,
+        diagnose as diagnose_program,
+        render_findings,
+    )
     from .parser import (
         FeatureDecl,
         ItinerariesDecl,
@@ -1640,10 +1650,10 @@ def main(argv: list[str] | None = None) -> int:
     # if the rest of the model is well formed, and warnings should survive an
     # unrelated lowering failure.
     findings = diagnose_program(program)
-    if any(f.level == FINDING_ERROR for f in findings):
-        for finding in findings:
-            if finding.level == FINDING_ERROR:
-                print(finding.render(), file=sys.stderr)
+    errors = [f for f in findings if f.level == FINDING_ERROR]
+    if errors:
+        for line in render_findings(errors):
+            print(line, file=sys.stderr)
         return 1
 
     records = RecordSet()
@@ -1664,10 +1674,13 @@ def main(argv: list[str] | None = None) -> int:
 
     for diag in skips:
         print(diag.render(), file=sys.stderr)
-    for finding in findings:
-        if finding.level == FINDING_NOTE and not args.verbose:
-            continue
-        print(finding.render(), file=sys.stderr)
+    shown = [
+        finding
+        for finding in findings
+        if args.verbose or finding.level != FINDING_NOTE
+    ]
+    for line in render_findings(shown):
+        print(line, file=sys.stderr)
 
     if args.records_json:
         with open(args.records_json, "w", encoding="utf-8") as f:
