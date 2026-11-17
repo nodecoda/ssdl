@@ -5,10 +5,13 @@
 - 基线：`docs/dsl/2026-11-17-ssdl-syntax-inventory.md`
 - 语义：不变。`SemProgram`、身份/阶段/拼写、records 契约见
   `2026-11-17-ssdl-v1.3-semantic-ir.md`。
-- 原则：一个概念一个关键字；一种字段体；位置敏感项显式；host 边界显式；
-  规范 = 实现；errata 清零。
+- 原则：一个概念一个关键字；同一概念的多个角色用紧跟关键字的 kind 表达；
+  一种字段体；位置敏感项显式；host 边界显式；规范 = 实现；errata 清零。
 
 本文件是 v2 的唯一文法来源。v1.0 / v1.2 / v1.3 的 EBNF 在本文件生效后转为历史文档。
+
+块声明（`machine` / `feature` / `predicate select|sti|tii` / `set ... { ... }`）
+的 `}` 后允许一个可选的 `;`，前端忽略；推荐不写。块内成员不接受额外的 `;`。
 
 ---
 
@@ -19,7 +22,7 @@ IDENT       = ident_start { ident_char | "-" } ;
 ident_start = letter | "_" ;
 ident_char  = letter | digit | "_" ;
 
-INT         = digit { digit } ;
+INT         = [ "-" ] digit { digit } ;
 STRING      = '"' { string_char | escape } '"' ;
 BOOL        = "true" | "false" ;
 
@@ -147,6 +150,9 @@ projection
 `name_format` 只能包含一个 `{value}`；`units` 与成员一一对应；缺失 `units`
 的维度不能用于数值表达式。
 
+范围端点是有符号整数：`-2..2` 合法。负号只在允许负值的上下文有意义（集合项、
+`int_list`）；操作数下标由谓词签名拒绝负数（`is_reg(-1)` 在 validate 阶段报错）。
+
 ```text
 set dimension SEW = [8, 16, 32, 64] {
     name_format = "_E{value}";
@@ -221,6 +227,19 @@ statement
 - `tii` 的 `switch opcode` lowering 到 `TIIPredicate`。
 - `predicate prolog = host [...];` 是全局共享代码，等价 v1 的 `PredicateProlog`。
 
+五个 kind 是同一个“谓词声明”概念的不同角色，不是五个独立概念：
+
+| kind | 语义层 | 产物 | 用途 |
+|---|---|---|---|
+| `sched` | 调度谓词（MC 或 SCHED） | `Predicate<...>` | 变体条件、STI 默认值 |
+| `select` | 指令选择 / 汇编匹配 | `Predicate<...>` + `AssemblerPredicate<...>` | ISel、汇编器 |
+| `sti` | STI 声明与实现合并 | `STIPredicateDecl` + `STIPredicate` | 依赖打断、idiom 识别 |
+| `tii` | 目标指令信息谓词 | `TIIPredicate` | MC 层 opcode 判定 |
+| `prolog` | 全局共享 host 代码 | `PredicateProlog` | 谓词共享变量 |
+
+保留单关键字的理由：拆成四个关键字会把 `prolog` 再次变成特例，且迁移成本
+只有噪音；角色表让“predicate 还能定义 STI 实现”的意外感消失。
+
 ```text
 predicate sched IsZeroReg(i: INT) = reg_is(i, ZeroRegs);
 
@@ -283,7 +302,7 @@ feature_field
     (* extension *)
     | "version"      "=" STRING
     | "experimental" "=" BOOL
-    | "bitmask" "=" "{" "group" "=" INT ";" "bit" "=" INT ";" "}"
+    | "bitmask" "=" bitmask_body
     (* tune *)
     | "positive_directive" "=" STRING
     | "negative_directive" "=" STRING
@@ -296,14 +315,19 @@ literal
 host_feature_field
     = "host" "{" "field" "=" STRING ";" "value" "=" STRING ";" "}"
     ;
+
+bitmask_body
+    = "{" "group" "=" INT ";" "bit" "=" INT ";" "}"
+    ;
 ```
 
 语义：
 
 - `kind` 必须显式写在 `feature` 之后；体内 `kind =` 与头部 `NAME : kind`
   两种旧写法都会报错并提示新位置。
-- `plain` 的 `bool/int/string <Field> = <value>` 直接 lowering 到
-  `SubtargetFeatureKV` 的 `Field/Value`。
+- `plain` 必须写 `mattr`（命令行特性名）；缺省时报
+  `kind = plain requires field 'mattr'`。`bool/int/string <Field> = <value>`
+  直接 lowering 到 `SubtargetFeatureKV` 的 `Field/Value`。
 - `extension` 的 `version`/`bitmask`/`experimental` 走 v1.3 的三层 emit。
 - `tune` 的 `positive_directive`/`negative_directive` 进入命令行映射。
 - `host [{ ... }]` 保留给无法类型化的 host-only 字段。
@@ -896,6 +920,10 @@ atom_pred
 
 命名谓词调用（吸收 S2）在 v2 中是正式产生式，并要求实参个数/类型在前端检查。
 
+`opcode` / `pseudo` / `reg_is` 等原子里的 `IDENT` 是**目标词汇**：`ADD`、`X0`、
+`GPR64` 由目标 `.td` 定义，SSDL 只检查语法与谓词签名，不检查这些名字是否存在。
+唯一例外是已声明的 `set`：同名标识符按 `set` 处理，展开需要 `--attrs`。
+
 ```ebnf
 feature_expr
     = "all_of"  "(" ident_list ")"
@@ -956,16 +984,18 @@ extern_param
 
 ## 10. errata 处置表（v2 清零）
 
-| ID | v1 旧写法 | v2 写法 | v2 拒绝消息 |
+| ID | v1 旧写法 | v2 写法 | v2 拒绝/提示消息 |
 |---|---|---|---|
-| S1 | `predicate P(i) = ...` | `predicate P(i: INT) = ...` | `predicate parameter needs a type` |
-| S2 | `IsZeroReg(1)` 未定义 | 正式谓词调用；实参数检查 | `predicate call arity mismatch` |
-| S3 | `feature` 字段间 `,` | 字段体 `field;` | `unexpected ',' in feature body` |
-| S4 | `resource P : units = 2` | `resource P { units = 2; }` | `expected '{' after resource name` |
+| S1 | `predicate P = ...` | `predicate sched P = ...` | `predicate needs a kind right after the keyword` |
+| S2 | `P(1, 2)` 参数个数不匹配 | 正式谓词调用；实参数检查 | `predicate P expects 1 argument(s), got 2` |
+| S3 | `feature` 字段间 `,` | 字段体 `field;` | `expected ';'`（带行列） |
+| S4 | `resource P : units = 2` | `resource P { units = 2; }` | `':' is a v1 field separator; v2 writes a field body` |
 | S5 | `IDENT` 隐式含 `-` | §1.1 的显式词法规则 | 词法错误，带位置 |
-| S6 | `sti_function` 尾随 `;` 可选 | 块声明不带尾随 `;` | `unexpected ';'` |
-| S7 | `tii_predicate` 分号歧义 | `predicate : tii` 块，`return` 自带 `;` | 语法错误 |
-| E1 | `feature` 隐式要求 `mattr` | `mattr = "..."` 正式字段 | `plain feature needs mattr` |
+| S6 | `feature F : extension` / `feature F { kind = ...; }` | `feature extension F { ... }` | `write the kind after the keyword, not 'NAME : kind'` / `kind moved to the header` |
+| S7 | `predicate P : tii` | `predicate tii P { ... }` | `predicate needs a kind right after the keyword` |
+| E1 | `feature` 隐式要求 `mattr` | `mattr = "..."` 正式字段 | `kind = plain requires field 'mattr'` |
+
+块声明后的可选 `;` 不是 errata：`}` 后两种拼法都接受，推荐不写。
 
 ---
 
