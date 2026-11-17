@@ -2032,21 +2032,32 @@ machine M {
 
 
 @test
-def mined_family_sources_match_their_flat_expansion():
-    """Expanding the authored family source reproduces the sweep's flat source."""
+def mined_family_sources_expand_to_reparsable_v1_0():
+    """Expanding an authored family source leaves plain, parseable v1.0 text.
+
+    Older sweep directories also carry the expanded source; when it is there,
+    the two must be identical.
+    """
     bases = Path("/tmp/ssdl-sweep-final")
     if not bases.is_dir():
         return
     checked = 0
     for model_dir in sorted(bases.iterdir()):
         family = model_dir / "family.ssdl"
-        flat = model_dir / "flat.ssdl"
-        if not (family.is_file() and flat.is_file()):
+        if not family.is_file():
             continue
+        flat = parser.load_source(str(family))
         assert_true(
-            parser.load_source(str(family)) == flat.read_text(),
-            f"{model_dir.name}: expansion differs from flat.ssdl",
+            parser.FAMILY_SOURCE.search(flat) is None,
+            f"{model_dir.name}: expansion still contains a dimension declaration",
         )
+        parser.parse(flat)
+        flat_path = model_dir / "flat.ssdl"
+        if flat_path.is_file():
+            assert_true(
+                flat == flat_path.read_text(),
+                f"{model_dir.name}: expansion differs from flat.ssdl",
+            )
         checked += 1
     assert_true(checked == 14, f"models: {checked}")
 

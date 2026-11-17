@@ -274,3 +274,10 @@ python3 tools/ssdl/equiv.py /tmp/riscv.rec /tmp/sf-gen.rec \
 #   sifive7-1024x300 -> SiFive7VLEN1024X300Model / sifive_x390Model / SIFIVE_X390 / VLEN1024X300SiFive7
 #   andes45          -> Andes45Model / andes_a45Model / ANDES_A45 / andes_a45（无 strip-prefix）
 ```
+
+## 现在的流水线
+
+族源不再需要手工先展开：`parser.load_source` 以 `kind = dimension` 为标记自动调用
+`family_expand.expand`。`family_sweep.py` 因此直接对 `family.ssdl` 跑
+`validate.py`（展开 + 覆盖性 + 诊断）和 `emit_td.py`，只在需要调试时才保留
+`flat.ssdl`。展开仍是同一份实现，`check.py` 断言展开结果不含 v1.2 构造且可重新解析。

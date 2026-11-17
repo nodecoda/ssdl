@@ -4,9 +4,10 @@
 For each ``SchedMachineModel`` that a processor points at, this script
 
   1. mines/emits a compressed SSDL source,
-  2. expands it and checks coverage,
+  2. validates it (the parser expands, ``check_coverage`` runs, diagnostics fire),
   3. lowers it to TableGen and dumps records,
-  4. compares those records with the in-tree model (``equiv.py``).
+  4. compares those records with the in-tree model (``equiv.py``), both through
+     ``llvm-tblgen`` and straight from the record table.
 
 It is the sweep version of the four hand-verified instances in
 ``data/riscv-sched-profiles.json``: every model gets a synthetic profile
@@ -171,9 +172,8 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
     steps = [
         [py, str(ROOT / "tools/ssdl/family_mine.py"), "--records", str(args.records),
          "--profiles", str(profile_path), "--profile", "sweep", "--emit", str(ssdl)],
-        [py, str(ROOT / "tools/ssdl/family_expand.py"), str(ssdl), "--check-coverage"],
-        [py, str(ROOT / "tools/ssdl/family_expand.py"), str(ssdl), "-o", str(flat)],
-        [py, str(ROOT / "tools/ssdl/emit_td.py"), str(flat),
+        [py, str(ROOT / "tools/ssdl/validate.py"), str(ssdl)],
+        [py, str(ROOT / "tools/ssdl/emit_td.py"), str(ssdl),
          "--target-include", "SSDLStub.td",
          "--records-json", str(records_json), "-o", str(td)],
         [args.tblgen, "-print-records",
