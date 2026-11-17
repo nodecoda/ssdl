@@ -29,7 +29,7 @@ from ssdl import census_riscv as census_mod  # noqa: E402
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import diagnose as diagnose_mod  # noqa: E402
 from ssdl import effects as effects_mod  # noqa: E402
-from ssdl import emit_td, parser  # noqa: E402
+from ssdl import emit_td, expand_records as expand_mod, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
 from ssdl import family_expand as family_mod  # noqa: E402
 from ssdl import family_mine as family_mine_mod  # noqa: E402
@@ -1686,6 +1686,78 @@ machine M {
     assert_true(len(acquire) == 1, lines)
     assert_true(acquire[0].endswith("(x3)"), acquire)
     assert_true(acquire[0].startswith("machine M.bind W1.acquire: note:"), acquire)
+
+
+@test
+def records_json_expands_class_defaults():
+    """The table carries definitions; expansion fills the class defaults."""
+    if not has_llvm_source():
+        return
+    program = parser.parse(
+        """
+machine M {
+  resource R : units = 2;
+  write W;
+  bind W -> [R], latency = 5;
+}
+"""
+    )
+    records = record_ir_mod.RecordSet()
+    emit_td.emit(program, records=records, target_include="SSDLStub.td")
+    work = Path(tempfile.mkdtemp(prefix="ssdl-expand-"))
+    path = work / "records.json"
+    path.write_text(records.dumps())
+    schema = expand_mod.schema_for(
+        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+    )
+    table = expand_mod.expand_table(str(path), schema)
+    assert_true("NumUnits = 2" in table.body["R"], table.body["R"])
+    assert_true("BufferSize = -1" in table.body["R"], table.body["R"])
+    binding = next(
+        name for name, lines in table.body.items()
+        if "WriteType = W" in lines
+    )
+    lines = table.body[binding]
+    assert_true("Latency = 5" in lines, lines)
+    assert_true("NumMicroOps = 1" in lines, lines)
+    assert_true("Unsupported = 0" in lines, lines)
+
+
+@test
+def riscv_records_json_matches_without_tblgen():
+    """Every model matches the in-tree dump straight from --records-json."""
+    bases = Path("/tmp/ssdl-sweep-final")
+    dump = Path("/tmp/riscv.rec")
+    if not bases.is_dir() or not dump.is_file():
+        return
+    items = family_sweep_mod.discover(dump, None)
+    assert_true(len(items) == 14, f"models: {len(items)}")
+    for item in items:
+        table = bases / family_sweep_mod.sanitise(item["model"]) / "flat.json"
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools/ssdl/equiv.py"),
+                str(dump),
+                str(table),
+                "--in-model",
+                item["model"],
+                "--gen-model",
+                item["instance"] + "Model",
+                "--in-processor",
+                item["processor"],
+                "--gen-processor",
+                item["instance"],
+                "--llvm-src",
+                os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert_true(
+            "records match" in proc.stdout,
+            f"{item['model']}: " + "\n".join((proc.stdout or proc.stderr).splitlines()[-4:]),
+        )
 
 
 @test

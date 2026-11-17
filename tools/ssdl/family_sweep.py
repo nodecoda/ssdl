@@ -157,6 +157,7 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
 
     ssdl = out / "family.ssdl"
     td = out / "flat.td"
+    records_json = out / "flat.json"
     rec = out / "generated.rec"
     eq = out / "equiv.txt"
     py = sys.executable
@@ -167,7 +168,7 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
         [py, str(ROOT / "tools/ssdl/family_expand.py"), str(ssdl), "-o", str(flat)],
         [py, str(ROOT / "tools/ssdl/emit_td.py"), str(flat),
          "--target-include", "SSDLStub.td",
-         "--records-json", str(out / "flat.json"), "-o", str(td)],
+         "--records-json", str(records_json), "-o", str(td)],
         [args.tblgen, "-print-records",
          "-I", str(args.llvm_src / "include"),
          "-I", str(ROOT / "tests/ssdl/stub-target"),
@@ -177,6 +178,14 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
          "--gen-model", item["instance"] + "Model",
          "--in-processor", item["processor"],
          "--gen-processor", item["instance"]],
+        # The same comparison straight from the record table, so the claim does
+        # not depend on llvm-tblgen reproducing the table.
+        [py, str(ROOT / "tools/ssdl/equiv.py"), str(args.records), str(records_json),
+         "--in-model", item["model"],
+         "--gen-model", item["instance"] + "Model",
+         "--in-processor", item["processor"],
+         "--gen-processor", item["instance"],
+         "--llvm-src", str(args.llvm_src)],
     ]
     last_stdout = ""
     for cmd in steps:

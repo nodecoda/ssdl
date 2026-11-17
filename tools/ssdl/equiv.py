@@ -3,9 +3,11 @@
 
 The in-tree side is the ground truth: a dump of the target's TableGen sources.
 The generated side is the output of ``emit_td.py`` for the SSDL transcription
-of the same model.  Records are matched by the scheduling key that survives
-renaming (``WriteType``, ``ReadType``, ``MatchRW``, resource name), never by
-record name alone.
+of the same model.  It is either a ``-print-records`` dump or the record table
+itself (``--records-json``, detected by the ``.json`` suffix); the latter skips
+the TableGen round-trip.  Records are matched by the scheduling key that
+survives renaming (``WriteType``, ``ReadType``, ``MatchRW``, resource name),
+never by record name alone.
 
 Usage:
 
@@ -16,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -25,12 +28,14 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from ssdl import expand_records  # noqa: E402
 from ssdl.records import (  # noqa: E402
     RecordFile,
     as_bit,
     as_int,
     as_list,
     load,
+    load_json,
     unquote,
 )
 
@@ -418,10 +423,24 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="instance prefix the in-tree defm put on record names, e.g. VLEN512SiFive7",
     )
+    ap.add_argument(
+        "--llvm-src",
+        default=None,
+        help="LLVM checkout used to expand a generated records-json table "
+        "(default: $SSDL_LLVM_SRC)",
+    )
     args = ap.parse_args(argv)
 
     intree_recs = load(args.intree)
-    generated_recs = load(args.generated)
+    if args.generated.endswith(".json"):
+        src = args.llvm_src or os.environ.get(
+            "SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"
+        )
+        generated_recs = expand_records.expand_table(
+            args.generated, expand_records.schema_for(src)
+        )
+    else:
+        generated_recs = load(args.generated)
     intree_cpu = (
         build_processor(intree_recs, args.in_processor) if args.in_processor else None
     )

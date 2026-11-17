@@ -269,3 +269,8 @@ python3 tools/ssdl/td_schema.py --census   # 逐条列出 name -> 声明位置
 `-print-records` dump。宿主那扇门也已经打开（`-load-records`）：同一个表不做文本
 往返，直接进 `RecordKeeper`，`-gen-subtarget` / `-gen-instr-info` 的输出与文本路径
 逐字节相同。
+
+## 直接比较
+
+`2026-11-17-ssdl-direct-records.md`：`expand_records.py` 用 schema 展开 record 表，
+`equiv.py` 可直接比较 `--records-json` 与上游 `-print-records`，不经 TableGen。

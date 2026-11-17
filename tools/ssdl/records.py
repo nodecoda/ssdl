@@ -95,3 +95,50 @@ def unquote(value: str | None) -> str:
     if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
         return value[1:-1]
     return value
+
+
+class JsonRecordFile(RecordFile):
+    """``RecordFile`` view of an ``ssdl-records-1`` table.
+
+    The JSON table stores field names and values but not their TableGen types,
+    so lookups match on the field name alone (the last token of a
+    ``-print-records`` prefix such as ``int Latency``).
+    """
+
+    def value(self, name: str, prefix: str) -> str | None:
+        field = prefix.split()[-1]
+        needle = field + " = "
+        for line in self.body.get(name, ()):
+            text = line.strip()
+            if text.startswith(needle):
+                return text[len(needle):]
+        return None
+
+
+def load_json(path: str) -> JsonRecordFile:
+    """Read the records table written by ``emit_td.py --records-json``."""
+    import json
+
+    if __package__ in (None, ""):
+        from td_value import from_json_node, render  # type: ignore
+    else:
+        from .td_value import from_json_node, render
+    recs = JsonRecordFile()
+    with open(path, encoding="utf-8") as f:
+        obj = json.load(f)
+    for entry in obj.get("records", ()):
+        name = entry["name"]
+        bases = entry.get("bases", ())
+        if bases:
+            last = bases[-1]
+            recs.cls[name] = last if isinstance(last, str) else last.get("class", "")
+        else:
+            recs.cls[name] = ""
+        lines: list[str] = []
+        if entry.get("scope"):
+            lines.append(f"SchedModel = {entry['scope']}")
+        for field_name, value in entry.get("fields", ()):
+            text = value if isinstance(value, str) else render(from_json_node(value))
+            lines.append(f"{field_name} = {text}")
+        recs.body[name] = lines
+    return recs
