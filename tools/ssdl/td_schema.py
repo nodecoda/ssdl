@@ -28,8 +28,10 @@ from typing import Iterable
 
 try:  # imported as ``ssdl.td_schema``
     from . import effects as effects_mod
+    from . import paths
 except ImportError:  # run as ``python3 tools/ssdl/td_schema.py``
     import effects as effects_mod
+    import paths
 
 # The target-independent headers that define the scheduling/subtarget domain.
 DEFAULT_SOURCES = (
@@ -844,7 +846,8 @@ def render_reference(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--llvm-src", default="/home/ubuntu/llvm/trees/explore/llvm")
+    ap.add_argument("--llvm-src", default=None,
+                    help="LLVM checkout (default: $SSDL_LLVM_SRC)")
     ap.add_argument("--json", action="store_true", help="dump the schema")
     ap.add_argument("--field", help="print FIELD of CLASS (CLASS.FIELD)")
     ap.add_argument("--list-classes", action="store_true")
@@ -864,8 +867,9 @@ def main(argv: list[str] | None = None) -> int:
         help="print the keyword reference (Markdown) from the census",
     )
     args = ap.parse_args(argv)
+    src = args.llvm_src or paths.require_llvm_src()
 
-    schema = parse_files(default_sources(args.llvm_src))
+    schema = parse_files(default_sources(str(src)))
     if args.json:
         json.dump(schema.to_json(), sys.stdout, indent=2, sort_keys=True)
         print()
@@ -893,7 +897,7 @@ def main(argv: list[str] | None = None) -> int:
         for name in sorted(schema.classes):
             print(name)
     elif args.reference:
-        bindings, scanned = census(args.llvm_src)
+        bindings, scanned = census(str(src))
         undeclared = [b for b in bindings if not schema.resolve(b)]
         if undeclared:
             print(
@@ -904,7 +908,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         sys.stdout.write(render_reference(schema, bindings, scanned))
     elif args.census or args.check:
-        bindings, scanned = census(args.llvm_src)
+        bindings, scanned = census(str(src))
         by_kind: dict[str, int] = {}
         undeclared: list[Binding] = []
         for binding in bindings:
@@ -912,7 +916,7 @@ def main(argv: list[str] | None = None) -> int:
             if not schema.resolve(binding):
                 undeclared.append(binding)
         if args.census:
-            print(f"scanned {len(scanned)} emitter files under {args.llvm_src}")
+            print(f"scanned {len(scanned)} emitter files under {src}")
             print(
                 "bindings: "
                 + ", ".join(f"{kind}={count}" for kind, count in sorted(by_kind.items()))

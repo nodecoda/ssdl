@@ -14,7 +14,6 @@ diagnostic the emitter is supposed to produce, so "unsupported" can never mean
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -31,6 +30,7 @@ from ssdl import diagnose as diagnose_mod  # noqa: E402
 from ssdl import effects as effects_mod  # noqa: E402
 from ssdl import emit_td, expand_records as expand_mod, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
+from ssdl import paths as paths_mod  # noqa: E402
 from ssdl import family_expand as family_mod  # noqa: E402
 from ssdl import family_mine as family_mine_mod  # noqa: E402
 from ssdl import family_sweep as family_sweep_mod  # noqa: E402
@@ -1236,23 +1236,25 @@ def normalize_value(value: str) -> str:
 _SCHEMA_CACHE: dict[tuple[str, ...], "td_schema_mod.Schema"] = {}
 
 
-def llvm_schema(*extra: str) -> "td_schema_mod.Schema":
+def llvm_schema(*extra: str) -> "td_schema_mod.Schema | None":
     """Parse the TD declarations once; the census and the type checks share it.
 
-    Returns None when there is no LLVM checkout, so callers can skip.
+    Returns None when ``SSDL_LLVM_SRC`` is unset, so callers can skip.
     """
-    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    key = (src,) + extra
+    src = paths_mod.llvm_src()
+    if src is None:
+        return None
+    key = (str(src),) + extra
     if key not in _SCHEMA_CACHE:
-        sources = td_schema_mod.default_sources(src)
+        sources = td_schema_mod.default_sources(str(src))
         sources.extend(Path(path) for path in extra)
         _SCHEMA_CACHE[key] = td_schema_mod.parse_files(sources)
     return _SCHEMA_CACHE[key]
 
 
 def has_llvm_source() -> bool:
-    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    return Path(src, "include/llvm/Target/TargetSchedule.td").is_file()
+    src = paths_mod.llvm_src()
+    return src is not None and (src / "include/llvm/Target/TargetSchedule.td").is_file()
 
 
 def tblgen_include_dirs() -> list[str]:
@@ -1270,11 +1272,11 @@ def backend_bindings_are_declared_in_the_schema():
     that drifts from its declaration fails here instead of silently reading a
     default.
     """
-    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    if not Path(src, "utils/TableGen").is_dir():
+    src = paths_mod.llvm_src()
+    if src is None or not (src / "utils/TableGen").is_dir():
         return  # no LLVM checkout; the rest of the checks do not need one
     schema = llvm_schema()
-    bindings, scanned = td_schema_mod.census(src)
+    bindings, scanned = td_schema_mod.census(str(src))
     assert_true(len(scanned) >= 6, f"only scanned {len(scanned)} emitter files")
     undeclared = [
         binding for binding in bindings if not schema.resolve(binding)
@@ -1366,11 +1368,11 @@ def keyword_reference_is_up_to_date():
     binding is added, renamed, or read somewhere else, regenerating changes the
     document and this check fails until the committed copy is refreshed.
     """
-    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    if not Path(src, "utils/TableGen").is_dir():
+    src = paths_mod.llvm_src()
+    if src is None or not (src / "utils/TableGen").is_dir():
         return
     schema = llvm_schema()
-    bindings, scanned = td_schema_mod.census(src)
+    bindings, scanned = td_schema_mod.census(str(src))
     expected = td_schema_mod.render_reference(schema, bindings, scanned)
     path = ROOT / "docs/dsl/2026-11-16-ssdl-keyword-reference.md"
     committed = path.read_text(encoding="utf-8")
@@ -1392,9 +1394,7 @@ def effect_keys_resolve_in_the_schema():
     """
     if not has_llvm_source():
         return
-    src = Path(
-        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    )
+    src = paths_mod.llvm_src()
     extra = [
         str(src / "lib/Target/RISCV/RISCVFeatures.td"),
         str(src / "lib/Target/RISCV/RISCVProcessors.td"),
@@ -1421,9 +1421,7 @@ def effect_evidence_is_live():
     """
     if not has_llvm_source():
         return
-    root = Path(
-        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    ).parent
+    root = paths_mod.require_llvm_src().parent
     problems = []
     for key, effect in effects_mod.FIELD_EFFECTS.items():
         if not effect.evidence:
@@ -1707,9 +1705,7 @@ machine M {
     work = Path(tempfile.mkdtemp(prefix="ssdl-expand-"))
     path = work / "records.json"
     path.write_text(records.dumps())
-    schema = expand_mod.schema_for(
-        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    )
+    schema = expand_mod.schema_for(str(paths_mod.require_llvm_src()))
     table = expand_mod.expand_table(str(path), schema)
     assert_true("NumUnits = 2" in table.body["R"], table.body["R"])
     assert_true("BufferSize = -1" in table.body["R"], table.body["R"])
@@ -1726,8 +1722,8 @@ machine M {
 @test
 def riscv_records_json_matches_without_tblgen():
     """Every model matches the in-tree dump straight from --records-json."""
-    bases = Path("/tmp/ssdl-sweep-final")
-    dump = Path("/tmp/riscv.rec")
+    bases = paths_mod.SWEEP
+    dump = paths_mod.RECORDS
     if not bases.is_dir() or not dump.is_file():
         return
     items = family_sweep_mod.discover(dump, None)
@@ -1749,7 +1745,7 @@ def riscv_records_json_matches_without_tblgen():
                 "--gen-processor",
                 item["instance"],
                 "--llvm-src",
-                os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"),
+                str(paths_mod.require_llvm_src()),
             ],
             capture_output=True,
             text=True,
@@ -1944,12 +1940,10 @@ def riscv_census_matches_the_committed_table():
     Skipped when the dump or the LLVM checkout is absent, exactly like the
     schema test; the committed CSV carries the LLVM commit it was taken from.
     """
-    dump = Path("/tmp/riscv.rec")
-    src = Path(
-        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    )
+    dump = paths_mod.RECORDS
+    src = paths_mod.llvm_src()
     table = ROOT / "data/riscv-sched-census.csv"
-    if not dump.is_file() or not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
+    if src is None or not dump.is_file() or not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
         return
     recs = records_mod.load(str(dump))
     rows, _files = census_mod.census(recs, riscv_dir=src / "lib/Target/RISCV")
@@ -1957,7 +1951,7 @@ def riscv_census_matches_the_committed_table():
     assert_true(
         text == table.read_text(),
         "census table is stale; regenerate with tools/ssdl/census_riscv.py "
-        "--records /tmp/riscv.rec --llvm <llvm>",
+        f"--records {paths_mod.RECORDS} --llvm $SSDL_LLVM_SRC",
     )
 
 
@@ -1967,13 +1961,14 @@ def riscv_model_diagnostics_match_the_committed_table():
 
     The mined sources are a sweep artifact, so this skips when the sweep
     directory is absent, exactly like the census test skips without
-    ``/tmp/riscv.rec``.
+    ``$SSDL_CACHE/riscv.rec``.
     """
-    bases = Path("/tmp/ssdl-sweep-final")
+    bases = paths_mod.SWEEP
     table = ROOT / "data/riscv-sched-diagnostics.csv"
-    commit = family_sweep_mod.llvm_commit(
-        Path(os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"))
-    )
+    src = paths_mod.llvm_src()
+    if src is None:
+        return
+    commit = family_sweep_mod.llvm_commit(src)
     if not bases.is_dir() or not table.is_file() or commit == "unknown":
         return
     results = [
@@ -2038,7 +2033,7 @@ def mined_family_sources_expand_to_reparsable_v1_0():
     Older sweep directories also carry the expanded source; when it is there,
     the two must be identical.
     """
-    bases = Path("/tmp/ssdl-sweep-final")
+    bases = paths_mod.SWEEP
     if not bases.is_dir():
         return
     checked = 0
@@ -2078,12 +2073,10 @@ def v1_2_parameter_expressions_reproduce_upstream_latencies():
         return
     table = expand_mod.expand_obj(
         records.to_json(),
-        expand_mod.schema_for(
-            os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-        ),
+        expand_mod.schema_for(str(paths_mod.require_llvm_src())),
     )
     upstream = {}
-    dump = Path("/tmp/riscv.rec")
+    dump = paths_mod.RECORDS
     if dump.is_file():
         recs = records_mod.load(str(dump))
         upstream = {
@@ -2204,11 +2197,9 @@ def sifive7_family_table_records_the_sparse_shape():
 @test
 def riscv_family_table_matches_the_sources():
     """Regenerating the family table from the pinned sources must be a no-op."""
-    src = Path(
-        os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    )
+    src = paths_mod.llvm_src()
     table = ROOT / "data/riscv-sched-families.json"
-    if not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
+    if src is None or not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
         return
     text = family_tables_mod.render(
         family_tables_mod.build(src / "lib/Target/RISCV", family_tables_mod.llvm_commit(src))
@@ -2301,7 +2292,7 @@ def sifive7_vlde_family_matches_upstream_values():
     pinned ``-print-records`` dump, so this is not a re-statement of the
     generator's own output.
     """
-    upstream_path = Path("/tmp/riscv.rec")
+    upstream_path = paths_mod.RECORDS
     if not upstream_path.is_file():
         return
     source = (ROOT / "tests/ssdl/sifive7-vlde.ssdl").read_text(encoding="utf-8")
@@ -2543,7 +2534,7 @@ def family_catalogue_explains_every_segmented_family():
     the 3772 explicit records.  If a formula and the records disagree, this
     test names the member instead of leaving a silent residue.
     """
-    upstream_path = Path("/tmp/riscv.rec")
+    upstream_path = paths_mod.RECORDS
     if not upstream_path.is_file():
         return
     recs = records_mod.load(str(upstream_path))
@@ -2572,7 +2563,7 @@ def family_catalogue_leaves_no_record_unexplained():
     A residue here means the language is missing a construct, so this test is
     the stop condition from the plan rather than a coverage metric.
     """
-    upstream_path = Path("/tmp/riscv.rec")
+    upstream_path = paths_mod.RECORDS
     if not upstream_path.is_file():
         return
     recs = records_mod.load(str(upstream_path))
@@ -2638,7 +2629,7 @@ machine m {
 @test
 def family_sweep_covers_every_riscv_model_with_a_processor():
     """The sweep must see all 14 scheduling models, not just the four pilots."""
-    upstream_path = Path("/tmp/riscv.rec")
+    upstream_path = paths_mod.RECORDS
     if not upstream_path.is_file():
         return
     models = family_sweep_mod.discover(upstream_path, None)
@@ -2665,7 +2656,7 @@ def family_sweep_covers_every_riscv_model_with_a_processor():
 @test
 def family_read_axis_keeps_the_real_sifive7_members():
     """The shape Step A fixed: ReadVWSLLV is 7 real members plus WorstCase."""
-    upstream_path = Path("/tmp/riscv.rec")
+    upstream_path = paths_mod.RECORDS
     if not upstream_path.is_file():
         return
     recs = records_mod.load(str(upstream_path))
@@ -2725,6 +2716,21 @@ def profiles_name_every_instance_the_miner_generates():
 
 
 def main() -> int:
+    if not has_llvm_source():
+        print(
+            f"check: set {paths_mod.LLVM_SRC_ENV} to an LLVM checkout; the suite "
+            "reads the TD declarations and the RISC-V target sources",
+            file=sys.stderr,
+        )
+        return 2
+    if paths_mod.tblgen() is None:
+        print(
+            "check: llvm-tblgen not found; set "
+            f"{paths_mod.LLVM_BUILD_ENV} to an LLVM build directory or put "
+            "llvm-tblgen on PATH",
+            file=sys.stderr,
+        )
+        return 2
     failures = 0
     for fn in TESTS:
         name = fn.__name__

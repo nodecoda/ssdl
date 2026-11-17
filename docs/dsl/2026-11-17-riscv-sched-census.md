@@ -2,8 +2,8 @@
 
 - date: 2026-11-17
 - status: **Evidence（可复算）**
-- 数据源：`llvm-tblgen -print-records` → `/tmp/riscv.rec`（151 MB）
-- LLVM：`700e551714cc`（`/home/ubuntu/llvm/trees/explore/llvm`）
+- 数据源：`llvm-tblgen -print-records` → `$SSDL_CACHE/riscv.rec`（151 MB）
+- LLVM：`700e551714cc`（`$SSDL_LLVM_SRC`）
 - 机读表：`data/riscv-sched-census.csv`（由 `tools/ssdl/census_riscv.py` 生成）
 
 ## 1. 口径
@@ -83,24 +83,24 @@ CSV 的 `dimension_axes` 列显示：`mx=SchedMxList`、`eew=[8,16,32,64]`、`nf
 ## 4. 复现
 
 ```bash
-cd /home/ubuntu/llvm/llvm-dev
+cd /path/to/ssdl
 
 # 生成 records（一次性，约 151 MB）
 llvm-tblgen -print-records \
-    -I /home/ubuntu/llvm/trees/explore/llvm/include \
-    -I /home/ubuntu/llvm/trees/explore/llvm/lib/Target/RISCV \
-    -o /tmp/riscv.rec \
-    /home/ubuntu/llvm/trees/explore/llvm/lib/Target/RISCV/RISCV.td
+    -I $SSDL_LLVM_SRC/include \
+    -I $SSDL_LLVM_SRC/lib/Target/RISCV \
+    -o $SSDL_CACHE/riscv.rec \
+    $SSDL_LLVM_SRC/lib/Target/RISCV/RISCV.td
 
 # 生成 / 校验普查表
-python3 tools/ssdl/census_riscv.py --records /tmp/riscv.rec \
-    --llvm /home/ubuntu/llvm/trees/explore/llvm \
+python3 tools/ssdl/census_riscv.py --records $SSDL_CACHE/riscv.rec \
+    --llvm $SSDL_LLVM_SRC \
     -o data/riscv-sched-census.csv
-python3 tools/ssdl/census_riscv.py --records /tmp/riscv.rec \
-    --llvm /home/ubuntu/llvm/trees/explore/llvm --check
+python3 tools/ssdl/census_riscv.py --records $SSDL_CACHE/riscv.rec \
+    --llvm $SSDL_LLVM_SRC --check
 ```
 
-`check.py` 中的 `riscv_census_matches_the_committed_table` 在有 `/tmp/riscv.rec` 与 LLVM 源时执行同一校验；缺失时跳过（与既有 `backend_bindings_are_declared_in_the_schema` 的策略一致）。
+`check.py` 中的 `riscv_census_matches_the_committed_table` 在有 `$SSDL_CACHE/riscv.rec` 与 LLVM 源时执行同一校验；缺失时跳过（与既有 `backend_bindings_are_declared_in_the_schema` 的策略一致）。
 
 ## 5. 对 Step 2 的输入
 

@@ -33,6 +33,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
+from ssdl import paths  # noqa: E402
+
 SIFIVE7 = "RISCVSchedSiFive7.td"
 SCHEDULE_V = "RISCVScheduleV.td"
 
@@ -338,12 +340,13 @@ def render(data: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--llvm", default="/home/ubuntu/llvm/trees/explore/llvm")
-    parser.add_argument("-o", "--out", default="data/riscv-sched-families.json")
+    parser.add_argument("--llvm", default=None,
+                        help="LLVM checkout (default: $SSDL_LLVM_SRC)")
+    parser.add_argument("-o", "--out", default=str(ROOT / "data/riscv-sched-families.json"))
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
 
-    llvm_dir = Path(args.llvm)
+    llvm_dir = Path(args.llvm) if args.llvm else paths.require_llvm_src()
     riscv_dir = llvm_dir / "lib/Target/RISCV"
     if not riscv_dir.is_dir():
         print(f"error: {riscv_dir} is not a directory", file=sys.stderr)

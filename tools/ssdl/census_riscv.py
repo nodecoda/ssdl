@@ -24,9 +24,8 @@ the 25 RISC-V models.
 
 Usage::
 
-    python3 tools/ssdl/census_riscv.py --records /tmp/riscv.rec \
-        --llvm /home/ubuntu/llvm/trees/explore/llvm \
-        -o data/riscv-sched-census.csv
+    python3 tools/ssdl/census_riscv.py --records "$SSDL_CACHE/riscv.rec" \
+        --llvm "$SSDL_LLVM_SRC" -o data/riscv-sched-census.csv
     python3 tools/ssdl/census_riscv.py ... --check   # fail if out of date
 """
 from __future__ import annotations
@@ -44,6 +43,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
+from ssdl import paths as paths_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
 
 COLUMNS = [
@@ -224,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--records", required=True, help="-print-records dump")
     parser.add_argument("--llvm", default=None, help="LLVM source root (for source metrics)")
-    parser.add_argument("-o", "--out", default="data/riscv-sched-census.csv")
+    parser.add_argument("-o", "--out", default=str(ROOT / "data/riscv-sched-census.csv"))
     parser.add_argument(
         "--check",
         action="store_true",

@@ -107,8 +107,8 @@ findings 会进入 `SSDLEmitError`。
 `flat.ssdl` 时回退，两者计数相同。
 
 ```bash
-python3 tools/ssdl/family_sweep.py --records /tmp/riscv.rec \
-    --out /tmp/ssdl-sweep-final --diagnose-only \
+python3 tools/ssdl/family_sweep.py --records $SSDL_CACHE/riscv.rec \
+    --out $SSDL_CACHE/sweep-final --diagnose-only \
     --diagnostics-table data/riscv-sched-diagnostics.csv
 ```
 

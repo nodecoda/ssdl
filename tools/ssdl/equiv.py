@@ -18,7 +18,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -28,7 +27,7 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ssdl import expand_records  # noqa: E402
+from ssdl import expand_records, paths  # noqa: E402
 from ssdl.records import (  # noqa: E402
     RecordFile,
     as_bit,
@@ -433,9 +432,14 @@ def main(argv: list[str] | None = None) -> int:
 
     intree_recs = load(args.intree)
     if args.generated.endswith(".json"):
-        src = args.llvm_src or os.environ.get(
-            "SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"
-        )
+        src = args.llvm_src or paths.llvm_src()
+        if src is None:
+            print(
+                "equiv: --llvm-src or SSDL_LLVM_SRC is required to expand a "
+                "records-json table",
+                file=sys.stderr,
+            )
+            return 2
         generated_recs = expand_records.expand_table(
             args.generated, expand_records.schema_for(src)
         )

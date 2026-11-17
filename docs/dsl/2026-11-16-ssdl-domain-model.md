@@ -2,7 +2,7 @@
 
 - date: 2026-11-16
 - status: **分析（非规范）**；规范性修订见 §6，落地状态见 `2026-11-16-ssdl-parser-notes.md` §12
-- 证据基线：`/home/ubuntu/llvm/trees/explore/llvm` @ `700e551714cc`
+- 证据基线：`$SSDL_LLVM_SRC` @ `700e551714cc`
 - 方法：五个并行只读审计，逐条引用上游 `file:line`；本文只写"上游怎么用"，不写"我们希望它怎么用"
 - 结论口径：凡是本文说"有消费者"的，都给出调用点；说"无消费者"的，给出搜索范围（`llvm/lib`、`llvm/include`、`llvm/tools`）
 
@@ -278,10 +278,10 @@ python3 tools/ssdl/emit_td.py /tmp/twomach.ssdl
 
 # 2. 属性三态（D5/D13）
 llvm-tblgen -print-records -I llvm/include -I llvm/lib/Target/RISCV \
-    llvm/lib/Target/RISCV/RISCV.td > /tmp/riscv.rec
-grep -c 'bit mayLoad = ?;' /tmp/riscv.rec          # 190（Instruction 记录 51 条）
-grep -c 'bit hasSideEffects = ?;' /tmp/riscv.rec   # 169（Instruction 记录 37 条）
-python3 tools/ssdl/schema.py /tmp/riscv.rec --merge tests/ssdl/attrs.json \
+    llvm/lib/Target/RISCV/RISCV.td > $SSDL_CACHE/riscv.rec
+grep -c 'bit mayLoad = ?;' $SSDL_CACHE/riscv.rec          # 190（Instruction 记录 51 条）
+grep -c 'bit hasSideEffects = ?;' $SSDL_CACHE/riscv.rec   # 169（Instruction 记录 37 条）
+python3 tools/ssdl/schema.py $SSDL_CACHE/riscv.rec --merge tests/ssdl/attrs.json \
     -o /tmp/schema.json                            # 16962 inst / 398 reg
 python3 -c 'import json;s=json.load(open("/tmp/schema.json"));print(s["inst"]["ADD"]);print(s["reg"]["X0"])'
 

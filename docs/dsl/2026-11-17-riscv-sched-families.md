@@ -116,12 +116,12 @@ defm : LMULWriteResMX<"WriteVLSEG" # nf # "e" # eew, [VCQ, VL], mx, IsWorstCase>
 ## 6. 复现
 
 ```bash
-cd /home/ubuntu/llvm/llvm-dev
+cd /path/to/ssdl
 python3 tools/ssdl/family_tables.py \
-    --llvm /home/ubuntu/llvm/trees/explore/llvm \
+    --llvm $SSDL_LLVM_SRC \
     -o data/riscv-sched-families.json
 python3 tools/ssdl/family_tables.py \
-    --llvm /home/ubuntu/llvm/trees/explore/llvm --check
+    --llvm $SSDL_LLVM_SRC --check
 ```
 
 `check.py` 的 `sifive7_family_table_records_the_sparse_shape` 固定上表的精确元组；`riscv_family_table_matches_the_sources` 重新抽取并与提交的 JSON 逐字节比较。

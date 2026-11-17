@@ -17,12 +17,15 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
-import os
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from ssdl import paths  # noqa: E402
 
 DEF_RE = re.compile(r"^[ \t]*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:\{]", re.MULTILINE)
 RECORD_RE = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{", re.MULTILINE)
@@ -201,21 +204,18 @@ def compare(
 
 
 def default_tblgen() -> str:
-    env = os.environ.get("LLVM_TBLGEN")
-    if env:
-        return env
-    for candidate in (
-        "/home/ubuntu/llvm/builds/explore/bin/llvm-tblgen",
-        shutil.which("llvm-tblgen"),
-    ):
-        if candidate and os.path.exists(candidate):
-            return candidate
-    raise CompareError("llvm-tblgen not found; set LLVM_TBLGEN")
+    candidate = paths.tblgen()
+    if candidate:
+        return candidate
+    raise CompareError(
+        "llvm-tblgen not found; set SSDL_LLVM_BUILD to an LLVM build directory "
+        "or put llvm-tblgen on PATH"
+    )
 
 
 def default_include_dirs() -> list[str]:
-    src = os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
-    return [os.path.join(src, "include"), os.path.join(src, "lib/Target/RISCV")]
+    src = paths.require_llvm_src()
+    return [str(src / "include"), str(src / "lib/Target/RISCV")]
 
 
 def main(argv: list[str] | None = None) -> int:

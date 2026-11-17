@@ -38,7 +38,7 @@ python3 tools/ssdl/compare.py /tmp/generated.td tests/ssdl/sifive7-mini.expected
 # records match: /tmp/generated.td == tests/ssdl/sifive7-mini.expected.td
 ```
 
-工具默认从 `/home/ubuntu/llvm/builds/explore/bin/llvm-tblgen` 找 `llvm-tblgen`，从 `/home/ubuntu/llvm/trees/explore/llvm` 找 LLVM 源码树；可用 `LLVM_TBLGEN` 和 `SSDL_LLVM_SRC` 覆盖。
+工具只认三个环境变量：`SSDL_LLVM_SRC`（LLVM 源码树）、`SSDL_LLVM_BUILD`（含 `bin/llvm-tblgen` 的构建目录）、`SSDL_CACHE`（records dump 与 sweep 产物，默认 `~/.cache/ssdl`）。路径解析集中在 `tools/ssdl/paths.py`。
 
 ### 2.1 第 5 节示例确实能解析
 
@@ -646,13 +646,13 @@ RISCV.td --llvm-tblgen -print-records--> riscv.rec
 复现命令（`RISCV.td` 的 dump 约 145 MB，`-print-records` 一次生成后复用）：
 
 ```bash
-python3 tools/ssdl/from_records.py /tmp/riscv.rec \
+python3 tools/ssdl/from_records.py $SSDL_CACHE/riscv.rec \
     --model SiFive7VLEN512Model --processor SIFIVE_7 -o /tmp/v512.ssdl
 python3 tools/ssdl/emit_td.py /tmp/v512.ssdl \
     --target-include SSDLStub.td -o /tmp/v512.td
 llvm-tblgen -print-records -I llvm/include -I tests/ssdl/stub-target \
     -o /tmp/v512.rec /tmp/v512.td
-python3 tools/ssdl/equiv.py /tmp/riscv.rec /tmp/v512.rec \
+python3 tools/ssdl/equiv.py $SSDL_CACHE/riscv.rec /tmp/v512.rec \
     --in-model SiFive7VLEN512Model --gen-model sifive_7_seriesModel \
     --in-processor SIFIVE_7 --gen-processor sifive_7_series
 ```
@@ -713,7 +713,7 @@ scope: writes, reads, variants, InstRW, resources, machine props,
 
 **证据**：`--records-json` 输出表，`record_ir.py` 只用表重放 TableGen，
 三个 SiFive7 模型的 `-print-records` dump 与文本路径**逐字节相同**
-（12063 / 12118 / 12130 条记录），`equiv.py` 对 `/tmp/riscv.rec` 仍是三个模型
+（12063 / 12118 / 12130 条记录），`equiv.py` 对 `$SSDL_CACHE/riscv.rec` 仍是三个模型
 全部 `records match`。字段级另有两条：表里每个字段都在 tblgen dump 里且值相等；
 表里出现的 `(class, field)` 必须由该类的 TD 声明提供。
 

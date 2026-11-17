@@ -38,7 +38,7 @@ TableGen 语义：
 于是同一套比较逻辑可以同时吃两种产物：
 
 ```bash
-equiv.py /tmp/riscv.rec flat.json --in-model SiFiveP800Model \
+equiv.py $SSDL_CACHE/riscv.rec flat.json --in-model SiFiveP800Model \
     --gen-model sifive_p870_dModel \
     --in-processor SIFIVE_P870_D --gen-processor sifive_p870_d
 ```
@@ -49,10 +49,10 @@ equiv.py /tmp/riscv.rec flat.json --in-model SiFiveP800Model \
 比较：一次经 tblgen，一次直读 `flat.json`。两条路径都通过，才记为 `match`。
 
 ```bash
-python3 tools/ssdl/family_sweep.py --records /tmp/riscv.rec \
-    --out /tmp/ssdl-sweep-final --diagnose-only   # 诊断基线
-python3 tools/ssdl/family_sweep.py --records /tmp/riscv.rec \
-    --out /tmp/ssdl-sweep-final                  # 重跑完整等价性（含直读）
+python3 tools/ssdl/family_sweep.py --records $SSDL_CACHE/riscv.rec \
+    --out $SSDL_CACHE/sweep-final --diagnose-only   # 诊断基线
+python3 tools/ssdl/family_sweep.py --records $SSDL_CACHE/riscv.rec \
+    --out $SSDL_CACHE/sweep-final                  # 重跑完整等价性（含直读）
 ```
 
 回归测试：`riscv_records_json_matches_without_tblgen`（14/14，缺 `/tmp` 产物时跳过）、

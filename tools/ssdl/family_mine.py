@@ -36,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ssdl import family_expand  # noqa: E402
+from ssdl import paths  # noqa: E402
 from ssdl.records import load as load_records  # noqa: E402
 
 # Defaults come from ``data/riscv-sched-profiles.json``; ``--profile`` swaps
@@ -403,13 +404,13 @@ def report(records: str, model: str, catalogue: str | None, vlen: int, out: Path
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--records", default="/tmp/riscv.rec")
+    parser.add_argument("--records", default=str(paths.RECORDS))
     parser.add_argument("--profile", help="entry in data/riscv-sched-families.json")
-    parser.add_argument("--profiles", default="data/riscv-sched-profiles.json")
+    parser.add_argument("--profiles", default=str(paths.ROOT / "data/riscv-sched-profiles.json"))
     parser.add_argument("--model")
-    parser.add_argument("--catalogue", default="data/riscv-sched-formulas.json")
+    parser.add_argument("--catalogue", default=str(paths.ROOT / "data/riscv-sched-formulas.json"))
     parser.add_argument("--vlen", type=int)
-    parser.add_argument("--out", default="/tmp/mine")
+    parser.add_argument("--out", default=str(paths.CACHE / "mine"))
     parser.add_argument("--emit", help="write compressed SSDL for the model here")
     parser.add_argument("--prefix", help="ProcResource name prefix")
     parser.add_argument("--family")

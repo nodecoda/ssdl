@@ -125,7 +125,7 @@ llvm/test/TableGen/records-json-load.td    # 最小 lit 测试（含 Inputs/*.js
 |---|---|
 | M1 `-print-records` | stub 25 条记录：文本路径与 `-load-records` 路径 **0 行差异**（399745 行，匿名 def 编号也相同） |
 | M2 emitters | `-gen-subtarget` 475 行、`-gen-instr-info` 1727 行，**逐字节相同** |
-| M3 真实模型 | 三个 SiFive7 模型 12063 / 12118 / 12130 条记录：文本 vs loader **逐字节相同**（各 486014 行）；`equiv.py` 对 `/tmp/riscv.rec` 三个都是 `records match`（writes / reads / variants / InstRW / resources / machine props / processor features / tunes / march / itinerary） |
+| M3 真实模型 | 三个 SiFive7 模型 12063 / 12118 / 12130 条记录：文本 vs loader **逐字节相同**（各 486014 行）；`equiv.py` 对 `$SSDL_CACHE/riscv.rec` 三个都是 `records match`（writes / reads / variants / InstRW / resources / machine props / processor features / tunes / march / itinerary） |
 | M4 负控制 | 6 类错误全部按预期拒绝，见下 |
 
 M4 的实际输出（节选）：

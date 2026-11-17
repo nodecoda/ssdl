@@ -99,7 +99,7 @@ machine vlde {
 }
 ```
 
-测试 `sifive7_vlde_family_matches_upstream_values` 展开、发射、跑 `-print-records`，再与 `/tmp/riscv.rec` 中 `SiFive7VLEN512Model` 的 8 条 `WriteRes` 逐字段比较：
+测试 `sifive7_vlde_family_matches_upstream_values` 展开、发射、跑 `-print-records`，再与 `$SSDL_CACHE/riscv.rec` 中 `SiFive7VLEN512Model` 的 8 条 `WriteRes` 逐字段比较：
 
 | 字段 | 结果 |
 |---|---|
@@ -204,7 +204,7 @@ Andes45 的公式覆盖与 SiFive7 不同：共享目录（每条都引用 SiFiv
 
 ## 4.4 全 RISC-V 模型扫掠
 
-`tools/ssdl/family_sweep.py` 对 `/tmp/riscv.rec` 中每个有 processor 指向的 `SchedMachineModel` 自动生成 profile 并跑完整链路。`NoSchedModel` 被排除（它没有调度模型）。实测 **14/14 `records match`**：
+`tools/ssdl/family_sweep.py` 对 `$SSDL_CACHE/riscv.rec` 中每个有 processor 指向的 `SchedMachineModel` 自动生成 profile 并跑完整链路。`NoSchedModel` 被排除（它没有调度模型）。实测 **14/14 `records match`**：
 
 | model | writes | reads | variants | InstRW | resources |
 |---|---:|---:|---:|---:|---:|
@@ -224,7 +224,7 @@ Andes45 的公式覆盖与 SiFive7 不同：共享目录（每条都引用 SiFiv
 | `XiangShanNanHuModel` | 4200 | 1639 | 0 | 1 | 7 |
 
 ```bash
-python3 tools/ssdl/family_sweep.py --out /tmp/ssdl-sweep --jobs 4
+python3 tools/ssdl/family_sweep.py --out $SSDL_CACHE/sweep-final --jobs 4
 # 单模型调试：
 python3 tools/ssdl/family_sweep.py --only RocketModel --jobs 1
 ```
@@ -250,7 +250,7 @@ processor 名仍按 SSDL 标识符规则折叠 `-` → `_`；扫掠每个模型�
 ## 6. 复现
 
 ```bash
-cd /home/ubuntu/llvm/llvm-dev
+cd /path/to/ssdl
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
 python3 tools/ssdl/check.py   # 66/66
@@ -261,10 +261,10 @@ python3 tools/ssdl/family_expand.py /tmp/sf.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py /tmp/sf.ssdl -o /tmp/sf-flat.ssdl
 python3 tools/ssdl/emit_td.py /tmp/sf-flat.ssdl --target-include SSDLStub.td \
     --records-json /tmp/sf-flat.json -o /tmp/sf-flat.td
-/home/ubuntu/llvm/builds/explore/bin/llvm-tblgen -print-records \
-    -I /home/ubuntu/llvm/trees/explore/llvm/include -I tests/ssdl/stub-target \
+$SSDL_LLVM_BUILD/bin/llvm-tblgen -print-records \
+    -I $SSDL_LLVM_SRC/include -I tests/ssdl/stub-target \
     -o /tmp/sf-gen.rec /tmp/sf-flat.td
-python3 tools/ssdl/equiv.py /tmp/riscv.rec /tmp/sf-gen.rec \
+python3 tools/ssdl/equiv.py $SSDL_CACHE/riscv.rec /tmp/sf-gen.rec \
     --in-model SiFive7VLEN512Model --gen-model sifive_7_seriesModel \
     --in-processor SIFIVE_7 --gen-processor sifive_7_series \
     --strip-prefix VLEN512SiFive7

@@ -122,7 +122,7 @@ ok   keyword_reference_is_up_to_date
 只用表打印回 TableGen。两条路径都过 `llvm-tblgen -print-records`，然后逐字节比较 dump。
 
 ```bash
-python3 tools/ssdl/from_records.py /tmp/riscv.rec \
+python3 tools/ssdl/from_records.py $SSDL_CACHE/riscv.rec \
     --model SiFive7VLEN512Model --processor SIFIVE_7 -o /tmp/v512.ssdl
 python3 tools/ssdl/emit_td.py /tmp/v512.ssdl --target-include SSDLStub.td \
     -o /tmp/v512.td --records-json /tmp/v512.json
@@ -144,7 +144,7 @@ cmp /tmp/a.rec /tmp/b.rec        # 无输出
 
 重放时的记录顺序与文本不同（表按发射顺序，文本按"特性→全局词表→谓词→机器→后置谓词"
 分组），但 `-print-records` 是按 def 名组织的，so dump 相同。同时 `equiv.py` 对
-`/tmp/riscv.rec` 的调度身份对拍仍是三个模型全部 `records match`
+`$SSDL_CACHE/riscv.rec` 的调度身份对拍仍是三个模型全部 `records match`
 （4246 writes / 1638 reads / 92 variants / 1 InstRW），所以"表 → 文本"这一路没有改变语义。
 
 `check.py` 里对应两条：

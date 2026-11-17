@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 if __package__ in (None, ""):
+    import paths  # type: ignore
     from record_ir import Record, RecordSet  # type: ignore
     from td_schema import DEFAULT_SOURCES, ClassDef, Schema, parse_files  # type: ignore
     from td_value import (  # type: ignore
@@ -42,6 +43,7 @@ if __package__ in (None, ""):
         render,
     )
 else:
+    from . import paths
     from .record_ir import Record, RecordSet
     from .td_schema import DEFAULT_SOURCES, ClassDef, Schema, parse_files
     from .td_value import (
@@ -262,7 +264,8 @@ def check(records: RecordSet, schema: Schema) -> TypeChecker:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("records", help="records JSON produced by emit_td.py --records-json")
-    ap.add_argument("--llvm-src", default="/home/ubuntu/llvm/trees/explore/llvm")
+    ap.add_argument("--llvm-src", default=None,
+                    help="LLVM checkout (default: $SSDL_LLVM_SRC)")
     ap.add_argument(
         "--source",
         action="append",
@@ -272,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=20, help="errors to print (default 20)")
     args = ap.parse_args(argv)
 
-    sources = [pathlib.Path(args.llvm_src) / rel for rel in DEFAULT_SOURCES]
+    src = args.llvm_src or paths.require_llvm_src()
+    sources = [pathlib.Path(src) / rel for rel in DEFAULT_SOURCES]
     sources.extend(pathlib.Path(path) for path in args.source)
     schema = parse_files(sources)
     with open(args.records, encoding="utf-8") as f:

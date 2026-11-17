@@ -22,7 +22,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ssdl import records, td_schema  # noqa: E402
+from ssdl import paths, records, td_schema  # noqa: E402
 from ssdl.td_value import parse_value, render  # noqa: E402
 
 # Target classes the emitted records instantiate.  The schema sources are
@@ -297,11 +297,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("input", help="records JSON from emit_td.py --records-json")
     ap.add_argument(
         "--llvm-src",
-        default="/home/ubuntu/llvm/trees/explore/llvm",
-        help="LLVM checkout holding the TD schema",
+        default=None,
+        help="LLVM checkout holding the TD schema (default: $SSDL_LLVM_SRC)",
     )
     args = ap.parse_args(argv)
-    table = expand_table(args.input, schema_for(args.llvm_src))
+    table = expand_table(
+        args.input, schema_for(args.llvm_src or paths.require_llvm_src())
+    )
     for name, lines in table.body.items():
         print(f"def {name} {{ // {table.cls[name]}")
         for line in lines:

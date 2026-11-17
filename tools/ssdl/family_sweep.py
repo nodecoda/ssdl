@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
+from ssdl import paths  # noqa: E402
 from ssdl.census_riscv import llvm_commit  # noqa: E402
 from ssdl.diagnose import diagnose  # noqa: E402
 from ssdl.parser import parse_file  # noqa: E402
@@ -222,11 +223,12 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--records", type=Path, default=Path("/tmp/riscv.rec"))
-    ap.add_argument("--llvm-src", type=Path,
-                    default=Path("/home/ubuntu/llvm/trees/explore/llvm"))
-    ap.add_argument("--tblgen", default="/home/ubuntu/llvm/builds/explore/bin/llvm-tblgen")
-    ap.add_argument("--out", type=Path, default=Path("/tmp/ssdl-sweep"))
+    ap.add_argument("--records", type=Path, default=paths.RECORDS)
+    ap.add_argument("--llvm-src", type=Path, default=paths.llvm_src(),
+                    help="LLVM checkout (default: $SSDL_LLVM_SRC)")
+    ap.add_argument("--tblgen", default=paths.tblgen(),
+                    help="llvm-tblgen (default: $SSDL_LLVM_BUILD/bin/llvm-tblgen)")
+    ap.add_argument("--out", type=Path, default=paths.SWEEP)
     ap.add_argument("--vlen", type=int, default=128)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--only", nargs="*")
@@ -241,6 +243,13 @@ def main(argv: list[str] | None = None) -> int:
         help="write the per-model effect-finding counts as CSV",
     )
     args = ap.parse_args(argv)
+    if args.llvm_src is None:
+        ap.error("--llvm-src is required when SSDL_LLVM_SRC is unset")
+    if not args.tblgen:
+        ap.error(
+            "--tblgen is required when SSDL_LLVM_BUILD is unset and "
+            "llvm-tblgen is not on PATH"
+        )
     args.out.mkdir(parents=True, exist_ok=True)
 
     models = discover(args.records, args.only)
