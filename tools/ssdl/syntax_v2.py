@@ -18,19 +18,21 @@ Implemented in this slice:
   write_seq/combo_func/queues/reg_file/retire_unit/bind/advance/map/
   map_itin/alias/variant/read_variant/itineraries
 - v1 field separators are rejected with a v2 hint, never accepted
+- record bodies are shape-checked against ``field_types.ENTITY_FIELDS``
 
-Not yet in this slice (Phase 5): ``predicate : select|sti|tii``.
-They raise a clear ``V2Error`` instead of silently falling back.
+``predicate : sched|select|sti|tii`` and ``predicate prolog`` are implemented.
 """
 from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 
 if __package__ in (None, ""):
+    import field_types  # type: ignore
     import parser  # type: ignore
 else:
-    from . import parser
+    from . import field_types, parser
 
 
 class V2Error(Exception):
@@ -38,13 +40,25 @@ class V2Error(Exception):
 
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
-_PROPS = {
-    "features", "tune_features", "unsupported_features", "default_march",
-    "issue_width", "micro_op_buffer_size", "loop_micro_op_buffer",
-    "load_latency", "high_latency", "mispredict_penalty",
-    "post_ra_scheduler", "complete_model", "full_inst_rw_overlap_check",
-    "enable_intervals", "model",
-}
+
+
+@dataclass(frozen=True)
+class Field:
+    """One record-body field with its source position.
+
+    Iterating a field yields ``(key, value)`` so the existing tuple-based
+    helpers keep working, while diagnostics can still point at the line.
+    """
+
+    key: str
+    value: str
+    line: int = 0
+    col: int = 0
+
+    def __iter__(self):
+        yield self.key
+        yield self.value
+_PROPS = set(field_types.ENTITY_FIELDS["machine"])
 
 
 _NORMALISE = (
@@ -215,7 +229,7 @@ class _Cursor:
         tokens = self.collect(stops or {";", "{"})
         return _render_tokens(tokens)
 
-    def record_body(self) -> list[tuple[str, str]]:
+    def record_body(self) -> list[Field]:
         if self.at(":") or self.at(","):
             token = self.peek()
             raise V2Error(
@@ -229,13 +243,14 @@ class _Cursor:
                 f"body (name {{ field = value; }}), got {token.value!r}"
             )
         self.next()  # consume '{'
-        fields = []
+        fields: list[Field] = []
         while not self.at("}"):
+            key_token = self.peek()
             key = self.ident()
             self.expect("=")
             value = self.expr({";"})
             self.expect(";")
-            fields.append((key, value))
+            fields.append(Field(key, value, key_token.line, key_token.col))
         self.expect("}")
         return fields
 
@@ -245,16 +260,35 @@ def _props(fields: list[tuple[str, str]]) -> str:
 
 
 def _fields(
-    body: list[tuple[str, str]], allowed: set[str], where: str
+    body: list[Field],
+    allowed: set[str] | None = None,
+    where: str = "",
+    types: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Validate a record body against the entity's field table."""
+    """Validate a record body against the entity's field table.
+
+    ``types`` is the single source of truth when supplied: the allowed set is
+    derived from it and every value is shape-checked.  ``allowed`` remains for
+    the few generic bodies that do not have an entity kind.
+    """
+    if types is not None:
+        allowed = set(types)
+    if allowed is None:
+        raise V2Error(f"{where}: internal error: no field table")
     seen: set[str] = set()
-    for key, _ in body:
+    for field in body:
+        key = field.key
         if key in seen:
             raise V2Error(f"{where}: repeated field {key!r}")
         if key not in allowed:
             raise V2Error(f"{where}: unknown field {key!r}")
         seen.add(key)
+        if types is not None:
+            problem = field_types.value_error(types[key], field.value)
+            if problem is not None:
+                raise V2Error(
+                    f"line {field.line}:{field.col}: {where}.{key}: {problem}"
+                )
     return dict(body)
 
 
@@ -604,6 +638,7 @@ def _dim_index(cursor: _Cursor) -> str:
 
 
 def _machine_item(cursor: _Cursor, out: list[str]) -> None:
+    key_token = cursor.peek()
     key = cursor.ident()
     if key == "itineraries":
         # back up: _itineraries expects to consume the keyword itself
@@ -615,7 +650,7 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         index = _dim_index(cursor)
         body = cursor.record_body() if cursor.at("{") else []
         cursor.accept(";")
-        _fields(body, {"super", "units", "buffer", "name"}, f"resource {name}")
+        _fields(body, None, f"resource {name}", field_types.ENTITY_FIELDS["resource"])
         suffix = f" : {_props(body)}" if body else ""
         out.append(f"resource {name}{index}{suffix};")
         return
@@ -626,7 +661,7 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         members = cursor.list_tokens()
         body = cursor.record_body() if cursor.at("{") else []
         cursor.accept(";")
-        _fields(body, {"buffer"}, f"res_group {name}")
+        _fields(body, None, f"res_group {name}", field_types.ENTITY_FIELDS["res_group"])
         suffix = f" : {_props(body)}" if body else ""
         out.append(f"res_group {name}{index} = {members}{suffix};")
         return
@@ -645,7 +680,9 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         members = cursor.list_tokens()
         body = cursor.record_body() if cursor.at("{") else []
         cursor.accept(";")
-        fields = _fields(body, {"repeat"}, f"write_seq {name}")
+        fields = _fields(
+            body, None, f"write_seq {name}", field_types.ENTITY_FIELDS["write_seq"]
+        )
         repeat = f" repeat = {fields['repeat']}" if "repeat" in fields else ""
         out.append(f"write_seq {name}{index} = {members}{repeat};")
         return
@@ -659,7 +696,7 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
     if key in ("load_queue", "store_queue"):
         body = cursor.record_body()
         cursor.accept(";")
-        fields = _fields(body, {"resource"}, key)
+        fields = _fields(body, None, key, field_types.ENTITY_FIELDS[key])
         resource = fields.get("resource")
         if resource is None:
             raise V2Error(f"{key}: missing resource field")
@@ -669,14 +706,7 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         name = cursor.ident()
         body = cursor.record_body()
         cursor.accept(";")
-        _fields(
-            body,
-            {
-                "num_phys", "classes", "costs", "allow_move_elim",
-                "max_move_elim_per_cy", "allow_zero_elim_only",
-            },
-            f"reg_file {name}",
-        )
+        _fields(body, None, f"reg_file {name}", field_types.ENTITY_FIELDS["reg_file"])
         fields = " ".join(f"{field} = {value};" for field, value in body)
         out.append(f"reg_file {name} {{ {fields} }}")
         return
@@ -685,7 +715,9 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
             raise V2Error("retire_unit: at most one per machine")
         body = cursor.record_body()
         cursor.accept(";")
-        _fields(body, {"buffer", "max_per_cycle"}, "retire_unit")
+        _fields(
+            body, None, "retire_unit", field_types.ENTITY_FIELDS["retire_unit"]
+        )
         fields = " ".join(f"{field} = {value};" for field, value in body)
         out.append(f"retire_unit {{ {fields} }}")
         return
@@ -695,12 +727,7 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         body = cursor.record_body()
         cursor.accept(";")
         fields = _fields(
-            body,
-            {
-                "resources", "latency", "uops", "release", "acquire",
-                "begin_grp", "end_grp", "single", "retire_ooo", "unsupported",
-            },
-            f"bind {subject}",
+            body, None, f"bind {subject}", field_types.ENTITY_FIELDS["bind"]
         )
         resources = fields.pop("resources", None)
         if resources is None:
@@ -714,7 +741,9 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         index = _dim_index(cursor)
         body = cursor.record_body()
         cursor.accept(";")
-        _fields(body, {"cycles", "writes", "tunables", "unsupported"}, f"advance {subject}")
+        _fields(
+            body, None, f"advance {subject}", field_types.ENTITY_FIELDS["advance"]
+        )
         tail = " : ".join(f"{field} = {value}" for field, value in body)
         suffix = f" : {tail}" if tail else ""
         out.append(f"advance {subject}{index}{suffix};")
@@ -730,6 +759,13 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
                 cursor.next()
                 cursor.expect("=")
                 unsupported = cursor.expr({";"})
+                problem = field_types.value_error(
+                    field_types.ENTITY_FIELDS["map"]["unsupported"], unsupported
+                )
+                if problem is not None:
+                    raise V2Error(
+                        f"line {token.line}:{token.col}: map.unsupported: {problem}"
+                    )
                 cursor.expect(";")
                 continue
             if token.kind != "INT":
@@ -778,10 +814,20 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         cursor.expect("{")
         lines = []
         while not cursor.at("}"):
+            field_token = cursor.peek()
             field = cursor.ident()
             if field == "variadic":
                 cursor.expect("=")
-                lines.append(f"variadic = {cursor.expr({';'})};")
+                value = cursor.expr({";"})
+                problem = field_types.value_error(
+                    field_types.ENTITY_FIELDS["variant"]["variadic"], value
+                )
+                if problem is not None:
+                    raise V2Error(
+                        f"line {field_token.line}:{field_token.col}: "
+                        f"{key} {subject}.variadic: {problem}"
+                    )
+                lines.append(f"variadic = {value};")
                 cursor.expect(";")
             elif field == "case":
                 pred_tokens = cursor.collect({":"}, ternary=True)
@@ -814,7 +860,16 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
             "machine model|cpu|family|instance NAME"
         )
     if key not in _PROPS:
-        raise V2Error(f"line: unknown machine item {key!r}")
+        raise V2Error(
+            f"line {key_token.line}:{key_token.col}: unknown machine item {key!r}"
+        )
+    problem = field_types.value_error(
+        field_types.ENTITY_FIELDS["machine"][key], value
+    )
+    if problem is not None:
+        raise V2Error(
+            f"line {key_token.line}:{key_token.col}: machine.{key}: {problem}"
+        )
     out.append(f"{key} = {value};")
 
 def _itineraries(cursor: _Cursor, out: list[str]) -> None:
@@ -834,6 +889,7 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
             cursor.expect("{")
             itin_lines = []
             while not cursor.at("}"):
+                itin_token = cursor.peek()
                 itin_field = cursor.ident()
                 cursor.expect("=")
                 if itin_field == "stages":
@@ -858,11 +914,9 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
                                 "stage: 'latency' was renamed to 'timeinc' "
                                 "(the time increment before the next stage)"
                             )
-                        unknown = set(keys) - {"cycles", "units", "timeinc", "kind"}
-                        if unknown:
-                            raise V2Error(
-                                f"stage: unknown field {sorted(unknown)[0]!r}"
-                            )
+                        _fields(
+                            body, None, "stage", field_types.ENTITY_FIELDS["stage"]
+                        )
                         stage_fields = dict(body)
                         cycles = stage_fields.get("cycles")
                         units = stage_fields.get("units")
@@ -880,18 +934,38 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
                     cursor.expect("]")
                     itin_lines.append(f"stages = [{', '.join(stages)}];")
                 else:
-                    itin_lines.append(f"{itin_field} = {cursor.expr({';'})};")
+                    if itin_field not in field_types.ENTITY_FIELDS["itin"]:
+                        raise V2Error(f"itin {name}: unknown field {itin_field!r}")
+                    value = cursor.expr({";"})
+                    problem = field_types.value_error(
+                        field_types.ENTITY_FIELDS["itin"][itin_field], value
+                    )
+                    if problem is not None:
+                        raise V2Error(
+                            f"line {itin_token.line}:{itin_token.col}: "
+                            f"itin {name}.{itin_field}: {problem}"
+                        )
+                    itin_lines.append(f"{itin_field} = {value};")
                 cursor.expect(";")
             cursor.expect("}")
             cursor.accept(";")
             lines.append(f"itin {name} {{ {' '.join(itin_lines)} }}")
         else:
+            field_token = cursor.peek()
             cursor.expect("=")
             value = cursor.expr({";"})
             cursor.expect(";")
             if field == "sched_model":
                 sched_model = value
             elif field in ("func_units", "bypasses"):
+                problem = field_types.value_error(
+                    field_types.ENTITY_FIELDS["itineraries"][field], value
+                )
+                if problem is not None:
+                    raise V2Error(
+                        f"line {field_token.line}:{field_token.col}: "
+                        f"itineraries.{field}: {problem}"
+                    )
                 lines.append(f"{field} = {value};")
             else:
                 raise V2Error(f"itineraries: unknown field {field!r}")

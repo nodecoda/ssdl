@@ -36,6 +36,7 @@ from ssdl import family_expand as family_mod  # noqa: E402
 from ssdl import family_mine as family_mine_mod  # noqa: E402
 from ssdl import family_sweep as family_sweep_mod  # noqa: E402
 from ssdl import family_tables as family_tables_mod  # noqa: E402
+from ssdl import field_types as field_types_mod  # noqa: E402
 from ssdl import from_records as from_records_mod  # noqa: E402
 from ssdl import golden as golden_mod  # noqa: E402
 from ssdl import record_ir as record_ir_mod  # noqa: E402
@@ -3503,6 +3504,22 @@ def to_v2_migrates_the_sifive7_mini_model():
 
 
 @test
+def to_v2_splits_v1_colon_properties():
+    """A v1 colon property list becomes one field body, one field per colon."""
+    migrated = to_v2_mod.to_v2(
+        "machine m { resource P : super = Q : units = 1; "
+        "resource R : units = 2, buffer = 4; }"
+    )
+    assert_in("resource P { super = Q; units = 1; }", migrated)
+    assert_in("resource R { units = 2; buffer = 4; }", migrated)
+    assert_true(": super" not in migrated, "colon property leaked into v2")
+
+    flat = syntax_v2.to_v1(migrated)
+    assert_in("resource P : super = Q, units = 1;", flat)
+    assert_in("resource R : units = 2, buffer = 4;", flat)
+
+
+@test
 def v2_sifive7_mini_matches_the_handwritten_records():
     """The whole v2 surface lowers to the same records as the v1 fixture."""
     source = (ROOT / "tests/ssdl/v2/sifive7-mini-v2.ssdl").read_text(encoding="utf-8")
@@ -3616,6 +3633,131 @@ def v2_stage_fields_are_named_and_checked():
         ),
     ]:
         assert_in(needle, v2_error(source))
+
+
+@test
+def v2_entity_field_types_are_checked():
+    """A field's shape is part of the grammar, not a lowering accident."""
+    for source, needle in [
+        (
+            'machine family m { resource P { units = "two"; } }',
+            "resource P.units: expects an integer expression, got string",
+        ),
+        (
+            "machine family m { resource P { name = 2; } }",
+            "resource P.name: expects a string",
+        ),
+        (
+            "machine family m { bind W { resources = 1; latency = 1; } }",
+            "bind W.resources: expects an identifier list",
+        ),
+        (
+            "machine family m { reg_file G { num_phys = 8; "
+            "allow_move_elim = [1]; } }",
+            "allow_move_elim: expects a true/false list",
+        ),
+        (
+            "machine family m { issue_width = [1]; }",
+            "machine.issue_width: expects an integer expression",
+        ),
+        (
+            "machine family m { retire_unit { buffer = true; } }",
+            "retire_unit.buffer: expects an integer expression",
+        ),
+        (
+            "machine family m { advance W { cycles = [1]; } }",
+            "advance W.cycles: expects an integer expression",
+        ),
+        (
+            "machine family m { itineraries { func_units = [FU]; itin I { "
+            "stages = [stage { cycles = 1; units = [FU]; timeinc = 1; "
+            "kind = weird; }]; } } }",
+            "stage.kind: expects one of required, reserved",
+        ),
+        (
+            "machine family m { itineraries { func_units = FU; } }",
+            "itineraries.func_units: expects an identifier list",
+        ),
+    ]:
+        assert_in(needle, v2_error(source))
+
+    # A family parameter is an integer expression; it must not be mistaken for
+    # a malformed literal.
+    text = syntax_v2.to_v1("machine family m(n: INT) { resource P { units = n; } }")
+    assert_in("resource P : units = n;", text)
+
+
+@test
+def v2_entity_field_table_is_complete():
+    """Every record body the parser accepts is in the typed table."""
+    expected = {
+        "machine", "resource", "res_group", "write_seq", "load_queue",
+        "store_queue", "reg_file", "retire_unit", "bind", "advance",
+        "variant", "map", "stage", "itin", "itineraries",
+    }
+    assert_true(
+        expected <= set(field_types_mod.ENTITY_FIELDS),
+        f"missing typed entities: {sorted(expected - set(field_types_mod.ENTITY_FIELDS))}",
+    )
+    samples = {
+        field_types_mod.INT_EXPR: "1",
+        field_types_mod.INT_LIST: "[1, 2]",
+        field_types_mod.BOOL: "true",
+        field_types_mod.BOOL_LIST: "[true, false]",
+        field_types_mod.IDENT: "P",
+        field_types_mod.IDENT_LIST: "[P, Q]",
+        field_types_mod.SCHED_RW_LIST: "[W, R[0]]",
+        field_types_mod.STRING: '"x"',
+        "enum:required|reserved": "required",
+    }
+    for kind, fields in field_types_mod.ENTITY_FIELDS.items():
+        for field, expected_type in fields.items():
+            assert_true(
+                expected_type in samples,
+                f"{kind}.{field}: unclassified type {expected_type!r}",
+            )
+            assert_true(
+                field_types_mod.value_error(expected_type, samples[expected_type])
+                is None,
+                f"{kind}.{field}: sample {samples[expected_type]!r} rejected",
+            )
+
+
+@test
+def validate_v1_fields_use_the_shared_table():
+    """The v2 field table also guards v1/records input."""
+    program = parser.Program(
+        [
+            parser.MachineDecl(
+                name="m",
+                alias=None,
+                items=[
+                    {"kind": "prop", "name": "issue_width", "value": True},
+                    {"kind": "resource", "name": "P", "props": {"units": [1]}},
+                    {
+                        "kind": "bind",
+                        "write": "W",
+                        "resources": "P",
+                        "props": {"latency": 1},
+                    },
+                ],
+                line=1,
+            )
+        ]
+    )
+    errors = validate_mod.validate(program)
+    assert_true(
+        any("issue_width" in e and "integer expression" in e for e in errors),
+        f"issue_width not checked: {errors}",
+    )
+    assert_true(
+        any("P.units" in e and "integer expression" in e for e in errors),
+        f"resource units not checked: {errors}",
+    )
+    assert_true(
+        any("resources" in e and "name list" in e for e in errors),
+        f"bind resources not checked: {errors}",
+    )
 
 
 @test

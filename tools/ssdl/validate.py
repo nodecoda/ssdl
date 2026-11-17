@@ -26,11 +26,13 @@ from pathlib import Path
 if __package__ in (None, ""):
     from diagnose import ERROR, NOTE, diagnose, render_findings  # type: ignore
     from family_expand import check_coverage  # type: ignore
+    import field_types as field_types_mod  # type: ignore
     from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, expand_source, parse  # type: ignore
     import syntax_v2  # type: ignore
 else:
     from .diagnose import ERROR, NOTE, diagnose, render_findings
     from .family_expand import check_coverage
+    from . import field_types as field_types_mod
     from . import syntax_v2
     from .parser import (
         FAMILY_SOURCE,
@@ -91,6 +93,58 @@ RESERVED = ATOM_PREDICATES | COMBINERS | {
     "true",
     "false",
 }
+
+
+def _python_error(expected: str, value) -> str | None:
+    """Check a v1 AST value against the shared v2 field table."""
+    if expected.startswith("enum:"):
+        enum = tuple(expected[len("enum:") :].split("|"))
+        if value not in enum:
+            return f"expects one of {', '.join(enum)}, got {value!r}"
+        return None
+    if expected == field_types_mod.INT_EXPR:
+        ok = isinstance(value, int) and not isinstance(value, bool)
+        return None if ok else f"expects an integer expression, got {value!r}"
+    if expected == field_types_mod.INT_LIST:
+        ok = isinstance(value, list) and all(
+            isinstance(item, int) and not isinstance(item, bool) for item in value
+        )
+        return None if ok else f"expects an integer list, got {value!r}"
+    if expected == field_types_mod.BOOL:
+        return None if isinstance(value, bool) else f"expects true or false, got {value!r}"
+    if expected == field_types_mod.BOOL_LIST:
+        ok = isinstance(value, list) and all(isinstance(item, bool) for item in value)
+        return None if ok else f"expects a true/false list, got {value!r}"
+    if expected in (field_types_mod.IDENT, field_types_mod.STRING):
+        return None if isinstance(value, str) else f"expects a name, got {value!r}"
+    if expected in (field_types_mod.IDENT_LIST, field_types_mod.SCHED_RW_LIST):
+        ok = isinstance(value, list) and all(isinstance(item, str) for item in value)
+        return None if ok else f"expects a name list, got {value!r}"
+    return None
+
+
+def _typed_item_values(item: dict) -> tuple[str | None, dict]:
+    """Return (entity kind, field/value dict) for one machine item."""
+    kind = item["kind"]
+    if kind == "prop":
+        return "machine", {item["name"]: item.get("value")}
+    if kind in ("resource", "res_group", "advance"):
+        return kind, dict(item.get("props", {}))
+    if kind == "write_seq":
+        return kind, {"repeat": item.get("repeat")}
+    if kind in ("load_queue", "store_queue"):
+        return kind, {"resource": item.get("resource")}
+    if kind in ("reg_file", "retire_unit"):
+        return kind, dict(item.get("fields", {}))
+    if kind == "bind":
+        values = dict(item.get("props", {}))
+        values["resources"] = item.get("resources")
+        return kind, values
+    if kind in ("variant", "read_variant"):
+        if item.get("variadic") is None:
+            return None, {}
+        return "variant", {"variadic": item.get("variadic")}
+    return None, {}
 
 
 class SortChecker:
@@ -243,6 +297,7 @@ class SortChecker:
                             f"sti_function {decl.name}.{item['name']}",
                         )
             elif isinstance(decl, MachineDecl):
+                self.check_item_fields(decl.items, f"machine {decl.name}")
                 itin_classes: set[str] = set()
                 for item in decl.items:
                     if item["kind"] == "itin_class":
@@ -269,6 +324,9 @@ class SortChecker:
                         self.check_itin_names(
                             itin, f"machine {decl.name}.itineraries", itin_classes
                         )
+                        self.check_itin_fields(
+                            itin, f"machine {decl.name}.itineraries"
+                        )
             elif isinstance(decl, ItinerariesDecl):
                 if decl.sched_model is None:
                     self.error(
@@ -288,7 +346,72 @@ class SortChecker:
                         if item["kind"] == "itin_class"
                     }
                     self.check_itin_names(decl, "itineraries", classes)
+                    self.check_itin_fields(decl, "itineraries")
         return self.errors
+
+    def check_item_fields(self, items: list[dict], where: str) -> None:
+        """Apply the shared field table to v1 machine items."""
+        for item in items:
+            kind, values = _typed_item_values(item)
+            if kind is None:
+                continue
+            table = field_types_mod.ENTITY_FIELDS.get(kind)
+            if table is None:
+                continue
+            subject = (
+                item.get("name")
+                or item.get("write")
+                or item.get("read")
+                or kind
+            )
+            for field, value in values.items():
+                if value is None or field not in table:
+                    continue
+                problem = _python_error(table[field], value)
+                if problem is not None:
+                    site = (
+                        f"{where}.{field}"
+                        if subject == field
+                        else f"{where}.{subject}.{field}"
+                    )
+                    self.error(site, problem)
+
+    def check_itin_fields(self, itin: ItinerariesDecl, where: str) -> None:
+        """Check itinerary fields and stage bodies against the same table."""
+        for item in itin.items:
+            kind = item["kind"]
+            if kind in ("func_units", "bypasses"):
+                problem = _python_error(
+                    field_types_mod.IDENT_LIST, item.get("value")
+                )
+                if problem is not None:
+                    self.error(f"{where}.{kind}", problem)
+                continue
+            if kind != "itin":
+                continue
+            fields = item.get("fields", {})
+            for field, value in fields.items():
+                if field == "stages":
+                    for stage in value[1]:
+                        for stage_field, expected in (
+                            field_types_mod.ENTITY_FIELDS["stage"].items()
+                        ):
+                            stage_value = stage.get(stage_field)
+                            if stage_value is None:
+                                continue
+                            problem = _python_error(expected, stage_value)
+                            if problem is not None:
+                                self.error(
+                                    f"{where}.{item['name']}.stage.{stage_field}",
+                                    problem,
+                                )
+                    continue
+                expected = field_types_mod.ENTITY_FIELDS["itin"].get(field)
+                if expected is None:
+                    continue
+                problem = _python_error(expected, value)
+                if problem is not None:
+                    self.error(f"{where}.{item['name']}.{field}", problem)
 
     def check_itin_names(
         self, itin: ItinerariesDecl, where: str, declared_classes: set[str]

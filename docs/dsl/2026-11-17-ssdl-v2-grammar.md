@@ -500,6 +500,11 @@ field
 | `reg_file` | `num_phys`、`classes`、`costs`、`allow_move_elim`、`max_move_elim_per_cy`、`allow_zero_elim_only` |
 | `retire_unit` | `buffer`、`max_per_cycle` |
 
+字段类型由 `tools/ssdl/field_types.py` 的 `ENTITY_FIELDS` 定义，v2 前端与
+`validate` 共用同一张表。类型只做**形状**检查（`int_expr` / `int_list` /
+`bool` / `bool_list` / `ident` / `ident_list` / `sched_rw_list` / `string` /
+`enum`），不要求字面量可求值：family 参数与投影仍可出现在 `int_expr` 位置。
+
 ```text
 resource LSU { units = 1; buffer = 4; }
 res_group AGU = [AGU0, AGU1] { buffer = 2; }

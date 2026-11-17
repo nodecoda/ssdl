@@ -181,6 +181,19 @@ def _fields(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def _prop_fields(text: str) -> list[tuple[str, str]]:
+    """Split v1 colon-separated properties, each of which may use commas.
+
+    ``resource P : super = Q : units = 1`` and
+    ``resource P : units = 1, buffer = 4`` are both v1 spellings; v2 has one
+    field body, so the migrator has to normalise both.
+    """
+    out: list[tuple[str, str]] = []
+    for chunk in _split_top(text, ":"):
+        out.extend(_fields(chunk))
+    return out
+
+
 def _set(text: str) -> list[str]:
     body = text.strip()[len("set") :].strip()
     if body.endswith(";"):
@@ -311,7 +324,7 @@ def _resource(text: str) -> list[str]:
     if colon < 0:
         return [f"resource {body};"]
     name = body[:colon].strip()
-    fields = " ".join(f"{k} = {v};" for k, v in _fields(body[colon + 1 :]))
+    fields = " ".join(f"{k} = {v};" for k, v in _prop_fields(body[colon + 1 :]))
     return [f"resource {name} {{ {fields} }};"]
 
 
@@ -322,7 +335,7 @@ def _res_group(text: str) -> list[str]:
     colon = _find_top(body, ":")
     props = ""
     if colon >= 0:
-        fields = " ".join(f"{k} = {v};" for k, v in _fields(body[colon + 1 :]))
+        fields = " ".join(f"{k} = {v};" for k, v in _prop_fields(body[colon + 1 :]))
         props = f" {{ {fields} }}"
         body = body[:colon].strip()
     eq = _find_top(body, "=")
