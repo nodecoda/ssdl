@@ -840,6 +840,15 @@ class Emitter:
             if decl.alias not in self.machines:
                 self.error(where, f"alias target {decl.alias!r} is not a declared machine")
                 return "", []
+            target = self.machines[decl.alias]
+            if target.decl.alias is not None:
+                self.error(
+                    where,
+                    f"alias target {decl.alias!r} is itself an alias; "
+                    "llvm-tblgen resolves ProcessorAlias against a processor, "
+                    "not another alias, so point this alias at a concrete machine",
+                )
+                return "", []
             return (
                 self.define(
                     where,

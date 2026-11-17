@@ -336,6 +336,14 @@ def negative_controls():
         ),
         ("machine M = Nope;", ["alias target 'Nope' is not a declared machine"]),
         (
+            "machine D { }\nmachine A = D;\nmachine B = A;",
+            ["alias target 'A' is itself an alias"],
+        ),
+        (
+            "machine A = B;\nmachine B = A;",
+            ["alias target 'B' is itself an alias"],
+        ),
+        (
             "machine M { write W; read R; advance R : writes = [W]; }",
             ["cycles is required"],
         ),
@@ -3770,6 +3778,23 @@ def v2_entity_field_table_is_complete():
                 is None,
                 f"{kind}.{field}: sample {samples[expected_type]!r} rejected",
             )
+
+
+@test
+def feature_kind_table_is_internally_consistent():
+    """Required fields stay allowed, and kind-only fields never leak."""
+    for kind, required in emit_td.FEATURE_REQUIRED.items():
+        allowed = emit_td.FEATURE_FIELDS[kind]
+        assert_true(
+            set(required) <= allowed,
+            f"{kind}: required {required} not in allowed {sorted(allowed)}",
+        )
+    assert_true("version" not in emit_td.FEATURE_FIELDS["tune"], "tune takes no version")
+    assert_true(
+        "positive_directive" not in emit_td.FEATURE_FIELDS["extension"],
+        "extension takes no tune directive",
+    )
+    assert_true("bitmask" not in emit_td.FEATURE_FIELDS["plain"], "plain takes no bitmask")
 
 
 @test
