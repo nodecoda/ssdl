@@ -1,0 +1,14 @@
+# AC10: one family body, two instances, a runtime condition on a scalar field.
+# Aux writes are target vocabulary (one SchedWrite each), the WriteRes and the
+# variant are model-scoped and carry the instance prefix; expanding the same
+# source twice must produce the same spelling.
+set D = [A, B] : kind = dimension;
+
+machine fam(depth: INT) {
+    resource P : units = 1, name = "Pipe{depth}";
+    write W[D];
+    bind W[D] -> [P], latency = opcode([ADD]) ? depth + 3 : depth + 6;
+}
+
+machine shallow : fam(1) { }
+machine deep : fam(2) { }

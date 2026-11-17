@@ -134,7 +134,14 @@ def _collect_resources(
 def _spellings(
     per_machine: list[tuple[str, list[tuple[str, str, str | None]]]],
 ) -> dict[str, dict[str, str]]:
-    """Assign one spelling per resource identity and check injectivity."""
+    """Assign one spelling per model-scoped resource identity.
+
+    ``SchedWrite``/``SchedRead`` are target vocabulary: the emitter hoists them
+    once and only the model-scoped payload (``WriteRes``/``ReadAdvance``) is
+    per machine, so two instances may share the spelling ``W_A``.  Resources
+    carry their payload in the def itself, so a local name used by more than
+    one machine defaults to ``<machine>_<local>`` to keep the defs distinct.
+    """
     counts: Counter[str] = Counter()
     for _name, specs in per_machine:
         counts.update(local for _kind, local, _template in specs)

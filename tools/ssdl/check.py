@@ -2345,6 +2345,147 @@ machine m {
 
 
 @test
+def runtime_condition_lowers_per_instance():
+    """AC10: instances share SchedWrite vocabulary, not model-scoped payloads."""
+    source = (ROOT / "tests/ssdl/two-instances-runtime.ssdl").read_text()
+    first = parser.expand_source(source)
+    second = parser.expand_source(source)
+    assert_true(first == second, "expansion spelling is not deterministic")
+    program_a = elaborate_mod.elaborate(source)
+    program_b = elaborate_mod.elaborate(source)
+    spellings_a = [
+        (decl.symbol.render(), decl.spelling)
+        for machine in program_a.machines
+        for decl in machine.decls
+    ]
+    spellings_b = [
+        (decl.symbol.render(), decl.spelling)
+        for machine in program_b.machines
+        for decl in machine.decls
+    ]
+    assert_true(spellings_a == spellings_b, "declaration spelling is not deterministic")
+
+    assert_in("resource Pipe1 : units = 1;", first)
+    assert_in("resource Pipe2 : units = 1;", first)
+    assert_true(
+        first.count("write W_A__case0;") == 2,
+        "aux writes are declared once per machine in flat text",
+    )
+    assert_in("bind W_A__case0 -> [Pipe1], latency = 4;", first)
+    assert_in("bind W_A__case0 -> [Pipe2], latency = 5;", first)
+
+    text, _ = emit_source(first, strict=True)
+    assert_true(
+        text.count("def W_A__case0 : SchedWrite;") == 1,
+        "aux SchedWrite is hoisted once, like any target vocabulary",
+    )
+    assert_in("def shallow_WR_W_A__case0", text)
+    assert_in("def deep_WR_W_A__case0", text)
+    assert_in("def shallow_W_AVariant", text)
+    assert_in("def deep_W_AVariant", text)
+    assert_true("anonymous_" not in text, "aux records must not be numbered by parse order")
+
+    try:
+        tblgen = compare_mod.default_tblgen()
+    except compare_mod.CompareError:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "two_instances_runtime.td"
+        path.write_text(text, encoding="utf-8")
+        compare_mod.run_tblgen(tblgen, str(path), compare_mod.default_include_dirs())
+
+
+@test
+def generated_aux_name_cannot_shadow_a_source_declaration():
+    """An aux write gets a deterministic spelling; a source may not take it."""
+    source = """
+set D = [A] : kind = dimension;
+machine m {
+    resource P : units = 1;
+    write W_A__case0;
+    write W[D];
+    bind W[D] -> [P], latency = opcode([ADD]) ? 4 : 7;
+}
+"""
+    try:
+        parser.expand_source(source)
+    except family_mod.ExpandError as exc:
+        assert_in("collides with a declaration expanded from", str(exc))
+        return
+    raise Failure("expected the generated aux spelling to be rejected")
+
+
+@test
+def declaration_order_does_not_change_equivalence():
+    """AC10: reordering declarations changes the text, not the records."""
+    first = """
+machine m {
+    resource P : units = 1;
+    resource Q : units = 2;
+    write W;
+    write V;
+    bind W -> [P], latency = 3;
+    bind V -> [Q], latency = 5;
+    map [ADD] -> [W, read_default];
+}
+"""
+    second = """
+machine m {
+    write V;
+    write W;
+    resource Q : units = 2;
+    resource P : units = 1;
+    bind V -> [Q], latency = 5;
+    bind W -> [P], latency = 3;
+    map [ADD] -> [W, read_default];
+}
+"""
+    text_a, _ = emit_source(parser.expand_source(first), strict=True)
+    text_b, _ = emit_source(parser.expand_source(second), strict=True)
+    assert_true(text_a != text_b, "the fixtures should differ textually")
+    with tempfile.TemporaryDirectory() as tmp:
+        include_dirs = compare_mod.default_include_dirs()
+        recs_a = dump_records(text_a, tmp, "order_a", include_dirs)
+        recs_b = dump_records(text_b, tmp, "order_b", include_dirs)
+    code = equiv_mod.compare(
+        equiv_mod.build(recs_a, "mModel"), equiv_mod.build(recs_b, "mModel"), 20
+    )
+    assert_true(code == 0, "declaration order changed the equivalence verdict")
+
+
+@test
+def instance_prefixes_are_normalized():
+    """AC10: ``defm``/multi-instance prefixes fold before the comparison."""
+    source = """
+set D = [A] : kind = dimension;
+machine fam(x: INT) {
+    resource P : units = 1;
+    write W;
+    bind W -> [P], latency = 4;
+}
+machine small : fam(1) { }
+machine big : fam(2) { }
+"""
+    text, _ = emit_source(parser.expand_source(source), strict=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        recs = dump_records(text, tmp, "prefixed", compare_mod.default_include_dirs())
+    small = equiv_mod.build(recs, "smallModel", "small")
+    big = equiv_mod.build(recs, "bigModel", "big")
+    assert_true("P" in small.resources, small.resources)
+    assert_true(small.writes["W"]["resources"] == ("P",), small.writes["W"])
+    code = equiv_mod.compare(small, big, 20)
+    assert_true(code == 0, "instance prefixes were not folded")
+    assert_true(
+        equiv_mod.strip_prefix("VLEN512SiFive7PipeA", "VLEN512SiFive7") == "PipeA",
+        "defm concatenation is not folded",
+    )
+    assert_true(
+        equiv_mod.strip_prefix("small_PipeA", ("other", "small_")) == "PipeA",
+        "an explicit separator prefix is not folded",
+    )
+
+
+@test
 def finite_relation_and_profile_projection_evaluate():
     """AC9: a source relation and a host-pinned projection are both ELAB lookups."""
     flat = parser.expand_source(

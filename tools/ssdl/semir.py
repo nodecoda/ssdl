@@ -7,8 +7,12 @@ statement in ``Decl.text`` so the v1.2 output stays byte-identical.  Phase 3
 replaces that text with an explicit spelling and Phase 4 adds RUNTIME values.
 
 Identity is structural: ``Symbol(scope, kind, name, axes)``.  Spelling is a
-lowering concern; two identities may not share one spelling (checked when the
-spelling pass lands).
+lowering concern.  Two *model-scoped* identities (resources, resource groups,
+and resource-carried payloads such as ``write_seq``) may not share a spelling;
+the elaborator checks that.  Target-level vocabulary (``SchedWrite`` /
+``SchedRead``) is declared inside machine blocks so the source stays local, but
+TableGen hoists it once per target: there, one spelling denotes one vocabulary
+entry shared by every model, not two identities.
 """
 from __future__ import annotations
 

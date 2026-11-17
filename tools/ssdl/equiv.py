@@ -6,8 +6,13 @@ The generated side is the output of ``emit_td.py`` for the SSDL transcription
 of the same model.  It is either a ``-print-records`` dump or the record table
 itself (``--records-json``, detected by the ``.json`` suffix); the latter skips
 the TableGen round-trip.  Records are matched by the scheduling key that
-survives renaming (``WriteType``, ``ReadType``, ``MatchRW``, resource name),
-never by record name alone.
+survives renaming
+(``WriteType``, ``ReadType``, ``MatchRW``, resource name), never by record name
+alone.  ``defm`` and the SSDL multi-instance lowering both put an instance
+prefix on record names, so either side may pass the prefixes that are not part
+of the contract (``--strip-prefix`` for the in-tree dump, ``--gen-strip-prefix``
+for the generated one); both the keys and the cross-references inside them are
+normalized before comparison.
 
 Usage:
 
@@ -105,16 +110,16 @@ WRITE_PROPS = (
 )
 
 
-def write_props(recs: RecordFile, name: str) -> dict[str, Any]:
+def write_props(recs: RecordFile, name: str, prefix=None) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for prefix, key in WRITE_PROPS:
-        value = recs.value(name, prefix)
+    for field, key in WRITE_PROPS:
+        value = recs.value(name, field)
         if key in ("latency", "uops"):
             out[key] = as_int(value, 1)
         elif key in ("release", "acquire"):
             out[key] = tuple(as_int(x) for x in as_list(value))
         elif key == "resources":
-            out[key] = as_list(value)
+            out[key] = tuple(strip_prefix(item, prefix) for item in as_list(value))
         else:
             out[key] = as_bit(value)
     return out
@@ -128,13 +133,15 @@ READ_PROPS = (
 )
 
 
-def read_props(recs: RecordFile, name: str) -> dict[str, Any]:
+def read_props(recs: RecordFile, name: str, prefix=None) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for prefix, key in READ_PROPS:
-        value = recs.value(name, prefix)
+    for field, key in READ_PROPS:
+        value = recs.value(name, field)
         if key == "cycles":
             out[key] = as_int(value)
-        elif key in ("writes", "tunables"):
+        elif key == "writes":
+            out[key] = tuple(strip_prefix(item, prefix) for item in as_list(value))
+        elif key == "tunables":
             out[key] = as_list(value)
         else:
             out[key] = as_bit(value)
@@ -163,7 +170,35 @@ ANON_RE = re.compile(r"^.*?anonymous_\d+")
 WRES_RE = re.compile(r"^.*?_WRes_")
 
 
-def canon_name(name: str, prefix: str | None = None) -> str:
+def _prefixes(prefix) -> tuple[str, ...]:
+    if prefix is None:
+        return ()
+    if isinstance(prefix, str):
+        return (prefix,)
+    return tuple(item for item in prefix if item)
+
+
+def strip_prefix(name: str, prefix=None) -> str:
+    """Drop any known instance prefix.
+
+    ``defm`` names every record ``<instance><base>``; the SSDL multi-instance
+    lowering does the same for model-scoped defs.  The prefix is routing
+    information, not part of the scheduling contract, so both sides may list
+    the prefixes that should not participate in the comparison.
+    """
+    for item in sorted(_prefixes(prefix), key=len, reverse=True):
+        if not name.startswith(item):
+            continue
+        rest = name[len(item) :]
+        # Upstream ``defm`` concatenates without a separator; the SSDL
+        # multi-instance lowering joins with ``_``.  Fold both to one spelling.
+        if rest.startswith("_") and not item.endswith("_"):
+            rest = rest[1:]
+        return rest
+    return name
+
+
+def canon_name(name: str, prefix=None) -> str:
     """Strip names that are not part of the scheduling contract.
 
     ``defm`` and anonymous defs put the instance prefix and a counter into
@@ -171,9 +206,7 @@ def canon_name(name: str, prefix: str | None = None) -> str:
     variant subject's own binding to ``<machine>_WRes_<write>`` because an
     aliased subject cannot carry a WriteRes.
     """
-    if prefix and name.startswith(prefix):
-        name = name[len(prefix):]
-    return WRES_RE.sub("", ANON_RE.sub("", name))
+    return WRES_RE.sub("", ANON_RE.sub("", strip_prefix(name, prefix)))
 
 
 # (``-print-records`` field, SSDL property, TableGen default).  Defaults come
@@ -194,7 +227,8 @@ MODEL_PROPS = (
 )
 
 
-def build(recs: RecordFile, model: str, prefix: str | None = None) -> Model:
+def build(recs: RecordFile, model: str, prefix=None) -> Model:
+    """Build the comparable model; ``prefix`` is a name or a prefix sequence."""
     out = Model()
     bound: set[str] = set()
     used_resources: set[str] = set()
@@ -206,7 +240,8 @@ def build(recs: RecordFile, model: str, prefix: str | None = None) -> Model:
     for name in scoped:
         if recs.cls.get(name) in ("WriteRes", "SchedWriteRes"):
             used_resources.update(
-                as_list(recs.value(name, "list<ProcResourceKind> ProcResources"))
+                strip_prefix(item, prefix)
+                for item in as_list(recs.value(name, "list<ProcResourceKind> ProcResources"))
             )
     for name in scoped:
         if recs.value(name, "SchedWrite WriteType") is not None:
@@ -215,18 +250,18 @@ def build(recs: RecordFile, model: str, prefix: str | None = None) -> Model:
             # declaration: the emitter splits an aliased subject into ``X``
             # plus ``<machine>_WRes_X``, and the latter carries the payload.
             if recs.value(name, "int Latency") is not None:
-                out.writes[key] = write_props(recs, name)
+                out.writes[key] = write_props(recs, name, prefix)
                 bound.add(key)
             elif key not in bound:
-                out.writes[key] = write_props(recs, name)
+                out.writes[key] = write_props(recs, name, prefix)
         elif recs.value(name, "int Latency") is not None:
             key = canon_name(name, prefix)
-            out.writes[key] = write_props(recs, name)
+            out.writes[key] = write_props(recs, name, prefix)
             bound.add(key)
         if recs.value(name, "SchedRead ReadType") is not None:
-            out.reads[recs.value(name, "SchedRead ReadType")] = read_props(recs, name)
+            out.reads[recs.value(name, "SchedRead ReadType")] = read_props(recs, name, prefix)
         elif recs.cls.get(name) == "SchedReadAdvance":
-            out.reads[canon_name(name, prefix)] = read_props(recs, name)
+            out.reads[canon_name(name, prefix)] = read_props(recs, name, prefix)
         if recs.value(name, "SchedReadWrite MatchRW") is not None:
             match = recs.value(name, "SchedReadWrite MatchRW")
             variant = recs.value(name, "SchedReadWrite AliasRW")
@@ -262,23 +297,24 @@ def build(recs: RecordFile, model: str, prefix: str | None = None) -> Model:
             )
         units = recs.value(name, "int NumUnits")
         if units is not None:
-            out.resources[name] = (
+            out.resources[strip_prefix(name, prefix)] = (
                 as_int(units),
                 as_int(recs.value(name, "int BufferSize"), -1),
-                recs.value(name, "ProcResourceKind Super"),
+                strip_prefix(recs.value(name, "ProcResourceKind Super"), prefix),
             )
     # Target-level resources are not scoped; include the ones this model's
     # writes actually name.
     for name in recs.body:
-        if name in out.resources:
+        key = strip_prefix(name, prefix)
+        if key in out.resources:
             continue
         units = recs.value(name, "int NumUnits")
-        if units is None or name not in used_resources:
+        if units is None or key not in used_resources:
             continue
-        out.resources[name] = (
+        out.resources[key] = (
             as_int(units),
             as_int(recs.value(name, "int BufferSize"), -1),
-            recs.value(name, "ProcResourceKind Super"),
+            strip_prefix(recs.value(name, "ProcResourceKind Super"), prefix),
         )
     # The machine model def itself does not carry ``SchedModel = ...``; it is
     # the record every other entry points at.
@@ -419,8 +455,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=20)
     ap.add_argument(
         "--strip-prefix",
+        action="append",
         default=None,
-        help="instance prefix the in-tree defm put on record names, e.g. VLEN512SiFive7",
+        help="instance prefix the in-tree defm put on record names, e.g. "
+        "VLEN512SiFive7 (repeatable)",
+    )
+    ap.add_argument(
+        "--gen-strip-prefix",
+        action="append",
+        default=None,
+        help="instance prefix the SSDL multi-instance lowering put on generated "
+        "record names, e.g. small (repeatable)",
     )
     ap.add_argument(
         "--llvm-src",
@@ -455,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--in-processor and --gen-processor must be given together")
     return compare(
         build(intree_recs, args.in_model, args.strip_prefix),
-        build(generated_recs, args.gen_model),
+        build(generated_recs, args.gen_model, args.gen_strip_prefix),
         args.limit,
         intree_cpu,
         generated_cpu,

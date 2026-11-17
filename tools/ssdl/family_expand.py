@@ -1131,6 +1131,7 @@ def _lower_runtime_bind(
     env: dict[str, object],
     origins: list[tuple[str, str, int]],
     lookups: dict[str, object] | None = None,
+    emitted: dict[tuple[str, str], int] | None = None,
 ) -> list[str] | None:
     """Lower ``bind W ..., latency = pred ? a : b`` to aux writes + a variant.
 
@@ -1162,7 +1163,23 @@ def _lower_runtime_bind(
             pieces.append(piece)
         return ", ".join(pieces)
 
+    # Aux names are a pure function of the subject and the branch index, so
+    # two expansions of one source spell them identically.  They are shared
+    # target vocabulary like any other SchedWrite; only WriteRes and the
+    # variant are model-scoped.  Reject a source name that would take the same
+    # spelling inside one machine rather than letting the backend see two
+    # declarations for one write.
     aux = [f"{base}__case0", f"{base}__case1"]
+    for aux_name in aux:
+        for keyword in ("write", "bind"):
+            key = (keyword, aux_name)
+            if emitted is not None and key in emitted:
+                raise ExpandError(
+                    f"{aux_name!r} collides with a declaration expanded from "
+                    f"line {emitted[key]}"
+                )
+            if emitted is not None:
+                emitted[key] = line
     out = [f"write {aux[0]};", f"write {aux[1]};"]
     for name, value in zip(aux, (then, other)):
         branch = re.sub(
@@ -1220,6 +1237,17 @@ def _expand_body(
                     "structural position; use a family parameter (elaborated per "
                     "instance) or a profile projection"
                 )
+            # A bare declaration (no axis index) still owns its spelling; the
+            # aux names generated below must not shadow it.
+            bare = re.match(rf"^(write|read)\s+({IDENT})\s*;", stmt.text)
+            if bare:
+                key = (bare.group(1), bare.group(2))
+                if key in emitted:
+                    raise ExpandError(
+                        f"{key[0]} {key[1]} expanded twice "
+                        f"(lines {emitted[key]} and {stmt.line})"
+                    )
+                emitted[key] = stmt.line
             out.append(_subst_fields(stmt.text, env, lookups))
             continue
         keyword, base, index, rest = parsed
@@ -1247,7 +1275,7 @@ def _expand_body(
                 subst_env = _axis_env(uses, use_index, dimensions, env)
                 lowered = (
                     _lower_runtime_bind(
-                        stmt.line, text, subst_env, origins, lookups
+                        stmt.line, text, subst_env, origins, lookups, emitted
                     )
                     if keyword == "bind"
                     else None
