@@ -36,6 +36,7 @@ from ssdl import family_mine as family_mine_mod  # noqa: E402
 from ssdl import family_sweep as family_sweep_mod  # noqa: E402
 from ssdl import family_tables as family_tables_mod  # noqa: E402
 from ssdl import from_records as from_records_mod  # noqa: E402
+from ssdl import golden as golden_mod  # noqa: E402
 from ssdl import record_ir as record_ir_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
 from ssdl import sets as sets_mod  # noqa: E402
@@ -2055,6 +2056,18 @@ def mined_family_sources_expand_to_reparsable_v1_0():
             )
         checked += 1
     assert_true(checked == 14, f"models: {checked}")
+
+
+@test
+def family_expansions_match_the_golden_manifest():
+    """The v1.2 expansion of every family source is pinned byte-for-byte (AC2).
+
+    Phase 1 replaces the text expander; this check is the parity gate.  Model
+    entries skip when the sweep cache is absent, like the other cache-gated
+    checks.
+    """
+    report = golden_mod.check()
+    assert_true(report.ok, report.message())
 
 
 @test
