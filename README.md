@@ -18,7 +18,7 @@ SSDL 是 LLVM 后端调度模型的领域专用语言：它不描述指令本身
 export SSDL_LLVM_SRC=/path/to/llvm-project          # LLVM 源码树
 export SSDL_LLVM_BUILD=/path/to/llvm-build          # 含 bin/llvm-tblgen 的构建目录
 
-python3 tools/ssdl/check.py                         # 115/115 checks passed
+python3 tools/ssdl/check.py                         # 131/131 checks passed
 ```
 
 `check.py` 有两条硬性前置：`SSDL_LLVM_SRC` 指向一个 LLVM checkout，
@@ -171,7 +171,7 @@ tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具�
   family_mine.py    记录 → 规范基 + 公式（只报告，不发明）
   family_sweep.py   14 个模型的全链路 sweep（--syntax v1|v2）
   to_v2.py          v1 → v2 表面迁移（to_v1 的逆）
-  check.py          115 项自检
+  check.py          131 项自检
 tests/ssdl/         mini 模型、错误样例、expected TD、stub target
 data/               小基线：普查表、诊断表、profiles、族表、公式表
 docs/dsl/           规范、领域模型、验证报告
@@ -231,10 +231,10 @@ validate / emit_td / 两条 equiv 对拍。**门禁结果：14/14 records match*
 ### 6.3 回归
 
 ```bash
-python3 tools/ssdl/check.py                   # 115/115
+python3 tools/ssdl/check.py                   # 131/131
 ```
 
-`check.py` 的 115 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
+`check.py` 的 131 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
 schema 类型检查、关键字引用同步、14 模型对拍、族展开、效果诊断。
 
 ---
