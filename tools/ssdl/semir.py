@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Semantic IR for SSDL 1.3.
 
-The surface source is parsed into these nodes; the elaborator fills identity
-and phase; backends consume this, not text.  Phase 1b keeps a rendered
-statement in ``Decl.text`` so the v1.2 output stays byte-identical.  Phase 3
-replaces that text with an explicit spelling and Phase 4 adds RUNTIME values.
+The surface source is expanded into these nodes; the elaborator fills identity
+and phase.  They are the family-expansion IR, not the emitter input:
+``elaborate.render`` turns ``Decl.text`` back into the flat v1 image, and
+``parser`` + ``emit_td`` consume that AST.  Removing the text seam would mean
+making ``family_expand`` produce AST nodes directly; the 2026-11-17 closeout
+spike measured that as a separate project, not a bounded change.
 
 Identity is structural: ``Symbol(scope, kind, name, axes)``.  Spelling is a
 lowering concern.  Two *model-scoped* identities (resources, resource groups,
