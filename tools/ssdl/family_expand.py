@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -55,6 +56,9 @@ from pathlib import Path
 
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 SET_DECL_RE = re.compile(rf"^set\s+({IDENT})\s*=\s*(.+?)\s*:\s*(.+?)\s*;?\s*$")
+RELATION_RE = re.compile(
+    rf"^set\s+({IDENT})\s*:\s*kind\s*=\s*relation\s*=\s*(\[.*\])\s*;$"
+)
 RANGE_RE = re.compile(r"^(-?\d+)\s*\.\.\s*(-?\d+)$")
 ITEM_HEAD_RE = re.compile(rf"^(write|read|bind|advance)\s+({IDENT})\s*\[")
 DIM_USE_WORST_RE = re.compile(rf"^worst\(\s*({IDENT})\s*\)$")
@@ -67,6 +71,9 @@ FAMILY_RE = re.compile(rf"^machine\s+({IDENT})\s*\((.*?)\)\s*\{{")
 INSTANCE_RE = re.compile(rf"^machine\s+({IDENT})\s*:\s*({IDENT})\s*\((.*?)\)\s*\{{")
 PLAIN_RE = re.compile(rf"^machine\s+({IDENT})\s*\{{")
 PARAM_RE = re.compile(rf"^\s*({IDENT})\s*:\s*(INT|BOOL)\s*$")
+EXTERN_RE = re.compile(
+    rf"^extern\s+fn\s+({IDENT})\s*\(([^)]*)\)\s*->\s*(INT|BOOL)\s*:\s*({IDENT})\s*;$"
+)
 
 
 class ExpandError(Exception):
@@ -250,7 +257,9 @@ def _translate_ternary(expr: str) -> str:
     )
 
 
-def _eval_expr(expr: str, env: dict[str, object]) -> int:
+def _eval_expr(
+    expr: str, env: dict[str, object], lookups: dict[str, object] | None = None
+) -> int:
     """Evaluate a bounded integer expression.
 
     Only ``+ - * // %``, the three kernels ``cdiv/max/min`` and names bound in
@@ -297,6 +306,7 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
     tree = _FlattenAttributes().visit(tree)
     if sum(1 for _ in ast.walk(tree)) > NODE_BUDGET:
         raise ExpandError(f"expression too large in {expr!r}")
+    functions = {**CALLS, **(lookups or {})}
     call_functions = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     scope = {"true": True, "false": False, **env}
     for node in ast.walk(tree):
@@ -305,7 +315,7 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
         if id(node) in call_functions:
             continue
         if isinstance(node, ast.Call):
-            if not isinstance(node.func, ast.Name) or node.func.id not in CALLS:
+            if not isinstance(node.func, ast.Name) or node.func.id not in functions:
                 raise ExpandError(f"unknown function in {expr!r}")
             if node.keywords:
                 raise ExpandError(f"keyword arguments are not allowed in {expr!r}")
@@ -321,7 +331,7 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
     try:
         value = eval(  # noqa: S307
             compile(tree, "<expr>", "eval"),
-            {"__builtins__": {}, **CALLS},
+            {"__builtins__": {}, **functions},
             scope,
         )
     except ExpandError:
@@ -360,7 +370,9 @@ def _split_fields(text: str) -> list[str]:
     return parts
 
 
-def _subst_fields(text: str, env: dict[str, object]) -> str:
+def _subst_fields(
+    text: str, env: dict[str, object], lookups: dict[str, object] | None = None
+) -> str:
     """Evaluate the numeric fields of one statement.
 
     Fields are split before evaluation so a kernel argument may contain a
@@ -377,12 +389,16 @@ def _subst_fields(text: str, env: dict[str, object]) -> str:
         match = LIST_FIELD_RE.match(field)
         if match:
             items = [item.strip() for item in _split_fields(match.group(2)) if item.strip()]
-            values = ", ".join(str(_eval_expr(item, env)) for item in items)
+            values = ", ".join(
+                str(_eval_expr(item, env, lookups)) for item in items
+            )
             rendered.append(f"{match.group(1)} = [{values}]")
             continue
         match = SCALAR_FIELD_RE.match(field)
         if match:
-            rendered.append(f"{match.group(1)} = {_eval_expr(match.group(2), env)}")
+            rendered.append(
+                f"{match.group(1)} = {_eval_expr(match.group(2), env, lookups)}"
+            )
             continue
         rendered.append(field)
     return ", ".join(rendered) + tail
@@ -595,6 +611,101 @@ def _axis_units(
     return units
 
 
+PROFILE_PATH = Path(__file__).resolve().parents[2] / "data/riscv-sched-profiles.json"
+_PROJECTIONS: dict[str, dict] | None = None
+
+
+def _profile_projections() -> dict[str, dict]:
+    """Host-pinned projection rows; the language declares the signature."""
+    global _PROJECTIONS
+    if _PROJECTIONS is None:
+        if not PROFILE_PATH.is_file():
+            raise ExpandError(f"missing projection profile {PROFILE_PATH}")
+        data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        _PROJECTIONS = data.get("projections", {})
+    return _PROJECTIONS
+
+
+def _parse_relation(name: str, rhs: str, line_no: int) -> dict[tuple[int, ...], int]:
+    """``[(key, ..., value), ...]``; keys and values must be integers."""
+    rhs = rhs.strip()
+    if not (rhs.startswith("[") and rhs.endswith("]")):
+        raise ExpandError(f"line {line_no}: relation {name} expects [(key, value), ...]")
+    table: dict[tuple[int, ...], int] = {}
+    for item in _split_fields(rhs[1:-1]):
+        item = item.strip()
+        if not item:
+            continue
+        if not (item.startswith("(") and item.endswith(")")):
+            raise ExpandError(f"line {line_no}: relation {name} row {item!r} is not a tuple")
+        parts = [part.strip() for part in _split_fields(item[1:-1]) if part.strip()]
+        if len(parts) < 2:
+            raise ExpandError(
+                f"line {line_no}: relation {name} row {item!r} needs a key and a value"
+            )
+        key = tuple(_eval_expr(part, {}) for part in parts[:-1])
+        value = _eval_expr(parts[-1], {})
+        if key in table:
+            raise ExpandError(f"line {line_no}: relation {name} repeats key {key}")
+        table[key] = value
+    if not table:
+        raise ExpandError(f"line {line_no}: relation {name} is empty")
+    return table
+
+
+def _build_lookups(
+    relations: dict[str, dict[tuple[int, ...], int]],
+    externs: dict[str, tuple[tuple[str, ...], str, str, int]],
+) -> dict[str, object]:
+    """Turn declared relations and profiles into n-ary elab-time functions."""
+    lookups: dict[str, object] = {}
+    for name, table in relations.items():
+        def lookup(*args: object, _table=table, _name=name) -> int:
+            key = tuple(int(arg) for arg in args)
+            if key not in _table:
+                raise ExpandError(
+                    f"relation {_name} has no row for {key}; domain: {sorted(_table)}"
+                )
+            return _table[key]
+
+        lookups[name] = lookup
+
+    for name, (params, _ret, profile, line_no) in externs.items():
+        entries = _profile_projections()
+        if profile not in entries:
+            raise ExpandError(
+                f"line {line_no}: unknown projection {profile!r}; "
+                f"add projections.{profile} to data/riscv-sched-profiles.json"
+            )
+        entry = entries[profile]
+        rows = entry.get("rows", [])
+        table: dict[tuple[int, ...], int] = {}
+        for row in rows:
+            if len(row) != len(params) + 1:
+                raise ExpandError(
+                    f"projections.{profile}: row {row} has {len(row)} columns, "
+                    f"expected {len(params) + 1}"
+                )
+            table[tuple(int(value) for value in row[:-1])] = int(row[-1])
+        if not table:
+            raise ExpandError(f"projections.{profile} has no pinned rows")
+
+        def lookup(*args: object, _table=table, _name=profile, _arity=len(params)) -> int:
+            if len(args) != _arity:
+                raise ExpandError(
+                    f"projection {_name} expects {_arity} argument(s), got {len(args)}"
+                )
+            key = tuple(int(arg) for arg in args)
+            if key not in _table:
+                raise ExpandError(
+                    f"no pinned value for {_name}{key}; add it to projections.{_name}.rows"
+                )
+            return _table[key]
+
+        lookups[name] = lookup
+    return lookups
+
+
 def _brace_delta(text: str) -> int:
     """Brace balance of one statement, ignoring strings and ``[{ }]`` blocks."""
     delta = 0
@@ -630,13 +741,24 @@ GLOBAL_KEYWORDS = (
 )
 
 
-def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine], list[str]]:
-    """Return (dimensions, machines, globals) from the compressed source.
+def split_blocks(
+    text: str,
+) -> tuple[
+    dict[str, Axis],
+    dict[str, dict[tuple[int, ...], int]],
+    dict[str, tuple[tuple[str, ...], str, str, int]],
+    list[Machine],
+    list[str],
+]:
+    """Return (dimensions, relations, externs, machines, globals).
 
     ``globals`` are target-level declarations (features, predicates, ...) that
-    the family layer copies through untouched.
+    the family layer copies through untouched.  Relations and externs are
+    compile-time lookups and are consumed here.
     """
     dimensions: dict[str, Axis] = {}
+    relations: dict[str, dict[tuple[int, ...], int]] = {}
+    externs: dict[str, tuple[tuple[str, ...], str, str, int]] = {}
     machines: list[Machine] = []
     globals_: list[str] = []
     current: Machine | None = None
@@ -651,6 +773,37 @@ def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine], list[str]]:
                 # copied as one unit, braces included.
                 globals_.append(line)
                 global_depth += _brace_delta(line)
+                continue
+            extern = EXTERN_RE.match(line)
+            if extern:
+                name = extern.group(1)
+                params = []
+                for param in extern.group(2).split(","):
+                    if not param.strip():
+                        continue
+                    pm = PARAM_RE.match(param)
+                    if not pm:
+                        raise ExpandError(
+                            f"line {line_no}: bad extern parameter {param!r}"
+                        )
+                    params.append(pm.group(1))
+                if name in externs:
+                    raise ExpandError(f"line {line_no}: extern {name} is declared twice")
+                externs[name] = (
+                    tuple(params),
+                    extern.group(3),
+                    extern.group(4),
+                    line_no,
+                )
+                continue
+            relation = RELATION_RE.match(line)
+            if relation:
+                name = relation.group(1)
+                if name in relations:
+                    raise ExpandError(
+                        f"line {line_no}: relation {name} is declared twice"
+                    )
+                relations[name] = _parse_relation(name, relation.group(2), line_no)
                 continue
             match = SET_DECL_RE.match(line)
             if match:
@@ -736,7 +889,7 @@ def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine], list[str]]:
             current.body.append(Stmt(line_no, text))
     if current is not None:
         raise ExpandError(f"unterminated machine {current.name}")
-    return dimensions, machines, globals_
+    return dimensions, relations, externs, machines, globals_
 
 
 def _parse_dim_uses(
@@ -977,6 +1130,7 @@ def _lower_runtime_bind(
     text: str,
     env: dict[str, object],
     origins: list[tuple[str, str, int]],
+    lookups: dict[str, object] | None = None,
 ) -> list[str] | None:
     """Lower ``bind W ..., latency = pred ? a : b`` to aux writes + a variant.
 
@@ -1014,7 +1168,7 @@ def _lower_runtime_bind(
         branch = re.sub(
             rf"^(bind\s+){re.escape(base)}\b", rf"\g<1>{name}", rebuild(value), count=1
         )
-        out.append(_subst_fields(branch, env))
+        out.append(_subst_fields(branch, env, lookups))
         origins.append(("write", name, line))
         origins.append(("bind", name, line))
     out.extend(
@@ -1033,6 +1187,7 @@ def _expand_body(
     env: dict[str, object],
     dimensions: dict[str, Axis],
     origins: list[tuple[str, str, int]],
+    lookups: dict[str, object] | None = None,
 ) -> list[str]:
     out: list[str] = []
     emitted: dict[tuple[str, str], int] = {}
@@ -1065,7 +1220,7 @@ def _expand_body(
                     "structural position; use a family parameter (elaborated per "
                     "instance) or a profile projection"
                 )
-            out.append(_subst_fields(stmt.text, env))
+            out.append(_subst_fields(stmt.text, env, lookups))
             continue
         keyword, base, index, rest = parsed
         try:
@@ -1091,14 +1246,16 @@ def _expand_body(
                 text = f"{keyword} {name}{tail}".rstrip()
                 subst_env = _axis_env(uses, use_index, dimensions, env)
                 lowered = (
-                    _lower_runtime_bind(stmt.line, text, subst_env, origins)
+                    _lower_runtime_bind(
+                        stmt.line, text, subst_env, origins, lookups
+                    )
                     if keyword == "bind"
                     else None
                 )
                 if lowered is not None:
                     out.extend(lowered)
                 else:
-                    out.append(_subst_fields(text, subst_env))
+                    out.append(_subst_fields(text, subst_env, lookups))
         except ExpandError as exc:
             raise ExpandError(f"line {stmt.line}: {exc}") from exc
     return out
@@ -1175,7 +1332,8 @@ def expand_legacy(
     add_axis: tuple[str, str] | None = None,
     origins: list[tuple[str, str, int]] | None = None,
 ) -> str:
-    dimensions, machines, globals_ = split_blocks(text)
+    dimensions, relations, externs, machines, globals_ = split_blocks(text)
+    lookups = _build_lookups(relations, externs)
     if add_axis:
         axis, value = add_axis
         if axis not in dimensions:
@@ -1207,7 +1365,8 @@ def expand_legacy(
             continue  # a family declaration is not emitted by itself
         lines.append(f"machine {machine.name} {{")
         lines.extend(
-            f"    {line}" for line in _expand_body(body, env, dimensions, origins)
+            f"    {line}"
+            for line in _expand_body(body, env, dimensions, origins, lookups)
         )
         lines.append("}")
         lines.append("")

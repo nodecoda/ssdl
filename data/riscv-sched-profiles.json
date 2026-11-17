@@ -108,5 +108,36 @@
         64
       ]
     }
+  },
+  "projections": {
+    "cycles": {
+      "params": [
+        "lmul",
+        "sew"
+      ],
+      "note": "VLEN 512, LMUL = M1: cycles = VLEN / SEW; host-pinned rows only",
+      "rows": [
+        [
+          1,
+          8,
+          64
+        ],
+        [
+          1,
+          16,
+          32
+        ],
+        [
+          1,
+          32,
+          16
+        ],
+        [
+          1,
+          64,
+          8
+        ]
+      ]
+    }
   }
 }

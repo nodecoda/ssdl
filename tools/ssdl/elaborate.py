@@ -236,7 +236,8 @@ def elaborate(
     origins: list[tuple[str, str, int]] | None = None,
 ) -> semir.SemProgram:
     """Build the semantic program; all values here are ELAB."""
-    dimensions, machines, globals_ = fe.split_blocks(text)
+    dimensions, relations, externs, machines, globals_ = fe.split_blocks(text)
+    lookups = fe._build_lookups(relations, externs) if (relations or externs) else {}
     if add_axis:
         axis, value = add_axis
         if axis not in dimensions:
@@ -302,7 +303,7 @@ def elaborate(
             args = ()
 
         local: list[tuple[str, str, int]] = []
-        lines = fe._expand_body(body, env, dimensions, local)
+        lines = fe._expand_body(body, env, dimensions, local, lookups)
         if origins is not None:
             origins.extend(local)
         specs = _collect_resources(lines, env, f"machine {machine.name}")

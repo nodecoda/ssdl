@@ -2345,6 +2345,70 @@ machine m {
 
 
 @test
+def finite_relation_and_profile_projection_evaluate():
+    """AC9: a source relation and a host-pinned projection are both ELAB lookups."""
+    flat = parser.expand_source(
+        (ROOT / "tests/ssdl/projection-contract.ssdl").read_text()
+    )
+    assert_in("latency = 1, release = [1, 64];", flat)
+    assert_in("latency = 15, release = [1, 32];", flat)
+    assert_true("extern fn" not in flat, "the signature is compile-time only")
+    assert_true("kind = relation" not in flat, "the table is compile-time only")
+
+
+@test
+def relation_miss_lists_the_domain():
+    source = """
+set F : kind = relation = [(8, 1), (16, 15)];
+machine m {
+    resource P : units = 1;
+    write W;
+    bind W -> [P], latency = F(24);
+}
+"""
+    try:
+        parser.expand_source(source)
+    except family_mod.ExpandError as exc:
+        assert_in("no row for (24", str(exc))
+        assert_in("domain", str(exc))
+        return
+    raise Failure("expected a relation miss")
+
+
+@test
+def unknown_projection_and_unpinned_value_are_rejected():
+    unknown = """
+extern fn f(a: INT) -> INT : missing;
+machine m {
+    resource P : units = 1;
+    write W;
+    bind W -> [P], latency = f(1);
+}
+"""
+    try:
+        parser.expand_source(unknown)
+    except family_mod.ExpandError as exc:
+        assert_in("unknown projection 'missing'", str(exc))
+    else:
+        raise Failure("expected an unknown projection to fail")
+
+    unpinned = """
+extern fn cycles(lmul: INT, sew: INT) -> INT : cycles;
+machine m {
+    resource P : units = 1;
+    write W;
+    bind W -> [P], latency = cycles(1, 24);
+}
+"""
+    try:
+        parser.expand_source(unpinned)
+    except family_mod.ExpandError as exc:
+        assert_in("no pinned value for cycles", str(exc))
+    else:
+        raise Failure("expected an unpinned projection value to fail")
+
+
+@test
 def family_expansions_match_the_golden_manifest():
     """The v1.2 expansion of every family source is pinned byte-for-byte (AC2).
 

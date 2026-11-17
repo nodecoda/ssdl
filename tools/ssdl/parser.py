@@ -1075,7 +1075,7 @@ def parse(text: str) -> Program:
     return Parser(text).parse()
 
 
-FAMILY_SOURCE = re.compile(r":\s*kind\s*=\s*dimension\b")
+FAMILY_SOURCE = re.compile(r":\s*kind\s*=\s*(?:dimension|relation)\b|\bextern\s+fn\b")
 
 
 def expand_source(text: str) -> str:

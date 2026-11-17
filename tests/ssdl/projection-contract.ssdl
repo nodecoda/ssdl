@@ -1,0 +1,13 @@
+# AC9: a finite relation lives in the source; a host projection is declared
+# with a signature and pinned by data/riscv-sched-profiles.json.
+set DivFactor : kind = relation = [(8, 1), (16, 15), (32, 28), (64, 57)];
+extern fn cycles(lmul: INT, sew: INT) -> INT : cycles;
+
+machine fam(sew: INT) {
+    resource P : units = 1;
+    write W;
+    bind W -> [P], latency = DivFactor(sew), release = [1, cycles(1, sew)];
+}
+
+machine s8 : fam(8) { }
+machine s16 : fam(16) { }
