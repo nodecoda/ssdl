@@ -100,7 +100,8 @@ machine m {
 这四个要素的静态绑定、时间轴与吞吐公式见
 `docs/dsl/2026-11-17-scheduling-model-elements.md`；
 消费这些字段的调度算法见 `docs/dsl/2026-11-17-llvm-scheduling-algorithms.md`；
-逐步调试方法见 `docs/dsl/2026-11-17-debugging-machine-scheduler.md`。
+逐步调试方法见 `docs/dsl/2026-11-17-debugging-machine-scheduler.md`，
+配套示例与一键脚本见 `docs/examples/sched-debug/`、`scripts/debug-sched-demo.sh`。
 
 同一个 `machine` 也可以直接写成“族 + 实例”，把稀疏维度只写一次：
 

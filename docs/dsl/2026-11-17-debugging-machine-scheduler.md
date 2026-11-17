@@ -2,6 +2,8 @@
 
 > 目标：让你能用一条命令看见调度器在想什么，并知道去代码的哪一行看。
 > 所有日志都来自 `LLVM 24.0.0git @ 700e551`（assert 构建，RISC-V 后端），可复现。
+>
+> 示例与一键脚本：`docs/examples/sched-debug/`、`scripts/debug-sched-demo.sh`。
 
 ## 0. 先记住三句话
 
@@ -48,13 +50,20 @@ sed -i 's/ "target-cpu"="[^"]*"//; s/ "target-features"="[^"]*"//; s/ "tune-cpu"
 
 ### 1.3 得到可重复的 MIR
 
+仓库里已经有现成输入：`docs/examples/sched-debug/demo.ll`。
 不要每次都从 IR 跑整条流水线；先停在 pass 之前：
 
 ```
 llc -mtriple=riscv64-unknown-elf -mcpu=sifive-7-series \
     -mattr=+64bit,+m,+a,+f,+d,+c -O2 \
     -stop-before=machine-scheduler -simplify-mir \
-    demo.ll -o demo-before.mir
+    docs/examples/sched-debug/demo.ll -o demo-before.mir
+```
+
+或者直接跑一键脚本（输出到 `$SSDL_CACHE/sched-debug/`）：
+
+```
+scripts/debug-sched-demo.sh
 ```
 
 ### 1.4 只跑这一个 pass
@@ -359,13 +368,14 @@ LLC=/home/ubuntu/llvm/builds/explore/bin/llc
 
 $LLC --version | grep assertions
 
-clang -O1 -S -emit-llvm demo.c -o demo.ll
+# 仓库已提供 demo.ll；若从源重新生成：
+clang -O1 -S -emit-llvm docs/examples/sched-debug/demo.c -o demo.ll
 sed -i 's/ "target-cpu"="[^"]*"//; s/ "target-features"="[^"]*"//; s/ "tune-cpu"="[^"]*"//' demo.ll
 
 $LLC -mtriple=riscv64-unknown-elf -mcpu=sifive-7-series \
      -mattr=+64bit,+m,+a,+f,+d,+c -O2 \
      -stop-before=machine-scheduler -simplify-mir \
-     demo.ll -o demo-before.mir
+     docs/examples/sched-debug/demo.ll -o demo-before.mir
 
 $LLC -run-pass=machine-scheduler demo-before.mir -o demo-after.mir \
      -debug-only=machine-scheduler 2> sched.log
