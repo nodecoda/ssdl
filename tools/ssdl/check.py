@@ -3403,6 +3403,60 @@ def v2_machine_roles_split_model_and_processor():
 
 
 @test
+def v2_sifive7_mini_matches_the_handwritten_records():
+    """The whole v2 surface lowers to the same records as the v1 fixture."""
+    source = (ROOT / "tests/ssdl/v2/sifive7-mini-v2.ssdl").read_text(encoding="utf-8")
+    flat = syntax_v2.to_v1(source)
+    text, skips = emit_source(flat, strict=True, attrs=attrs_schema())
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    text_again, _ = emit_source(flat, strict=True, attrs=attrs_schema())
+    assert_true(text == text_again, "v2 front end is not deterministic")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "generated.td"
+        generated.write_text(text, encoding="utf-8")
+        diff = compare_mod.compare(
+            str(generated),
+            str(ROOT / "tests/ssdl/sifive7-mini.expected.td"),
+            compare_mod.default_tblgen(),
+            compare_mod.default_include_dirs(),
+        )
+    assert_true(diff.ok(), "record mismatch:\n" + diff.render())
+
+
+@test
+def v2_predicate_forms_are_checked():
+    """select/sti/tii have one spelling; mistakes are rejected with a hint."""
+    for source, needle in [
+        (
+            "predicate P : select { desc = \"x\"; }",
+            "select needs when and/or during",
+        ),
+        (
+            "predicate P : select { when = [{ x }]; }",
+            "when needs host",
+        ),
+        (
+            "predicate P : sti { impl F : m1 { sched_model = m2; } }",
+            "is scoped to 'm1' but sched_model = 'm2'",
+        ),
+        (
+            "predicate P : sti { nope = true; }",
+            "unknown sti field 'nope'",
+        ),
+        (
+            "predicate P : wat { }",
+            "unknown predicate kind 'wat'",
+        ),
+        (
+            "predicate prolog = [{ x }];",
+            "predicate prolog needs host",
+        ),
+    ]:
+        assert_in(needle, v2_error(source))
+
+
+@test
 def v2_entity_fields_are_checked():
     """Each entity accepts exactly its field table, with no duplicates."""
     for source, needle in [

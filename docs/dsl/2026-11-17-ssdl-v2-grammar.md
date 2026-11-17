@@ -170,15 +170,19 @@ predicate_field
     = "when"      "=" host_block ";"
     | "during"    "=" feature_expr ";"
     | "desc"      "=" STRING ";"
+    | "recompute_per_function" "=" BOOL ";"
     (* sti *)
+    | "default"     "=" BOOL ";"
+    | "overrides"   "=" BOOL ";"
+    | "expand_for_mc" "=" BOOL ";"
     | "opcode_mask" "=" BOOL ";"
     | "delegates"   "=" ident_list ";"
-    | "impl" IDENT "{" { sti_impl_field } "}"
+    | "impl" IDENT ":" IDENT "{" { sti_impl_item } "}"
     (* tii *)
     | "switch" "opcode" "{" { switch_case } "default" ":" statement "}"
     ;
 
-sti_impl_field
+sti_impl_item
     = "sched_model" "=" IDENT ";"
     | ( "equiv_class" | "dep_breaking_class" ) IDENT
       "(" ( IDENT | set_expr ) "," predicate_expr [ "," int_set ] ")"
@@ -196,10 +200,12 @@ statement
 
 语义：
 
-- 表达式形式等价于 `: sched`。
+- 表达式形式等价于 `: sched`；显式写法是 `predicate P : sched = expr;`。
 - `: select` 的 `when` 是 host 代码，`during` 是 feature 谓词；两者可只写其一。
-- `: sti` 的声明与实现合并：`impl <machine> { ... }` 是 model-scoped 实现，
-  lowering 到 v1 的 `STIPredicateDecl` + `STIPredicate`。
+- `: sti` 的声明与实现合并：`impl <名字> : <machine> { ... }` 中，`<名字>`
+  是 v1 `sti_function` 的名字，也是生成的 `STIPredicate` def 名；`<machine>`
+  是 `SchedModel` 作用域。`sched_model` 字段可以省略，写了必须与 `<machine>`
+  一致。lowering 到 v1 的 `STIPredicateDecl` + `STIPredicate`。
 - `: tii` 的 `switch opcode` lowering 到 `TIIPredicate`。
 - `predicate prolog = host [...];` 是全局共享代码，等价 v1 的 `PredicateProlog`。
 
@@ -215,8 +221,7 @@ predicate HasStdExtI : select {
 predicate IsDependencyBreaking : sti {
     opcode_mask = true;
     delegates   = [isZeroIdiom];
-    impl siFive7 {
-        sched_model = siFive7;
+    impl OrrXzrXzr : siFive7 {
         dep_breaking_class OrrXzrXzr(
             [ORR], all_of(opcode([ORR]), IsZeroReg(1), IsZeroReg(2)), [1, 2]
         );
@@ -233,8 +238,10 @@ predicate IsDependencyBreaking : tii {
 ```
 
 > 注：同一名字不能同时声明为 `sti` 与 `tii`；上例只展示两种形态。
-> `: sti` / `: tii` 是否是 v2.0 范围，由 Phase 5 决策门决定；若延后，
-> v2.0 暂时保留 `sti_decl`/`sti_function`/`tii_predicate`，语法见 §11。
+> Phase 5 决策门已通过：`: select`/`: sti`/`: tii` 的 records 与 v1
+> 逐字段一致（`v2/sifive7-mini-v2.ssdl` 对拍 `sifive7-mini.expected.td`），
+> 因此 v2.0 删除 `predicate_prolog`/`sti_decl`/`sti_function`/`tii_predicate`
+> 四个顶层关键字，§11 的降级预案不启用。
 
 ---
 
@@ -325,7 +332,7 @@ machine_decl
     ;
 
 machine_role
-    = "model" | "cpu" | "family" | "instance"
+    = "both" | "model" | "cpu" | "family" | "instance"
     ;
 
 param
@@ -339,6 +346,8 @@ arg
 
 语义：
 
+- `machine both X { ... }`：一个名字同时发射 `SchedMachineModel` 与
+  `ProcessorModel`（v1 的默认行为）；迁移 v1 源时用它保持 records 不变。
 - `machine model X { ... }`：只发射 `SchedMachineModel` 与 model-scoped 实体。
 - `machine cpu X { model = M; features = [...]; tune_features = [...];
   default_march = "..."; }`：只发射 `ProcessorModel`，`SchedModel = M`。
@@ -401,16 +410,18 @@ machine_prop
 
 ### 6.2 角色允许项
 
-| 项 | `model` | `cpu` | `family` | `instance` | `alias` |
+| 项 | `both` | `model` | `cpu` | `family` | `instance` | `alias` |
 |---|:--:|:--:|:--:|:--:|:--:|
-| machine 属性（`issue_width` 等） | ✓ | — | ✓ | ✓ | — |
-| `model =` | — | ✓ | — | — | — |
-| `features` / `tune_features` / `default_march` | — | ✓ | ✓ | ✓ | — |
-| 实体（resource/write/...） | ✓ | — | ✓ | ✓ | — |
-| 关系（bind/map/variant/...） | ✓ | — | ✓ | ✓ | — |
-| `itineraries` | ✓ | — | ✓ | ✓ | — |
+| 项 | `both` | `model` | `cpu` | `family` | `instance` | `alias` |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| machine 属性（`issue_width` 等） | ✓ | ✓ | — | ✓ | ✓ | — |
+| `model =` | — | — | ✓ | — | — | — |
+| `features` / `tune_features` / `default_march` | ✓ | — | ✓ | ✓ | ✓ | — |
+| 实体（resource/write/...） | ✓ | ✓ | — | ✓ | ✓ | — |
+| 关系（bind/map/variant/...） | ✓ | ✓ | — | ✓ | ✓ | — |
+| `itineraries` | ✓ | ✓ | — | ✓ | ✓ | — |
 
-`family`/`instance` 同时生成 model 与 cpu；`cpu` 不得声明实体或关系。
+`both`/`family`/`instance` 同时生成 model 与 cpu；`cpu` 不得声明实体或关系。
 `alias` 只接受 `machine alias X = Y;`，不接受 body。
 
 ### 6.3 实体
@@ -857,6 +868,7 @@ atom_pred
     | "func" "(" STRING "," STRING ")"
     | "func_tii" "(" STRING "," STRING [ "," "tii" "=" STRING ] ")"
     | "non_portable" "(" host_block ")"
+    | "sched_code" "(" host_block ")"
     ;
 ```
 
@@ -935,7 +947,9 @@ extern_param
 
 ---
 
-## 11. v2.0 的谓词降级预案
+## 11. v2.0 的谓词降级预案（未启用）
+
+Phase 5 决策门已通过，本节仅作为历史备份保留；v2.0 不保留 v1 的五关键字。
 
 若 Phase 5 决策门判定“谓词统一”风险过高，v2.0 保留 v1 的三关键字，但只允许
 **字段体**形式（不再有 `:` 属性）：
@@ -962,12 +976,12 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 | `set dimension` + units/projections | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `set relation` | `v2/projection-contract-v2.ssdl` | ✓ P2 |
 | `predicate` 表达式 | `v2/predicates-v2.ssdl` | ✓ P3 |
-| `predicate : select` | `v2/predicates.ssdl` | P5 |
-| `predicate prolog` | `v2/predicates.ssdl` | P3 |
-| `predicate : sti` / `: tii` | `v2/sti-tii.ssdl` | P5 或 P6 |
+| `predicate : select` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
+| `predicate prolog` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
+| `predicate : sti` / `: tii` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
 | `feature` plain/extension/tune | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `feature` typed field / host / bitmask | `v2/machine-roles-v2.ssdl` | ✓ P3 |
-| `machine model` / `cpu` | `v2/machine-roles-v2.ssdl` | ✓ P3 |
+| `machine both` / `model` / `cpu` | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `machine family` / `instance` | `v2/family-mini-v2.ssdl` | ✓ P2 |
 | `machine alias` | `v2/machine-roles.ssdl` | P3（parser 路径） |
 | `resource` / `res_group` | `v2/entities-v2.ssdl` | ✓ P2 |
@@ -978,7 +992,7 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 | `variant` / `read_variant` | `v2/variants-v2.ssdl` | ✓ P2 |
 | `itineraries` + 命名 stage | `v2/itineraries-v2.ssdl` | ✓ P2 |
 | `extern` | `v2/projection-contract-v2.ssdl` | ✓ P2 |
-| `host` block | `v2/host.ssdl` | P3 |
+| `host` block | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
 | `dim_index` | `v2/multiline-v2.ssdl` | ✓ P2 |
 | `worst` / `in []` 子集 | `v2/dim-uses.ssdl` | P3 |
 | `name_template` | `v2/two-instances-v2.ssdl` | ✓ P2 |
@@ -1028,25 +1042,32 @@ machine instance m512 : fam(512) { }
 
 ---
 
-## 15. Phase 2 实现边界（诚实清单）
+## 15. 实现边界（诚实清单）
 
 Phase 2 的 v2 前端是 `tools/ssdl/syntax_v2.py` 的 `to_v1`：先把 v2 表面转写成
 v1 族源码，再走既有 elaborator。因此语义内核、拼写规则、runtime 降级和
 records 契约完全未动；v2 能表达的构造在 v1 里必然已经存在。
 
 已进入前端的构造：`set instructions|dimension|relation`（含
-`projections`）、`extern fn`、`machine model|cpu|family|instance|alias`、
+`projections`）、`extern fn`、`machine both|model|cpu|family|instance|alias`、
 全部机器实体与关系、`itineraries`（含命名 stage 与 body 内的
 `sched_model`）、`feature`（typed field / host / bitmask / extension /
-tune）、`predicate` 表达式形式（含 `sched_code(host [{...}])`）。
+tune）、`predicate` 的表达式 / `select` / `sti` / `tii` 四种形式与
+`predicate prolog`（含 `sched_code(host [{...}])`）。
 
-尚未进入（前端显式报错，不静默降级）：`predicate : select|sti|tii`
-（Phase 5 决策门）。
+v2 表面已经能完整表达 §5 的示例模型：`v2/sifive7-mini-v2.ssdl` 经
+v2 前端后，与手写 `sifive7-mini.expected.td` 的 records 逐字段一致
+（llvm-tblgen 对拍）。
 
-`machine model` / `machine cpu` 在 flat 层落成 `role = model|cpu;` 机器属性：
-`model` 只发射 `SchedMachineModel` 与 model-scoped 记录，`cpu` 只发射
-`ProcessorModel`（`SchedModel` 指向 `model =` 命名的机器）。未写 `role` 的
-v1 机器保持 “model + processor” 的旧行为。
+尚未完成的是**迁移工具**：`family_sweep` 仍从 v1 源生成，14 个模型的
+“v2 源 → records” 门禁需要 Phase 6 的 v1→v2 migrator 与 `--syntax v2`
+管线，而不是语法缺口。
+
+`machine both|model|cpu` 在 flat 层落成 `role = both|model|cpu;` 机器属性：
+`both` 同时发射 model 与 processor（v1 默认），`model` 只发射
+`SchedMachineModel` 与 model-scoped 记录，`cpu` 只发射 `ProcessorModel`
+（`SchedModel` 指向 `model =` 命名的机器）。未写 `role` 的 v1 机器保持
+“model + processor” 的旧行为。
 
 已知透传限制：
 

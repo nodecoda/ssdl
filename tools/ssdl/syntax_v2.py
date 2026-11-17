@@ -13,7 +13,7 @@ Implemented in this slice:
 - ``feature`` with typed fields, host and bitmask blocks
 - ``predicate`` expression form (``sched_code(host [{...}])`` included)
 - ``extern fn``
-- ``machine model|cpu|family|instance|alias``
+- ``machine both|model|cpu|family|instance|alias``
 - machine items with one record-body rule: resource/res_group/write/read/
   write_seq/combo_func/queues/reg_file/retire_unit/bind/advance/map/
   map_itin/alias/variant/read_variant/itineraries
@@ -270,6 +270,33 @@ def _set(cursor: _Cursor, out: list[str]) -> None:
     raise V2Error(f"line: unknown set kind {kind!r}")
 
 
+def _host_block(cursor: _Cursor, where: str) -> str:
+    if not cursor.at("host"):
+        token = cursor.peek()
+        raise V2Error(
+            f"line {token.line}:{token.col}: {where} needs host [{ ... }]"
+        )
+    cursor.next()
+    token = cursor.next()
+    if token.kind != "CODE":
+        raise V2Error(
+            f"line {token.line}:{token.col}: {where} needs host [{ ... }], "
+            f"got {token.value!r}"
+        )
+    return "[{" + str(token.value) + "}]"
+
+
+def _check_host(tokens: list[parser.Token], where: str) -> None:
+    for index, token in enumerate(tokens):
+        if token.kind == "CODE" and (
+            index == 0 or tokens[index - 1].value != "host"
+        ):
+            raise V2Error(
+                f"line {token.line}:{token.col}: {where}: a code block must be "
+                "written host [{ ... }]"
+            )
+
+
 def _literal(cursor: _Cursor, where: str) -> str:
     token = cursor.peek()
     if token.kind == "STRING":
@@ -349,6 +376,14 @@ def _feature(cursor: _Cursor, out: list[str]) -> None:
 
 def _predicate(cursor: _Cursor, out: list[str]) -> None:
     cursor.expect("predicate")
+    if cursor.peek().value == "prolog":
+        cursor.next()
+        cursor.expect("=")
+        code = _host_block(cursor, "predicate prolog")
+        cursor.expect(";")
+        out.append(f"predicate_prolog({code});")
+        return
+
     name = cursor.ident()
     params: list[str] = []
     if cursor.at("("):
@@ -366,18 +401,130 @@ def _predicate(cursor: _Cursor, out: list[str]) -> None:
             if not cursor.accept(","):
                 break
         cursor.expect(")")
-    if not cursor.at("="):
-        raise V2Error(
-            f"predicate {name}: only the expression form is implemented; "
-            "select/sti/tii are the Phase 5 decision gate"
-        )
-    cursor.expect("=")
-    tokens = cursor.collect({";"})
-    cursor.expect(";")
     head = f"predicate {name}"
     if params:
         head += "(" + ", ".join(params) + ")"
+
+    if cursor.accept(":"):
+        kind = cursor.ident()
+        if kind == "select":
+            _predicate_select(cursor, out, head)
+        elif kind == "sti":
+            _predicate_sti(cursor, out, name)
+        elif kind == "tii":
+            _predicate_tii(cursor, out, name)
+        elif kind == "sched":
+            cursor.expect("=")
+            tokens = cursor.collect({";"})
+            cursor.expect(";")
+            _check_host(tokens, head)
+            out.append(f"{head} = {_render_tokens(tokens)};")
+        else:
+            token = cursor.peek()
+            raise V2Error(
+                f"line {token.line}:{token.col}: unknown predicate kind {kind!r}; "
+                "expected sched, select, sti or tii"
+            )
+        return
+
+    cursor.expect("=")
+    tokens = cursor.collect({";"})
+    cursor.expect(";")
+    _check_host(tokens, head)
     out.append(f"{head} = {_render_tokens(tokens)};")
+
+
+def _predicate_select(cursor: _Cursor, out: list[str], head: str) -> None:
+    cursor.expect("{")
+    fields: dict[str, str] = {}
+    while not cursor.at("}"):
+        key = cursor.ident()
+        cursor.expect("=")
+        if key == "when":
+            fields["selector"] = f"cxx_expr({_host_block(cursor, f'{head}.when')})"
+            cursor.expect(";")
+        elif key in ("during", "desc", "recompute_per_function"):
+            target = "assembler" if key == "during" else key
+            fields[target] = cursor.expr({";"})
+            cursor.expect(";")
+        else:
+            token = cursor.peek()
+            raise V2Error(
+                f"line {token.line}:{token.col}: {head}: unknown select field {key!r}"
+            )
+    cursor.expect("}")
+    if "selector" not in fields and "assembler" not in fields:
+        raise V2Error(f"{head}: select needs when and/or during")
+    body = " ".join(f"{key} = {value};" for key, value in fields.items())
+    out.append(f"{head} {{ {body} }}")
+
+
+def _predicate_sti(cursor: _Cursor, out: list[str], name: str) -> None:
+    allowed = {"default", "overrides", "expand_for_mc", "opcode_mask", "delegates"}
+    cursor.expect("{")
+    fields: list[tuple[str, str]] = []
+    impls: list[tuple[str, str, list[str]]] = []
+    while not cursor.at("}"):
+        key = cursor.ident()
+        if key == "impl":
+            impl_name = cursor.ident()
+            cursor.expect(":")
+            machine = cursor.ident()
+            cursor.expect("{")
+            lines: list[str] = []
+            while not cursor.at("}"):
+                if cursor.at("sched_model"):
+                    cursor.next()
+                    cursor.expect("=")
+                    value = cursor.expr({";"})
+                    cursor.expect(";")
+                    if value != machine:
+                        raise V2Error(
+                            f"predicate {name}: impl {impl_name} is scoped to "
+                            f"{machine!r} but sched_model = {value!r}"
+                        )
+                    continue
+                statement = cursor.collect({";"})
+                cursor.expect(";")
+                lines.append(_render_tokens(statement) + ";")
+            cursor.expect("}")
+            impls.append((impl_name, machine, lines))
+            continue
+        cursor.expect("=")
+        if key not in allowed:
+            token = cursor.peek()
+            raise V2Error(
+                f"line {token.line}:{token.col}: predicate {name}: "
+                f"unknown sti field {key!r}"
+            )
+        fields.append((key, cursor.expr({";"})))
+        cursor.expect(";")
+    cursor.expect("}")
+    decl = " ".join(f"{key} = {value};" for key, value in fields)
+    out.append(f"sti_decl {name} {{ {decl} }}")
+    for impl_name, machine, lines in impls:
+        body = " ".join(lines + [f"sched_model = {machine};"])
+        out.append(f"sti_function {impl_name} : {name} {{ {body} }}")
+
+
+def _predicate_tii(cursor: _Cursor, out: list[str], name: str) -> None:
+    cursor.expect("{")
+    cursor.expect("switch")
+    cursor.expect("opcode")
+    cursor.expect("{")
+    start = cursor.index - 1
+    depth = 1
+    while depth:
+        token = cursor.next()
+        if token.kind == "EOF":
+            raise V2Error(f"predicate {name}: unterminated switch opcode")
+        if token.value == "{":
+            depth += 1
+        elif token.value == "}":
+            depth -= 1
+    body = _render_tokens(cursor.tokens[start:cursor.index])
+    cursor.expect("}")  # predicate body
+    out.append(f"tii_predicate {name} = switch opcode {body};")
 
 
 def _extern(cursor: _Cursor, out: list[str]) -> None:
@@ -541,7 +688,7 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         out.append(f"map {insts} -> [{rw}]{suffix};")
         return
     if key == "map_itin":
-        itins = cursor.list_tokens()
+        itins = cursor.list_tokens({";", "{", "->"})
         cursor.expect("->")
         rw = cursor.list_tokens()
         cursor.expect(";")
@@ -566,7 +713,9 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
                 lines.append(f"variadic = {cursor.expr({';'})};")
                 cursor.expect(";")
             elif field == "case":
-                pred = cursor.expr({":"}, ternary=True)
+                pred_tokens = cursor.collect({":"}, ternary=True)
+                _check_host(pred_tokens, f"{key} {subject}")
+                pred = _render_tokens(pred_tokens)
                 cursor.expect(":")
                 selected = cursor.list_tokens()
                 cursor.expect(";")
@@ -698,10 +847,10 @@ def to_v1(text: str) -> str:
                 cursor.expect(";")
                 out.append(f"machine {name} = {target};")
                 continue
-            if role not in ("family", "instance", "model", "cpu"):
+            if role not in ("both", "family", "instance", "model", "cpu"):
                 raise V2Error(
                     f"line {token.line}: unknown machine role {role!r}; "
-                    "use model|cpu|family|instance|alias"
+                    "use both|model|cpu|family|instance|alias"
                 )
             name = cursor.ident()
             params = ""
@@ -717,7 +866,7 @@ def to_v1(text: str) -> str:
                 inherit = f" : {family}({_render_tokens(args)})"
             cursor.expect("{")
             body: list[str] = []
-            if role in ("model", "cpu"):
+            if role in ("both", "model", "cpu"):
                 body.append(f"role = {role};")
             while not cursor.at("}"):
                 _machine_item(cursor, body)
