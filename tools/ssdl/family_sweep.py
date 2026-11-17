@@ -95,10 +95,14 @@ class Result:
 LEVEL_ORDER = {"error": 0, "warning": 1, "note": 2}
 
 
-def diagnose_flat(flat: Path) -> list[dict]:
-    """Count effect findings in one mined source, keyed by level and effect."""
+def diagnose_source(source: Path) -> list[dict]:
+    """Count effect findings in one mined source, keyed by level and effect.
+
+    A family source is expanded by ``parse_file``, so the counts are the same
+    whether the caller keeps the authored form or the flat form.
+    """
     counts: dict[tuple[str, str], int] = {}
-    for finding in diagnose(parse_file(str(flat))):
+    for finding in diagnose(parse_file(str(source))):
         key = (finding.level, finding.effect or "")
         counts[key] = counts.get(key, 0) + 1
     return [
@@ -132,11 +136,15 @@ def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
 def run_model(item: dict, args: argparse.Namespace) -> Result:
     out = args.out / sanitise(item["model"])
     out.mkdir(parents=True, exist_ok=True)
+    ssdl = out / "family.ssdl"
     flat = out / "flat.ssdl"
     if args.diagnose_only:
-        if not flat.is_file():
-            return Result(item["model"], "FAIL", f"missing {flat}", [])
-        return Result(item["model"], "match", "", [], diagnose_flat(flat))
+        # Prefer the authored family source; older sweep directories only have
+        # the flat one, and both expand to the same text.
+        source = ssdl if ssdl.is_file() else flat
+        if not source.is_file():
+            return Result(item["model"], "FAIL", f"missing {ssdl}", [])
+        return Result(item["model"], "match", "", [], diagnose_source(source))
     profile = {
         "profiles": {
             "sweep": {
@@ -155,7 +163,6 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
     profile_path = out / "profile.json"
     profile_path.write_text(json.dumps(profile))
 
-    ssdl = out / "family.ssdl"
     td = out / "flat.td"
     records_json = out / "flat.json"
     rec = out / "generated.rec"
@@ -196,7 +203,7 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
                 item["model"], "FAIL", detail[0] if detail else "command failed", []
             )
         last_stdout = proc.stdout
-    diagnostics = diagnose_flat(flat)
+    diagnostics = diagnose_source(ssdl)
     eq.write_text(last_stdout)
     text = last_stdout
     summary = [line for line in text.splitlines() if line.startswith(("intree:", "generated:"))]

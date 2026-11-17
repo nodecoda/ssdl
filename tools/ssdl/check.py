@@ -1982,7 +1982,11 @@ def riscv_model_diagnostics_match_the_committed_table():
             "match",
             "",
             [],
-            family_sweep_mod.diagnose_flat(model_dir / "flat.ssdl"),
+            family_sweep_mod.diagnose_source(
+                (model_dir / "family.ssdl")
+                if (model_dir / "family.ssdl").is_file()
+                else (model_dir / "flat.ssdl")
+            ),
         )
         for model_dir in sorted(bases.iterdir())
         if model_dir.is_dir() and (model_dir / "flat.ssdl").is_file()

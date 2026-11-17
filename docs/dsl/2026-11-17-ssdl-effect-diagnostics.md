@@ -102,7 +102,9 @@ findings 会进入 `SSDLEmitError`。
 
 ## 真实模型基线
 
-`data/riscv-sched-diagnostics.csv` 固定了 14 个 RISC-V 调度模型的诊断计数：
+`data/riscv-sched-diagnostics.csv` 固定了 14 个 RISC-V 调度模型的诊断计数。
+`--diagnose-only` 直接读作者形态的 `family.ssdl`（入口自动展开）；旧目录只有
+`flat.ssdl` 时回退，两者计数相同。
 
 ```bash
 python3 tools/ssdl/family_sweep.py --records /tmp/riscv.rec \
