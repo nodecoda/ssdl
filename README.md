@@ -1,6 +1,6 @@
 # SSDL — 调度与子目标描述语言
 
-**Scheduling and Subtarget Description Language** · v1.3（已验证）
+**Scheduling and Subtarget Description Language** · v2.0（语义基线 v1.3，已验证）
 
 SSDL 是 LLVM 后端调度模型的领域专用语言：它不描述指令本身，只描述
 **指令与微架构之间的运行时契约**——资源、延迟、读写推进、变体、特性、行程。
@@ -18,7 +18,7 @@ SSDL 是 LLVM 后端调度模型的领域专用语言：它不描述指令本身
 export SSDL_LLVM_SRC=/path/to/llvm-project          # LLVM 源码树
 export SSDL_LLVM_BUILD=/path/to/llvm-build          # 含 bin/llvm-tblgen 的构建目录
 
-python3 tools/ssdl/check.py                         # 102/102 checks passed
+python3 tools/ssdl/check.py                         # 115/115 checks passed
 ```
 
 `check.py` 有两条硬性前置：`SSDL_LLVM_SRC` 指向一个 LLVM checkout，
@@ -49,7 +49,26 @@ SSDL 的取舍是：**语义完整的替代品，不是更可读的替代品**�
 
 ---
 
-## 2. 九个顶层关键字
+## 2. 表面语法：v2 与 v1.3 语义基线
+
+**v2 是默认表面语法**（6 个顶层关键字），语义模型仍是 v1.3 ——
+v2 只是 v1 的另一种打印，`SemProgram`、records 契约完全未动：
+
+| v2 顶层关键字 | 覆盖的 v1 关键字 |
+|---|---|
+| `set instructions\|dimension\|relation` | `set`（三种 kind 显式化） |
+| `predicate`（表达式 / `: select` / `: sti` / `: tii` / `prolog`） | `predicate`、`predicate_prolog`、`sti_decl`、`sti_function`、`tii_predicate` |
+| `feature`（`kind = plain\|extension\|tune`） | `feature` |
+| `machine both\|model\|cpu\|family\|instance\|alias` | `machine` |
+| `itineraries` | `itineraries` |
+| `extern fn` | 族展开的编译期查表 |
+
+完整 EBNF 见 `docs/dsl/2026-11-17-ssdl-v2-grammar.md`；v1 → v2 的逐条对照、
+迁移工具和诚实边界见 `docs/dsl/2026-11-17-ssdl-v1-to-v2-migration.md`。
+每条工具链都接受 `--syntax v1|v2`；v1 源仍可读，`tests/ssdl/*.ssdl` 是
+v2 fixture 的 v1 对拍孪生，`tests/ssdl/v1-compat/` 只钉住没有 v2 写法的旧构造。
+
+v1.3 的 9 个关键字（语义基线，仍然有效）：
 
 | 关键字 | 作用 | 对应 TD |
 |---|---|---|
@@ -150,8 +169,9 @@ tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具�
   census_riscv.py   25 个 SchedMachineModel 的普查
   family_tables.py  从源码抽取 RISC-V 族与词表
   family_mine.py    记录 → 规范基 + 公式（只报告，不发明）
-  family_sweep.py   14 个模型的全链路 sweep
-  check.py          102 项自检
+  family_sweep.py   14 个模型的全链路 sweep（--syntax v1|v2）
+  to_v2.py          v1 → v2 表面迁移（to_v1 的逆）
+  check.py          115 项自检
 tests/ssdl/         mini 模型、错误样例、expected TD、stub target
 data/               小基线：普查表、诊断表、profiles、族表、公式表
 docs/dsl/           规范、领域模型、验证报告
@@ -200,16 +220,21 @@ scripts/fetch-records.sh 700e551714cc
 ### 6.2 重跑 14 模型 sweep（可选，耗时较长）
 
 ```bash
-python3 tools/ssdl/family_sweep.py            # 默认写 $SSDL_CACHE/sweep-final
+python3 tools/ssdl/family_sweep.py            # v1 源，写 $SSDL_CACHE/sweep-final
+python3 tools/ssdl/family_sweep.py --syntax v2 --out /tmp/ssdl-sweep-v2
 ```
+
+`--syntax v2` 在 mining 之后用 `to_v2.py` 迁移，再以 v2 前端走
+validate / emit_td / 两条 equiv 对拍。**门禁结果：14/14 records match**，
+即“从 v2 源出发也能逐字段复现上游模型”。
 
 ### 6.3 回归
 
 ```bash
-python3 tools/ssdl/check.py                   # 102/102
+python3 tools/ssdl/check.py                   # 115/115
 ```
 
-`check.py` 的 102 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
+`check.py` 的 115 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
 schema 类型检查、关键字引用同步、14 模型对拍、族展开、效果诊断。
 
 ---
@@ -228,6 +253,9 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
 5. **relation 是有限表**：适合小表，没有一般公式；profile 的 `cycles` 行是
    手工钉住的样本，不是从上游重新推导。
 6. **无元编程**：无 `foreach`、无递归、无用户函数。
+7. **迁移器只搬语法**：`to_v2` 不保留注释，`tii_predicate X = return P;`
+   没有 v2 写法（保留在 `tests/ssdl/v1-compat/`）；裸 `machine X { ... }`
+   在往返时会显式化成 `role = both;`（默认值，records 不变）。
 
 ---
 
@@ -235,7 +263,9 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
 
 | 文档 | 内容 |
 |---|---|
-| `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md` | **v1.3 入口**：身份/拼写、阶段、lowering、五条边界处置 |
+| `docs/dsl/2026-11-17-ssdl-v2-grammar.md` | **v2 规范**：唯一 EBNF、6 个顶层关键字、errata 处置、覆盖率表 |
+| `docs/dsl/2026-11-17-ssdl-v1-to-v2-migration.md` | v1 → v2 迁移表、`to_v2`、14/14 门禁与工具边界 |
+| `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md` | **v1.3 语义基线**：身份/拼写、阶段、lowering、五条边界处置 |
 | `docs/dsl/2026-11-17-ssdl-v1.2-verification.md` | **v1.2 基线证据**：14/14、直读路径、诊断基线 |
 | `docs/dsl/2026-11-16-ssdl-v1.0-final.md` | 9 关键字完整语法 |
 | `docs/dsl/2026-11-17-ssdl-v1.2-draft.md` | 维度、机器参数、族与实例 |

@@ -744,6 +744,11 @@ GLOBAL_KEYWORDS = (
 )
 
 
+# Public name used by tools/ssdl/to_v2.py: the same statement scanner, exposed
+# so the migrator and the expander agree on what a statement is.
+scan_statements = _scan_logical_lines
+
+
 def split_blocks(
     text: str,
 ) -> tuple[

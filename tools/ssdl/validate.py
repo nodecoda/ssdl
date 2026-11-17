@@ -27,9 +27,11 @@ if __package__ in (None, ""):
     from diagnose import ERROR, NOTE, diagnose, render_findings  # type: ignore
     from family_expand import check_coverage  # type: ignore
     from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, expand_source, parse  # type: ignore
+    import syntax_v2  # type: ignore
 else:
     from .diagnose import ERROR, NOTE, diagnose, render_findings
     from .family_expand import check_coverage
+    from . import syntax_v2
     from .parser import (
         FAMILY_SOURCE,
         ItinerariesDecl,
@@ -327,6 +329,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("input", help="SSDL source file")
     ap.add_argument(
+        "--syntax",
+        choices=("v1", "v2"),
+        default="v1",
+        help="surface syntax of the input (default: v1)",
+    )
+    ap.add_argument(
         "--verbose",
         action="store_true",
         help="also print notes (semantic context, not a problem)",
@@ -334,14 +342,15 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         raw = Path(args.input).read_text(encoding="utf-8")
-        flat = expand_source(raw)
+        marker = syntax_v2.to_v1(raw) if args.syntax == "v2" else raw
+        flat = expand_source(raw, syntax=args.syntax)
         program = parse(flat)
     except Exception as exc:
         print(f"{args.input}: {exc}", file=sys.stderr)
         return 2
     # Coverage is a property of the expanded text, not of the AST: it compares
     # the write and bind member sets that the axes produced.
-    coverage = check_coverage(flat) if FAMILY_SOURCE.search(raw) else []
+    coverage = check_coverage(flat) if FAMILY_SOURCE.search(marker) else []
     errors, findings = validate_all(program)
     errors = coverage + errors
     for error in errors:

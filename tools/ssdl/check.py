@@ -43,6 +43,7 @@ from ssdl import records as records_mod  # noqa: E402
 from ssdl import sets as sets_mod  # noqa: E402
 from ssdl import semir as semir_mod  # noqa: E402
 from ssdl import syntax_v2  # noqa: E402
+from ssdl import to_v2 as to_v2_mod  # noqa: E402
 from ssdl import td_schema as td_schema_mod  # noqa: E402
 from ssdl import td_types as td_types_mod  # noqa: E402
 from ssdl import validate as validate_mod  # noqa: E402
@@ -218,7 +219,7 @@ def comparator_is_not_vacuous():
 
 @test
 def errata_syntax_parses():
-    program = parser.parse_file(str(ROOT / "tests/ssdl/errata.ssdl"))
+    program = parser.parse_file(str(ROOT / "tests/ssdl/v1-compat/errata.ssdl"))
     by_name = {getattr(d, "name", None): d for d in program.decls}
 
     # S1 + S2: parameters and named predicate calls.
@@ -3286,6 +3287,85 @@ def v2_and_v1_frontends_build_the_same_ir():
         )
 
 
+def _migrated_ir_view(program):
+    """IR view used by the migrator tests: ``role = both`` is the default."""
+    # A plain v1 machine becomes ``machine both`` in v2, whose v1 rendering is
+    # the explicit default ``role = both``.  It is not a semantic difference.
+    symbols = [s for s in program.symbols() if s.kind != "role"]
+    by_symbol = program.by_symbol()
+    statements = [
+        decl.text
+        for machine in program.machines
+        for decl in machine.decls
+        if " ".join(decl.text.split()) != "role = both;"
+    ]
+    return (
+        program.dimensions,
+        symbols,
+        [(by_symbol[s].spelling, by_symbol[s].phase) for s in symbols],
+        statements,
+    )
+
+
+@test
+def to_v2_round_trips_every_family_fixture():
+    """Phase 6: v1 -> v2 -> v1 expands to the same family text."""
+    checked = 0
+    for path in sorted((ROOT / "tests/ssdl").glob("*.ssdl")):
+        text = path.read_text(encoding="utf-8")
+        if not parser.FAMILY_SOURCE.search(text):
+            continue
+        migrated = to_v2_mod.to_v2(text)
+        before = _normalise_family(parser.expand_source(text))
+        after = _normalise_family(parser.expand_source(migrated, syntax="v2"))
+        assert_true(before == after, f"{path.name}: round trip differs")
+        checked += 1
+    assert_true(checked >= 8, f"only {checked} family fixtures exercised")
+
+
+def _normalise_family(text: str) -> str:
+    """Compare statements, not comments, layout, or the explicit default role."""
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or stripped == "role = both;":
+            continue
+        lines.append(" ".join(line.split()))
+    return "\n".join(lines)
+
+
+@test
+def to_v2_migrates_every_v2_fixture():
+    """Phase 6: the v1 twin of each v2 fixture migrates to the same IR."""
+    for label, v1_path, v2_path in V2_FIXTURES:
+        v1_text = (ROOT / v1_path).read_text(encoding="utf-8")
+        migrated = to_v2_mod.to_v2(v1_text)
+        expected = elaborate_mod.elaborate(v1_text)
+        actual = elaborate_mod.elaborate(migrated, syntax="v2")
+        assert_true(
+            _migrated_ir_view(expected) == _migrated_ir_view(actual),
+            f"{label}: migrated v1 source builds a different IR",
+        )
+
+
+@test
+def to_v2_migrates_the_sifive7_family_example():
+    """The checked-in v2 example is generated, not hand-maintained."""
+    v1 = (ROOT / "docs/examples/sifive7-family.ssdl").read_text(encoding="utf-8")
+    v2_path = ROOT / "docs/examples/sifive7-family-v2.ssdl"
+    assert_true(v2_path.is_file(), "missing docs/examples/sifive7-family-v2.ssdl")
+    v2 = v2_path.read_text(encoding="utf-8")
+    assert_true(
+        v2 == to_v2_mod.to_v2(v1),
+        "docs/examples/sifive7-family-v2.ssdl is stale; regenerate with "
+        "python3 tools/ssdl/to_v2.py docs/examples/sifive7-family.ssdl -o ...",
+    )
+    assert_true(
+        parser.expand_source(v1) == parser.expand_source(v2, syntax="v2"),
+        "the v2 example expands to different family text",
+    )
+
+
 @test
 def v2_rejects_v1_field_separators_and_kind_tails():
     """AC5/AC3: every v1 separator gets a v2 error, not a silent accept."""
@@ -3400,6 +3480,26 @@ def v2_machine_roles_split_model_and_processor():
             assert_in(needle, str(exc))
         else:
             raise Failure(f"expected an emit error for:\n{src}")
+
+
+@test
+def to_v2_migrates_the_sifive7_mini_model():
+    """The migrator covers the whole v2 surface, not just the small fixtures."""
+    v1 = (ROOT / "tests/ssdl/sifive7-mini.ssdl").read_text(encoding="utf-8")
+    migrated = to_v2_mod.to_v2(v1)
+    program = parser.parse(migrated, syntax="v2")
+    text, skips = emit_td.emit(program, strict=True, attrs=attrs_schema())
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "generated.td"
+        generated.write_text(text, encoding="utf-8")
+        diff = compare_mod.compare(
+            str(generated),
+            str(ROOT / "tests/ssdl/sifive7-mini.expected.td"),
+            compare_mod.default_tblgen(),
+            compare_mod.default_include_dirs(),
+        )
+    assert_true(diff.ok(), "record mismatch:\n" + diff.render())
 
 
 @test

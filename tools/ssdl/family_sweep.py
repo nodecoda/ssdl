@@ -97,14 +97,14 @@ class Result:
 LEVEL_ORDER = {"error": 0, "warning": 1, "note": 2}
 
 
-def diagnose_source(source: Path) -> list[dict]:
+def diagnose_source(source: Path, syntax: str = "v1") -> list[dict]:
     """Count effect findings in one mined source, keyed by level and effect.
 
     A family source is expanded by ``parse_file``, so the counts are the same
     whether the caller keeps the authored form or the flat form.
     """
     counts: dict[tuple[str, str], int] = {}
-    for finding in diagnose(parse_file(str(source))):
+    for finding in diagnose(parse_file(str(source), syntax=syntax)):
         key = (finding.level, finding.effect or "")
         counts[key] = counts.get(key, 0) + 1
     return [
@@ -139,14 +139,20 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
     out = args.out / sanitise(item["model"])
     out.mkdir(parents=True, exist_ok=True)
     ssdl = out / "family.ssdl"
+    v2 = out / "family.v2.ssdl"
     flat = out / "flat.ssdl"
+    syntax = getattr(args, "syntax", "v1")
     if args.diagnose_only:
+        if syntax == "v2" and not v2.is_file() and ssdl.is_file():
+            from ssdl.to_v2 import to_v2
+
+            v2.write_text(to_v2(ssdl.read_text(encoding="utf-8")), encoding="utf-8")
         # Prefer the authored family source; older sweep directories only have
         # the flat one, and both expand to the same text.
-        source = ssdl if ssdl.is_file() else flat
+        source = v2 if syntax == "v2" and v2.is_file() else (ssdl if ssdl.is_file() else flat)
         if not source.is_file():
             return Result(item["model"], "FAIL", f"missing {ssdl}", [])
-        return Result(item["model"], "match", "", [], diagnose_source(source))
+        return Result(item["model"], "match", "", [], diagnose_source(source, syntax))
     profile = {
         "profiles": {
             "sweep": {
@@ -170,11 +176,23 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
     rec = out / "generated.rec"
     eq = out / "equiv.txt"
     py = sys.executable
+    mine = [py, str(ROOT / "tools/ssdl/family_mine.py"), "--records", str(args.records),
+            "--profiles", str(profile_path), "--profile", "sweep", "--emit", str(ssdl)]
+    proc = run(mine, ROOT)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return Result(item["model"], "FAIL", detail[0] if detail else "mine failed", [])
+    if syntax == "v2":
+        from ssdl.to_v2 import to_v2
+
+        v2.write_text(to_v2(ssdl.read_text(encoding="utf-8")), encoding="utf-8")
+        source = v2
+    else:
+        source = ssdl
     steps = [
-        [py, str(ROOT / "tools/ssdl/family_mine.py"), "--records", str(args.records),
-         "--profiles", str(profile_path), "--profile", "sweep", "--emit", str(ssdl)],
-        [py, str(ROOT / "tools/ssdl/validate.py"), str(ssdl)],
-        [py, str(ROOT / "tools/ssdl/emit_td.py"), str(ssdl),
+        [py, str(ROOT / "tools/ssdl/validate.py"), str(source), "--syntax", syntax],
+        [py, str(ROOT / "tools/ssdl/emit_td.py"), str(source),
+         "--syntax", syntax,
          "--target-include", "SSDLStub.td",
          "--records-json", str(records_json), "-o", str(td)],
         [args.tblgen, "-print-records",
@@ -204,7 +222,7 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
                 item["model"], "FAIL", detail[0] if detail else "command failed", []
             )
         last_stdout = proc.stdout
-    diagnostics = diagnose_source(ssdl)
+    diagnostics = diagnose_source(source, syntax)
     eq.write_text(last_stdout)
     text = last_stdout
     summary = [line for line in text.splitlines() if line.startswith(("intree:", "generated:"))]
@@ -230,6 +248,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="llvm-tblgen (default: $SSDL_LLVM_BUILD/bin/llvm-tblgen)")
     ap.add_argument("--out", type=Path, default=paths.SWEEP)
     ap.add_argument("--vlen", type=int, default=128)
+    ap.add_argument(
+        "--syntax",
+        choices=("v1", "v2"),
+        default="v1",
+        help="migrate each mined source to this surface before validating (default: v1)",
+    )
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--only", nargs="*")
     ap.add_argument(

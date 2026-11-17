@@ -1059,9 +1059,15 @@ v2 表面已经能完整表达 §5 的示例模型：`v2/sifive7-mini-v2.ssdl` �
 v2 前端后，与手写 `sifive7-mini.expected.td` 的 records 逐字段一致
 （llvm-tblgen 对拍）。
 
-尚未完成的是**迁移工具**：`family_sweep` 仍从 v1 源生成，14 个模型的
-“v2 源 → records” 门禁需要 Phase 6 的 v1→v2 migrator 与 `--syntax v2`
-管线，而不是语法缺口。
+Phase 6 补齐了迁移管线：`tools/ssdl/to_v2.py` 把 v1 源转成 v2 表面，
+`family_sweep.py --syntax v2` 让 14 个模型从 v2 源走完
+validate → emit_td → 两条 equiv 对拍。结果是 **14/14 `records match`**；
+`to_v2` → `to_v1` → 展开后的 family 文本与 v1 源逐字节相同。迁移表、
+工具边界和复现命令见 `docs/dsl/2026-11-17-ssdl-v1-to-v2-migration.md`。
+
+迁移器不是第二个语义实现：它只重排语法，遇到没有 v2 写法的构造
+（例如 `tii_predicate X = return P;`）会报错而不是猜。注释不保留，
+`machine both` 会在回到 v1 时显式写成 `role = both;`（默认值，records 不变）。
 
 `machine both|model|cpu` 在 flat 层落成 `role = both|model|cpu;` 机器属性：
 `both` 同时发射 model 与 processor（v1 默认），`model` 只发射

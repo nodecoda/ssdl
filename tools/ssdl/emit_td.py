@@ -1685,6 +1685,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also print notes (semantic context, not a problem)",
     )
+    ap.add_argument(
+        "--syntax",
+        choices=("v1", "v2"),
+        default="v1",
+        help="surface syntax of the input (default: v1)",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -1694,7 +1700,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        program = parse_file(args.input)
+        program = parse_file(args.input, syntax=args.syntax)
     except Exception as exc:  # parse errors carry line/column
         print(f"{args.input}: {exc}", file=sys.stderr)
         return 2

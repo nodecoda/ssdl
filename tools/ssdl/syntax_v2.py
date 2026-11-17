@@ -27,7 +27,10 @@ from __future__ import annotations
 import json
 import re
 
-from . import parser
+if __package__ in (None, ""):
+    import parser  # type: ignore
+else:
+    from . import parser
 
 
 class V2Error(Exception):
@@ -42,6 +45,60 @@ _PROPS = {
     "post_ra_scheduler", "complete_model", "full_inst_rw_overlap_check",
     "enable_intervals", "model",
 }
+
+
+_NORMALISE = (
+    (r"\s*\.\s*", "."),
+    (r"\[\s+", "["),
+    (r"\s+\]", "]"),
+    (r"\(\s+", "("),
+    (r"\s+\)", ")"),
+    (r"\s+,", ","),
+    (r",\s*", ", "),
+    (r"-\s+(\d)", r"-\1"),
+    (r"([A-Za-z0-9_)\]])\s+\(", r"\1("),
+)
+
+
+def _normalise(text: str) -> str:
+    """Collapse whitespace in the token stream, but never inside a string.
+
+    The rendered token text is a mix of identifiers and JSON string literals.
+    Applying the spacing rules to the whole line would rewrite prose inside a
+    ``desc = "..."`` field (``instruction (mips.ccmov)`` became
+    ``instruction(mips.ccmov)``), so the rules run per string-free segment.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        chunk = "".join(buf)
+        buf.clear()
+        for pattern, replacement in _NORMALISE:
+            chunk = re.sub(pattern, replacement, chunk)
+        parts.append(chunk)
+
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == '"':
+            flush()
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            parts.append(text[i:j])
+            i = j
+            continue
+        buf.append(text[i])
+        i += 1
+    flush()
+    return "".join(parts)
 
 
 def _render_tokens(tokens: list[parser.Token]) -> str:
@@ -67,17 +124,7 @@ def _render_tokens(tokens: list[parser.Token]) -> str:
             parts.append("[{" + str(token.value) + "}]")
         else:
             parts.append(str(token.value))
-    text = " ".join(parts)
-    text = re.sub(r"\s*\.\s*", ".", text)
-    text = re.sub(r"\[\s+", "[", text)
-    text = re.sub(r"\s+\]", "]", text)
-    text = re.sub(r"\(\s+", "(", text)
-    text = re.sub(r"\s+\)", ")", text)
-    text = re.sub(r"\s+,", ",", text)
-    text = re.sub(r",\s*", ", ", text)
-    text = re.sub(r"-\s+(\d)", r"-\1", text)
-    text = re.sub(r"([A-Za-z0-9_)\]])\s+\(", r"\1(", text)
-    return text.strip()
+    return _normalise(" ".join(parts)).strip()
 
 
 class _Cursor:
