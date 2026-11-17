@@ -14,9 +14,26 @@ from typing import Any
 
 
 class SSDLParseError(Exception):
-    def __init__(self, msg: str, line: int | None = None, col: int | None = None):
+    def __init__(
+        self,
+        msg: str,
+        line: int | None = None,
+        col: int | None = None,
+        *,
+        original_line: int | None = None,
+    ):
+        self.msg = msg
+        self.line = line
+        self.col = col
+        self.original_line = original_line if original_line is not None else line
         where = f"line {line}" + (f":{col}" if col is not None else "")
         super().__init__(f"{where}: {msg}" if line is not None else msg)
+
+    def remap(self, line: int) -> "SSDLParseError":
+        """Return the same error reported against the surface line."""
+        return SSDLParseError(
+            self.msg, line, self.col, original_line=self.original_line
+        )
 
 
 @dataclass
@@ -1079,14 +1096,21 @@ class Parser:
         return ("stages", out)
 
 
-def parse(text: str, syntax: str = "v1") -> Program:
+def parse(
+    text: str, syntax: str = "v1", source_map=None
+) -> Program:
     if syntax == "v2":
         if __package__ in (None, ""):
             import syntax_v2  # type: ignore
         else:
             from . import syntax_v2
-        text = syntax_v2.to_v1(text)
-    return Parser(text).parse()
+        text, source_map = syntax_v2.to_v1_mapped(text)
+    try:
+        return Parser(text).parse()
+    except SSDLParseError as exc:
+        if source_map is not None and exc.line is not None:
+            raise exc.remap(source_map.map_line(exc.line)) from None
+        raise
 
 
 FAMILY_SOURCE = re.compile(
@@ -1096,8 +1120,8 @@ FAMILY_SOURCE = re.compile(
 )
 
 
-def expand_source(text: str, syntax: str = "v1") -> str:
-    """Expand a source to v1.0 text (a no-op for plain v1.0 sources).
+def expand_source_mapped(text: str, syntax: str = "v1"):
+    """Expand a source to v1.0 text and return a line map.
 
     ``syntax="v2"`` first transpiles the v2 surface to v1 family source; the
     rest of the path is unchanged.  The marker is either a parameterized
@@ -1106,26 +1130,86 @@ def expand_source(text: str, syntax: str = "v1") -> str:
     only those sources can need expansion.  Without a marker the text is
     returned untouched.  ``family_expand`` is the single implementation of
     the norm rules, and its output is ordinary v1.0 SSDL.
+
+    The returned map is best-effort through family expansion: an expanded
+    line points at the template's ``machine`` line, not at the individual
+    statement inside it.
     """
+    source_map = None
     if syntax == "v2":
         if __package__ in (None, ""):
             import syntax_v2  # type: ignore
         else:
             from . import syntax_v2
-        text = syntax_v2.to_v1(text)
+        text, source_map = syntax_v2.to_v1_mapped(text)
     if not FAMILY_SOURCE.search(text):
-        return text
+        return text, source_map
     if __package__ in (None, ""):
         from family_expand import expand  # type: ignore
     else:
         from .family_expand import expand
-    return expand(text)
+    expanded = expand(text)
+    return expanded, _expanded_line_map(text, expanded, source_map)
+
+
+def _expanded_line_map(base_text: str, expanded_text: str, base_map):
+    """Map expanded v1 lines back to the template's declaration lines."""
+    decl_lines: dict[str, int] = {}
+    for number, line in enumerate(base_text.splitlines(), 1):
+        match = re.match(r"^machine\s+([A-Za-z_][\w-]*)\s*[\{:(]", line)
+        if match:
+            decl_lines[match.group(1)] = number
+    # An instance body is rendered from the family template, so point its
+    # expanded lines at the template declaration, not at the instance.
+    template_lines: dict[str, int] = {}
+    for number, line in enumerate(base_text.splitlines(), 1):
+        match = re.match(
+            r"^machine\s+([A-Za-z_][\w-]*)\s*:\s*([A-Za-z_][\w-]*)\s*\(",
+            line,
+        )
+        if match:
+            template_lines[match.group(1)] = decl_lines.get(match.group(2), number)
+    mapping: list[int] = []
+    current: str | None = None
+    for number, line in enumerate(expanded_text.splitlines(), 1):
+        match = re.match(r"^machine\s+([A-Za-z_][\w-]*)\s*\{", line)
+        if match:
+            current = match.group(1)
+            base = template_lines.get(
+                current, decl_lines.get(current, number)
+            )
+        elif current is not None:
+            base = template_lines.get(
+                current, decl_lines.get(current, number)
+            )
+            if line == "}":
+                current = None
+        else:
+            base = number
+        mapping.append(base_map.map_line(base) if base_map is not None else base)
+    if base_map is None:
+        return None
+    if __package__ in (None, ""):
+        import syntax_v2  # type: ignore
+    else:
+        from . import syntax_v2
+    return syntax_v2.LineMap(tuple(mapping))
+
+
+def expand_source(text: str, syntax: str = "v1") -> str:
+    """Expand a source to v1.0 text (a no-op for plain v1.0 sources)."""
+    return expand_source_mapped(text, syntax=syntax)[0]
+
+
+def load_source_mapped(path: str, syntax: str = "v1"):
+    with open(path, encoding="utf-8") as f:
+        return expand_source_mapped(f.read(), syntax=syntax)
 
 
 def load_source(path: str, syntax: str = "v1") -> str:
-    with open(path, encoding="utf-8") as f:
-        return expand_source(f.read(), syntax=syntax)
+    return load_source_mapped(path, syntax=syntax)[0]
 
 
 def parse_file(path: str, syntax: str = "v1") -> Program:
-    return parse(load_source(path, syntax=syntax), syntax="v1")
+    text, source_map = load_source_mapped(path, syntax=syntax)
+    return parse(text, syntax="v1", source_map=source_map)

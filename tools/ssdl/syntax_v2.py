@@ -145,6 +145,7 @@ class _Cursor:
     def __init__(self, tokens: list[parser.Token]):
         self.tokens = tokens
         self.index = 0
+        self.decl_line = 1
 
     def peek(self) -> parser.Token:
         return self.tokens[self.index]
@@ -980,15 +981,42 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
 
 
 
-def to_v1(text: str) -> str:
-    """Transpile v2 surface text to v1 family source."""
+class LineMap:
+    """Map a generated v1 line back to the v2 source line that produced it."""
+
+    def __init__(self, v1_to_v2: tuple[int, ...]):
+        self.v1_to_v2 = v1_to_v2
+
+    def map_line(self, line: int) -> int:
+        if not self.v1_to_v2:
+            return line
+        if 1 <= line <= len(self.v1_to_v2):
+            return self.v1_to_v2[line - 1]
+        return self.v1_to_v2[-1]
+
+
+class _Out(list):
+    """A line list that remembers the v2 declaration line of each line."""
+
+    def __init__(self, cursor: _Cursor):
+        super().__init__()
+        self.cursor = cursor
+        self.lines: list[int] = []
+
+    def append(self, text: str) -> None:
+        super().append(text)
+        self.lines.append(self.cursor.decl_line)
+
+
+def _transpile(text: str) -> _Out:
     tokens = parser.tokenize(text, floor_div=True)
     cursor = _Cursor(tokens)
-    out: list[str] = []
+    out = _Out(cursor)
     while cursor.peek().kind != "EOF":
         if cursor.accept(";"):
             continue
         token = cursor.peek()
+        cursor.decl_line = token.line
         if token.value in ("set",):
             _set(cursor, out)
         elif token.value == "extern":
@@ -1046,7 +1074,18 @@ def to_v1(text: str) -> str:
             raise V2Error(
                 f"line {token.line}:{token.col}: unexpected top-level token {token.value!r}"
             )
-    return "\n".join(out) + "\n"
+    return out
+
+
+def to_v1(text: str) -> str:
+    """Transpile v2 surface text to v1 family source."""
+    return "\n".join(_transpile(text)) + "\n"
+
+
+def to_v1_mapped(text: str) -> tuple[str, LineMap]:
+    """Like :func:`to_v1`, but also return the v1-to-v2 line map."""
+    out = _transpile(text)
+    return "\n".join(out) + "\n", LineMap(tuple(out.lines))
 
 
 def _param_list(cursor: _Cursor) -> str:

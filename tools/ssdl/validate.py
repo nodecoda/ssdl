@@ -28,7 +28,7 @@ if __package__ in (None, ""):
     from family_expand import check_coverage  # type: ignore
     import field_types as field_types_mod  # type: ignore
     import predicate_types as predicate_types_mod  # type: ignore
-    from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, expand_source, parse  # type: ignore
+    from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, expand_source_mapped, parse  # type: ignore
     import syntax_v2  # type: ignore
 else:
     from .diagnose import ERROR, NOTE, diagnose, render_findings
@@ -40,7 +40,7 @@ else:
         FAMILY_SOURCE,
         ItinerariesDecl,
         MachineDecl,
-        expand_source,
+        expand_source_mapped,
         parse,
         PredicateDecl,
         Program,
@@ -445,8 +445,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         raw = Path(args.input).read_text(encoding="utf-8")
         marker = syntax_v2.to_v1(raw) if args.syntax == "v2" else raw
-        flat = expand_source(raw, syntax=args.syntax)
-        program = parse(flat)
+        flat, source_map = expand_source_mapped(raw, syntax=args.syntax)
+        program = parse(flat, source_map=source_map)
     except Exception as exc:
         print(f"{args.input}: {exc}", file=sys.stderr)
         return 2

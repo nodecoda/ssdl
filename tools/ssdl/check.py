@@ -3797,6 +3797,62 @@ def predicate_signatures_are_checked_before_lowering():
 
 
 @test
+def v2_source_map_reports_surface_lines():
+    """A v1 parse error after transpiling points at the v2 declaration."""
+    source = """feature A {
+    bool x = true;
+}
+feature B {
+    bool y = true;
+}
+machine both m {
+    write W;
+    variant W {
+        default: [1];
+    }
+}
+"""
+    try:
+        parser.parse(source, syntax="v2")
+    except parser.SSDLParseError as exc:
+        assert_true(exc.line == 7, f"expected v2 line 7, got {exc.line}")
+        assert_true(
+            exc.original_line == 3,
+            f"the v1 line must stay available, got {exc.original_line}",
+        )
+    else:
+        raise Failure("expected a v1 parse error after transpiling")
+
+    flat, line_map = syntax_v2.to_v1_mapped(
+        "machine family m {\n write W;\n}\n\nfeature F {\n"
+        " bool x = true;\n}\n\nmachine both n { write V; }\n"
+    )
+    assert_true(len(flat.splitlines()) == 3, f"unexpected v1 text: {flat!r}")
+    assert_true(
+        [line_map.map_line(i) for i in (1, 2, 3)] == [1, 5, 9],
+        f"line map: {line_map.v1_to_v2}",
+    )
+
+
+@test
+def family_expansion_maps_to_the_template_line():
+    """Expanded instance lines point at the family template, not the instance."""
+    source = """machine family m(n: INT) {
+  write W;
+  bind W { resources = []; latency = n; }
+}
+machine instance i : m(2) {
+}
+"""
+    flat, line_map = parser.expand_source_mapped(source, syntax="v2")
+    assert_true("machine i {" in flat, flat)
+    assert_true(
+        {line_map.map_line(i) for i in range(1, len(flat.splitlines()) + 1)} == {1},
+        f"expanded lines must map to the template: {line_map.v1_to_v2}",
+    )
+
+
+@test
 def v2_map_and_retire_unit_are_checked():
     """Map values are sched_rw names; a machine has at most one retire unit."""
     assert_in(
