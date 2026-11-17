@@ -179,16 +179,19 @@ class _FlattenAttributes(ast.NodeTransformer):
 NODE_BUDGET = 64
 
 
-def _translate_ternary(expr: str) -> str:
-    """Rewrite ``cond ? then : else`` as ``(then if cond else else)``.
-
-    The family dialect keeps C's spelling but no other construct uses ``?`` or
-    a bare ``:`` inside an expression, so a depth-aware scan is enough.  The
-    transform is recursive: branches may contain further conditionals.
-    """
+def _split_ternary(expr: str) -> tuple[str, str, str] | None:
+    """Split a top-level ``cond ? then : else``; strings are opaque."""
     depth = 0
     question = -1
-    for index, char in enumerate(expr):
+    index = 0
+    while index < len(expr):
+        char = expr[index]
+        if char == '"':
+            index += 1
+            while index < len(expr) and expr[index] != '"':
+                index += 2 if expr[index] == "\\" else 1
+            index += 1
+            continue
         if char in "([":
             depth += 1
         elif char in ")]":
@@ -196,14 +199,22 @@ def _translate_ternary(expr: str) -> str:
         elif depth == 0 and char == "?":
             question = index
             break
+        index += 1
     if question < 0:
-        return expr
+        return None
 
     depth = 0
     nested = 0
     colon = -1
-    for index in range(question + 1, len(expr)):
+    index = question + 1
+    while index < len(expr):
         char = expr[index]
+        if char == '"':
+            index += 1
+            while index < len(expr) and expr[index] != '"':
+                index += 2 if expr[index] == "\\" else 1
+            index += 1
+            continue
         if char in "([":
             depth += 1
         elif char in ")]":
@@ -216,13 +227,27 @@ def _translate_ternary(expr: str) -> str:
                     colon = index
                     break
                 nested -= 1
+        index += 1
     if colon < 0:
         raise ExpandError(f"conditional expression is missing ':': {expr!r}")
+    return expr[:question].strip(), expr[question + 1 : colon].strip(), expr[colon + 1 :].strip()
 
-    condition = _translate_ternary(expr[:question])
-    then = _translate_ternary(expr[question + 1 : colon])
-    other = _translate_ternary(expr[colon + 1 :])
-    return f"({then} if {condition} else {other})"
+
+def _translate_ternary(expr: str) -> str:
+    """Rewrite ``cond ? then : else`` as ``(then if cond else else)``.
+
+    The family dialect keeps C's spelling but no other construct uses ``?`` or
+    a bare ``:`` inside an expression, so a depth-aware scan is enough.  The
+    transform is recursive: branches may contain further conditionals.
+    """
+    parts = _split_ternary(expr)
+    if parts is None:
+        return expr
+    condition, then, other = parts
+    return (
+        f"({_translate_ternary(then)} if {_translate_ternary(condition)} "
+        f"else {_translate_ternary(other)})"
+    )
 
 
 def _eval_expr(expr: str, env: dict[str, object]) -> int:
@@ -860,6 +885,149 @@ def _subject_axis(
     return candidates[0]
 
 
+
+RUNTIME_HEADS = frozenset(
+    {
+        "opcode",
+        "pseudo",
+        "is_reg",
+        "is_vreg",
+        "is_not_vreg",
+        "is_imm",
+        "is_valid_reg",
+        "is_invalid_reg",
+        "is_zero",
+        "reg_is",
+        "imm_is",
+        "imm_is_enum",
+        "imm_lt",
+        "imm_gt",
+        "imm_le",
+        "imm_ge",
+        "imm_range",
+        "reg_simple",
+        "imm_simple",
+        "num_ops",
+        "same_reg",
+        "func",
+        "func_tii",
+        "non_portable",
+        "feature",
+        "all_of",
+        "any_of",
+        "not",
+    }
+)
+
+
+def _runtime_head(condition: str) -> str | None:
+    """The predicate head if this condition depends on the instruction."""
+    match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", condition)
+    if match is not None and match.group(1) in RUNTIME_HEADS:
+        return match.group(1)
+    return None
+
+
+def _runtime_anywhere(text: str) -> bool:
+    """True if any field or list item carries an instruction-dependent ``?:``."""
+    for part in _split_fields(text):
+        field = part.strip().rstrip(";").strip()
+        if "?" not in field:
+            continue
+        candidates = [field]
+        open_at = field.find("[")
+        close_at = field.rfind("]")
+        if 0 <= open_at < close_at:
+            candidates.extend(_split_top_level(field[open_at + 1 : close_at]))
+        for candidate in candidates:
+            rhs = candidate.split("=", 1)[1] if "=" in candidate else candidate
+            parts = _split_ternary(rhs)
+            if parts is not None and _runtime_head(parts[0]) is not None:
+                return True
+    return False
+
+
+def _runtime_scalar(text: str) -> tuple[int, str, str, str, str] | None:
+    """(field index, field name, condition, then, else) for one bind."""
+    parts = _split_fields(text)
+    found = []
+    for index, part in enumerate(parts):
+        field = part.strip()
+        if field.endswith(";"):
+            field = field[:-1].strip()
+        match = re.match(r"^(latency|uops|cycles)\s*=\s*(.+)$", field)
+        if match is None or "?" not in match.group(2):
+            continue
+        split = _split_ternary(match.group(2))
+        if split is None:
+            continue
+        condition, then, other = split
+        if _runtime_head(condition) is None:
+            continue
+        found.append((index, match.group(1), condition, then, other))
+    if len(found) > 1:
+        raise ExpandError(
+            "a bind may carry one runtime conditional field; split the statement"
+        )
+    return found[0] if found else None
+
+
+def _lower_runtime_bind(
+    line: int,
+    text: str,
+    env: dict[str, object],
+    origins: list[tuple[str, str, int]],
+) -> list[str] | None:
+    """Lower ``bind W ..., latency = pred ? a : b`` to aux writes + a variant.
+
+    The subject ``W`` becomes a ``SchedWriteVariant``; each branch is a concrete
+    aux write with its own ``WriteRes``.  Only scalar fields are lowered: a
+    conditional inside a list would need per-element variants, which the
+    record model cannot express.
+    """
+    found = _runtime_scalar(text)
+    if found is None:
+        if _runtime_anywhere(text):
+            raise ExpandError(
+                f"line {line}: a runtime condition is only supported on "
+                "latency/uops/cycles; bind the whole field instead"
+            )
+        return None
+
+    index, field_name, condition, then, other = found
+    parts = _split_fields(text)
+    base = text.split()[1]
+
+    def rebuild(value: str) -> str:
+        pieces = []
+        for position, part in enumerate(parts):
+            piece = part.strip()
+            if position == index:
+                semi = ";" if piece.endswith(";") else ""
+                piece = f"{field_name} = {value}{semi}"
+            pieces.append(piece)
+        return ", ".join(pieces)
+
+    aux = [f"{base}__case0", f"{base}__case1"]
+    out = [f"write {aux[0]};", f"write {aux[1]};"]
+    for name, value in zip(aux, (then, other)):
+        branch = re.sub(
+            rf"^(bind\s+){re.escape(base)}\b", rf"\g<1>{name}", rebuild(value), count=1
+        )
+        out.append(_subst_fields(branch, env))
+        origins.append(("write", name, line))
+        origins.append(("bind", name, line))
+    out.extend(
+        [
+            f"variant {base} {{",
+            f"    case {condition}: [{aux[0]}];",
+            f"    default: [{aux[1]}];",
+            "}",
+        ]
+    )
+    return out
+
+
 def _expand_body(
     body: list[Stmt],
     env: dict[str, object],
@@ -891,6 +1059,12 @@ def _expand_body(
         pos += 1
         parsed = _parse_item(stmt.text)
         if parsed is None:
+            if _runtime_anywhere(stmt.text):
+                raise ExpandError(
+                    f"line {stmt.line}: a runtime condition cannot appear in a "
+                    "structural position; use a family parameter (elaborated per "
+                    "instance) or a profile projection"
+                )
             out.append(_subst_fields(stmt.text, env))
             continue
         keyword, base, index, rest = parsed
@@ -915,7 +1089,16 @@ def _expand_body(
                 origins.append((keyword, name, stmt.line))
                 tail = rest if rest.startswith(";") else " " + rest
                 text = f"{keyword} {name}{tail}".rstrip()
-                out.append(_subst_fields(text, _axis_env(uses, use_index, dimensions, env)))
+                subst_env = _axis_env(uses, use_index, dimensions, env)
+                lowered = (
+                    _lower_runtime_bind(stmt.line, text, subst_env, origins)
+                    if keyword == "bind"
+                    else None
+                )
+                if lowered is not None:
+                    out.extend(lowered)
+                else:
+                    out.append(_subst_fields(text, subst_env))
         except ExpandError as exc:
             raise ExpandError(f"line {stmt.line}: {exc}") from exc
     return out

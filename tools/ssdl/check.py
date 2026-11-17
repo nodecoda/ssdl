@@ -2269,6 +2269,82 @@ machine m {
 
 
 @test
+def runtime_condition_lowers_to_variant_and_aux_writes():
+    """AC7: an instruction predicate in a field becomes aux writes + ``variant``."""
+    source = """
+set D = [A] : kind = dimension;
+machine m {
+    resource P : units = 1;
+    write W[D];
+    bind W[D] -> [P], latency = opcode([ADD]) ? 4 : 7, uops = 1;
+}
+"""
+    flat = parser.expand_source(source)
+    assert_in("write W_A__case0;", flat)
+    assert_in("write W_A__case1;", flat)
+    assert_in("bind W_A__case0 -> [P], latency = 4, uops = 1;", flat)
+    assert_in("bind W_A__case1 -> [P], latency = 7, uops = 1;", flat)
+    assert_in(
+        "variant W_A {\n        case opcode([ADD]): [W_A__case0];\n"
+        "        default: [W_A__case1];\n    }",
+        flat,
+    )
+    text, _ = emit_source(flat, strict=True)
+    assert_in("SchedWriteVariant<[", text)
+    assert_in("CheckOpcode<[ADD]>", text)
+    assert_in("[W_A__case0]", text)
+    assert_in("[W_A__case1]", text)
+    try:
+        tblgen = compare_mod.default_tblgen()
+    except compare_mod.CompareError:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "runtime_variant.td"
+        path.write_text(text, encoding="utf-8")
+        compare_mod.run_tblgen(tblgen, str(path), compare_mod.default_include_dirs())
+
+
+@test
+def runtime_condition_in_structural_position_is_rejected():
+    """AC8: names, resources and machine properties cannot depend on the instruction."""
+    cases = [
+        (
+            """
+set D = [A] : kind = dimension;
+machine m { issue_width = opcode([ADD]) ? 1 : 2; }
+""",
+            "structural position",
+        ),
+        (
+            """
+set D = [A] : kind = dimension;
+machine m { resource P : units = opcode([ADD]) ? 1 : 2; }
+""",
+            "structural position",
+        ),
+        (
+            """
+set D = [A] : kind = dimension;
+machine m {
+    resource P : units = 1;
+    write W[D];
+    bind W[D] -> [P], release = [1, opcode([ADD]) ? 2 : 3];
+}
+""",
+            "only supported on latency/uops/cycles",
+        ),
+    ]
+    for source, needle in cases:
+        try:
+            parser.expand_source(source)
+        except family_mod.ExpandError as exc:
+            assert_in(needle, str(exc))
+            assert_in("profile", str(exc)) if needle == "structural position" else None
+        else:
+            raise Failure(f"expected a runtime-condition error for:\n{source}")
+
+
+@test
 def family_expansions_match_the_golden_manifest():
     """The v1.2 expansion of every family source is pinned byte-for-byte (AC2).
 
