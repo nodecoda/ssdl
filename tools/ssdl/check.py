@@ -2234,6 +2234,41 @@ machine big : fam(2) { }
 
 
 @test
+def family_conditional_expression_folds_per_instance():
+    """AC6: ``?:`` is ordinary elab-time arithmetic when the condition is a parameter."""
+    source = """
+set D = [A] : kind = dimension;
+machine fam(has_fast: BOOL, vlen: INT) {
+    write W;
+    bind W -> [P], latency = has_fast ? 4 : 7 + cdiv(vlen, 128),
+                    release = [1, has_fast ? 2 : 3];
+}
+machine fast : fam(true, 512) { resource P : units = 1; }
+machine slow : fam(false, 512) { resource P : units = 1; }
+"""
+    flat = parser.expand_source(source)
+    assert_in("latency = 4, release = [1, 2];", flat)
+    assert_in("latency = 11, release = [1, 3];", flat)
+
+
+@test
+def malformed_conditional_names_the_expression():
+    source = """
+set D = [A] : kind = dimension;
+machine m {
+    write W;
+    bind W -> [P], latency = 1 ? 2;
+}
+"""
+    try:
+        parser.expand_source(source)
+    except family_mod.ExpandError as exc:
+        assert_in("missing ':'", str(exc))
+        return
+    raise Failure("expected a malformed conditional to fail")
+
+
+@test
 def family_expansions_match_the_golden_manifest():
     """The v1.2 expansion of every family source is pinned byte-for-byte (AC2).
 

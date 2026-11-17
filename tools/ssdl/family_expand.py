@@ -179,6 +179,52 @@ class _FlattenAttributes(ast.NodeTransformer):
 NODE_BUDGET = 64
 
 
+def _translate_ternary(expr: str) -> str:
+    """Rewrite ``cond ? then : else`` as ``(then if cond else else)``.
+
+    The family dialect keeps C's spelling but no other construct uses ``?`` or
+    a bare ``:`` inside an expression, so a depth-aware scan is enough.  The
+    transform is recursive: branches may contain further conditionals.
+    """
+    depth = 0
+    question = -1
+    for index, char in enumerate(expr):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif depth == 0 and char == "?":
+            question = index
+            break
+    if question < 0:
+        return expr
+
+    depth = 0
+    nested = 0
+    colon = -1
+    for index in range(question + 1, len(expr)):
+        char = expr[index]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif depth == 0:
+            if char == "?":
+                nested += 1
+            elif char == ":":
+                if nested == 0:
+                    colon = index
+                    break
+                nested -= 1
+    if colon < 0:
+        raise ExpandError(f"conditional expression is missing ':': {expr!r}")
+
+    condition = _translate_ternary(expr[:question])
+    then = _translate_ternary(expr[question + 1 : colon])
+    other = _translate_ternary(expr[colon + 1 :])
+    return f"({then} if {condition} else {other})"
+
+
 def _eval_expr(expr: str, env: dict[str, object]) -> int:
     """Evaluate a bounded integer expression.
 
@@ -187,10 +233,12 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
     accidental fraction is an error, never a silent floor.  ``//`` is the
     floor division that TableGen spells ``!div``.
     """
+    original = expr
+    expr = _translate_ternary(expr)
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
-        raise ExpandError(f"bad expression {expr!r}: {exc}") from exc
+        raise ExpandError(f"bad expression {original!r}: {exc}") from exc
     allowed = (
         ast.Expression,
         ast.BinOp,
@@ -207,12 +255,25 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
         ast.Mod,
         ast.USub,
         ast.UAdd,
+        ast.IfExp,
+        ast.Compare,
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+        ast.Not,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
         ast.Load,
     )
     tree = _FlattenAttributes().visit(tree)
     if sum(1 for _ in ast.walk(tree)) > NODE_BUDGET:
         raise ExpandError(f"expression too large in {expr!r}")
     call_functions = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    scope = {"true": True, "false": False, **env}
     for node in ast.walk(tree):
         if not isinstance(node, allowed):
             raise ExpandError(f"unsupported syntax in {expr!r}: {type(node).__name__}")
@@ -223,16 +284,20 @@ def _eval_expr(expr: str, env: dict[str, object]) -> int:
                 raise ExpandError(f"unknown function in {expr!r}")
             if node.keywords:
                 raise ExpandError(f"keyword arguments are not allowed in {expr!r}")
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in env:
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id not in scope
+        ):
             raise ExpandError(
-                f"unknown parameter {node.id!r} in {expr!r} "
+                f"unknown parameter {node.id!r} in {original!r} "
                 f"(axis names need `units` to appear in numeric fields)"
             )
     try:
         value = eval(  # noqa: S307
             compile(tree, "<expr>", "eval"),
             {"__builtins__": {}, **CALLS},
-            env,
+            scope,
         )
     except ExpandError:
         raise
