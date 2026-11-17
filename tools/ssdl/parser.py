@@ -814,6 +814,12 @@ class Parser:
 
     def parse_machine_item(self):
         tok = self.peek()
+        item = self._parse_machine_item()
+        item.setdefault("line", tok.line)
+        return item
+
+    def _parse_machine_item(self):
+        tok = self.peek()
         key = tok.value
         if key == "itineraries":
             return {"kind": "itineraries", "decl": self.parse_itineraries()}
@@ -1039,10 +1045,13 @@ class Parser:
         self.expect("{")
         items = []
         while not self.at("}"):
+            item_tok = self.peek()
             key = self.expect_ident()
             if key in ("func_units", "bypasses"):
                 self.expect("=")
-                items.append({"kind": key, "value": self.parse_ident_list()})
+                items.append(
+                    {"kind": key, "value": self.parse_ident_list(), "line": item_tok.line}
+                )
                 self.expect(";")
             elif key == "itin":
                 name = self.expect_ident()
@@ -1063,7 +1072,9 @@ class Parser:
                         fields[f] = self.parse_bool_or_ident()
                     self.expect(";")
                 self.expect("}")
-                items.append({"kind": "itin", "name": name, "fields": fields})
+                items.append(
+                    {"kind": "itin", "name": name, "fields": fields, "line": item_tok.line}
+                )
             else:
                 t = self.peek()
                 raise SSDLParseError(f"unexpected itineraries item {key!r}", t.line, t.col)
@@ -1096,6 +1107,53 @@ class Parser:
         return ("stages", out)
 
 
+def _remap_program_lines(program: Program, source_map) -> None:
+    """Rewrite every recorded v1 line to the surface line it came from.
+
+    Only parse errors used to consult the map; declarations and machine items
+    kept v1 numbers, so semantic diagnostics could not name a v2 line.  The
+    map is applied once, after a successful parse, to the AST itself.
+    """
+    if source_map is None:
+        return
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            line = value.get("line")
+            if isinstance(line, int) and line > 0:
+                value["line"] = source_map.map_line(line)
+            for key, inner in value.items():
+                if key != "line":
+                    walk(inner)
+            return
+        if isinstance(value, (list, tuple)):
+            for inner in value:
+                walk(inner)
+            return
+        if hasattr(value, "__dataclass_fields__"):
+            line = getattr(value, "line", None)
+            if isinstance(line, int) and line > 0:
+                value.line = source_map.map_line(line)
+            for name, inner in vars(value).items():
+                if name != "line":
+                    walk(inner)
+
+    for decl in program.decls:
+        original = getattr(decl, "line", None)
+        line = original
+        if isinstance(line, int) and line > 0:
+            decl.line = source_map.map_line(line)
+        for name, value in vars(decl).items():
+            if name != "line":
+                walk(value)
+        if isinstance(decl, MachineDecl) and isinstance(original, int):
+            item_lines = source_map.item_lines.get(original)
+            if item_lines and len(item_lines) == len(decl.items):
+                for item, item_line in zip(decl.items, item_lines):
+                    if item_line:
+                        item["line"] = item_line
+
+
 def parse(
     text: str, syntax: str = "v1", source_map=None
 ) -> Program:
@@ -1106,11 +1164,13 @@ def parse(
             from . import syntax_v2
         text, source_map = syntax_v2.to_v1_mapped(text)
     try:
-        return Parser(text).parse()
+        program = Parser(text).parse()
     except SSDLParseError as exc:
         if source_map is not None and exc.line is not None:
             raise exc.remap(source_map.map_line(exc.line)) from None
         raise
+    _remap_program_lines(program, source_map)
+    return program
 
 
 FAMILY_SOURCE = re.compile(

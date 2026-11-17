@@ -134,6 +134,7 @@ class SortChecker:
         self.errors: list[str] = []
         self.sorts: dict[str, str] = {}
         self.stack: list[str] = []
+        self.current_line: int | None = None
 
         for decl in program.decls:
             if not isinstance(decl, PredicateDecl):
@@ -150,8 +151,12 @@ class SortChecker:
             self.predicates[decl.name] = decl
 
     # -- diagnostics -----------------------------------------------------
-    def error(self, where: str, message: str) -> None:
-        self.errors.append(f"{where}: {message}")
+    def error(
+        self, where: str, message: str, line: int | None = None
+    ) -> None:
+        line = line or self.current_line
+        prefix = f"line {line}: " if line else ""
+        self.errors.append(f"{prefix}{where}: {message}")
 
     # -- sort inference --------------------------------------------------
     def declaration_sort(self, name: str) -> str:
@@ -263,6 +268,7 @@ class SortChecker:
             self.declaration_sort(name)
 
         for decl in self.program.decls:
+            self.current_line = getattr(decl, "line", None)
             if isinstance(decl, TIIPredicate):
                 self.check_statement(decl.statement, f"tii_predicate {decl.name}")
             elif isinstance(decl, STIDecl):
@@ -270,6 +276,7 @@ class SortChecker:
                     self.require_mc(decl.fields["default"], f"sti_decl {decl.name}.default")
             elif isinstance(decl, STIFunction):
                 for item in decl.items:
+                    self.current_line = item.get("line") or decl.line
                     if item["kind"] in ("equiv_class", "dep_breaking_class"):
                         self.require_mc(
                             item["pred"],
@@ -287,6 +294,7 @@ class SortChecker:
                             )
                         itin_classes.add(item["name"])
                 for item in decl.items:
+                    self.current_line = item.get("line") or decl.line
                     if item["kind"] in ("variant", "read_variant"):
                         for index, case in enumerate(item["cases"]):
                             self.check_variant_case(
@@ -331,6 +339,7 @@ class SortChecker:
     def check_item_fields(self, items: list[dict], where: str) -> None:
         """Apply the shared field table to v1 machine items."""
         for item in items:
+            self.current_line = item.get("line")
             kind, values = _typed_item_values(item)
             if kind is None:
                 continue
@@ -358,6 +367,7 @@ class SortChecker:
     def check_itin_fields(self, itin: ItinerariesDecl, where: str) -> None:
         """Check itinerary fields and stage bodies against the same table."""
         for item in itin.items:
+            self.current_line = item.get("line")
             kind = item["kind"]
             if kind in ("func_units", "bypasses"):
                 problem = _python_error(
@@ -399,6 +409,7 @@ class SortChecker:
         for item in itin.items:
             if item["kind"] != "itin":
                 continue
+            self.current_line = item.get("line")
             name = item["name"]
             if name in seen:
                 self.error(where, f"duplicate itin {name!r}")

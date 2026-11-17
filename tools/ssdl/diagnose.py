@@ -18,7 +18,7 @@ the sort errors.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 if __package__ in (None, ""):
     from effects import FIELD_EFFECTS  # type: ignore
@@ -60,10 +60,12 @@ class Finding:
     message: str
     effect: str | None = None
     evidence: tuple[str, ...] = ()
+    line: int | None = None
 
     def render(self) -> str:
+        prefix = f"line {self.line}: " if self.line else ""
         suffix = f" [{self.effect}]" if self.effect else ""
-        return f"{self.where}: {self.level}: {self.message}{suffix}"
+        return f"{prefix}{self.where}: {self.level}: {self.message}{suffix}"
 
 
 def render_findings(findings: list[Finding]) -> list[str]:
@@ -97,6 +99,7 @@ def _f(
     where: str,
     message: str,
     key: str | None = None,
+    line: int | None = None,
 ) -> Finding:
     effect = FIELD_EFFECTS.get(key) if key else None
     return Finding(
@@ -105,6 +108,7 @@ def _f(
         message=message,
         effect=key,
         evidence=effect.evidence if effect else (),
+        line=line,
     )
 
 
@@ -265,58 +269,67 @@ def _machine(
     has_itin = False
 
     for item in decl.items:
-        kind = item["kind"]
-        if kind == "prop":
-            name = item["name"]
-            rule = _MACHINE_PROPS.get(name)
-            if rule:
-                level, message, key = rule
-                out.append(_f(level, f"{where}.{name}", message, key))
-            continue
-        if kind in _SCHED_RECORD_KINDS:
-            has_sched = True
-        if kind == "itineraries":
-            has_itin = True
-            continue
-        if kind == "bind":
-            out.extend(_bind(item, where))
-            continue
-        if kind == "map":
-            if item.get("unsupported") is True:
-                out.append(
-                    _f(
-                        WARNING,
-                        f"{where}.map",
-                        "map ... : unsupported is a dead field (the emitter never "
-                        "reads InstRW.Unsupported); setting it has no effect. "
-                        "Mark the bound write unsupported instead, or drop the "
-                        "property",
-                        "InstRW.Unsupported",
-                    )
-                )
-            elif item.get("unsupported") is False:
-                out.append(
-                    _f(
-                        NOTE,
-                        f"{where}.map",
-                        "InstRW.Unsupported is a dead field; explicit false has no effect",
-                        "InstRW.Unsupported",
-                    )
-                )
-            continue
-        if kind in ("variant", "read_variant"):
-            for index, case in enumerate(item["cases"]):
-                atoms = _degraded(_atoms(case["pred"], predicates))
-                if atoms:
+        before = len(out)
+        try:
+            kind = item["kind"]
+            if kind == "prop":
+                name = item["name"]
+                rule = _MACHINE_PROPS.get(name)
+                if rule:
+                    level, message, key = rule
+                    out.append(_f(level, f"{where}.{name}", message, key))
+                continue
+            if kind in _SCHED_RECORD_KINDS:
+                has_sched = True
+            if kind == "itineraries":
+                has_itin = True
+                continue
+            if kind == "bind":
+                out.extend(_bind(item, where))
+                continue
+            if kind == "map":
+                if item.get("unsupported") is True:
                     out.append(
                         _f(
                             WARNING,
-                            f"{where}.{item['name']}.case[{index}]",
-                            f"case uses {', '.join(atoms)}; llvm-mca expands these "
-                            "to false and silently uses the default variant",
-                            "SchedVar.Predicate",
+                            f"{where}.map",
+                            "map ... : unsupported is a dead field (the emitter never "
+                            "reads InstRW.Unsupported); setting it has no effect. "
+                            "Mark the bound write unsupported instead, or drop the "
+                            "property",
+                            "InstRW.Unsupported",
                         )
                     )
+                elif item.get("unsupported") is False:
+                    out.append(
+                        _f(
+                            NOTE,
+                            f"{where}.map",
+                            "InstRW.Unsupported is a dead field; explicit false has no effect",
+                            "InstRW.Unsupported",
+                        )
+                    )
+                continue
+            if kind in ("variant", "read_variant"):
+                for index, case in enumerate(item["cases"]):
+                    atoms = _degraded(_atoms(case["pred"], predicates))
+                    if atoms:
+                        out.append(
+                            _f(
+                                WARNING,
+                                f"{where}.{item['name']}.case[{index}]",
+                                f"case uses {', '.join(atoms)}; llvm-mca expands these "
+                                "to false and silently uses the default variant",
+                                "SchedVar.Predicate",
+                            )
+                        )
+
+        finally:
+            line = item.get("line")
+            if line:
+                for index in range(before, len(out)):
+                    if out[index].line is None:
+                        out[index] = replace(out[index], line=line)
 
     if has_itin:
         if has_sched:
@@ -511,6 +524,7 @@ def diagnose(program: Program) -> list[Finding]:
     }
     sti_decls = {d.name: d for d in program.decls if isinstance(d, STIDecl)}
     for decl in program.decls:
+        before = len(out)
         if isinstance(decl, MachineDecl) and decl.alias is None:
             out.extend(_machine(decl, predicates))
         elif isinstance(decl, STIDecl):
@@ -531,6 +545,11 @@ def diagnose(program: Program) -> list[Finding]:
             )
         elif isinstance(decl, FeatureDecl):
             out.extend(_feature(decl))
+        line = getattr(decl, "line", None)
+        if line:
+            for index in range(before, len(out)):
+                if out[index].line is None:
+                    out[index] = replace(out[index], line=line)
     return out
 
 

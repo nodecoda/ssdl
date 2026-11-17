@@ -991,8 +991,13 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
 class LineMap:
     """Map a generated v1 line back to the v2 source line that produced it."""
 
-    def __init__(self, v1_to_v2: tuple[int, ...]):
+    def __init__(
+        self,
+        v1_to_v2: tuple[int, ...],
+        item_lines: dict[int, list[int | None]] | None = None,
+    ):
         self.v1_to_v2 = v1_to_v2
+        self.item_lines = item_lines or {}
 
     def map_line(self, line: int) -> int:
         if not self.v1_to_v2:
@@ -1009,6 +1014,10 @@ class _Out(list):
         super().__init__()
         self.cursor = cursor
         self.lines: list[int] = []
+        # v1 declaration line -> v2 line of each machine item, in order.  A
+        # machine collapses to one v1 line, so the line map alone cannot point
+        # at the item that produced a diagnostic.
+        self.item_lines: dict[int, list[int | None]] = {}
 
     def append(self, text: str) -> None:
         super().append(text)
@@ -1057,10 +1066,15 @@ def _transpile(text: str) -> _Out:
                 inherit = f" : {family}({_render_tokens(args)})"
             cursor.expect("{")
             body: list[str] = []
+            body_lines: list[int | None] = []
             if role in ("both", "model", "cpu"):
                 body.append(f"role = {role};")
+                body_lines.append(None)
             while not cursor.at("}"):
+                item_token = cursor.peek()
+                before = len(body)
                 _machine_item(cursor, body)
+                body_lines.extend([item_token.line] * (len(body) - before))
                 if cursor.at(":") or cursor.at(","):
                     token = cursor.peek()
                     raise V2Error(
@@ -1070,6 +1084,7 @@ def _transpile(text: str) -> _Out:
                     )
             cursor.expect("}")
             cursor.accept(";")
+            out.item_lines[len(out) + 1] = body_lines
             out.append(f"machine {name}{params}{inherit} {{ {' '.join(body)} }}")
         elif token.value == "itineraries":
             _itineraries(cursor, out)
@@ -1092,7 +1107,7 @@ def to_v1(text: str) -> str:
 def to_v1_mapped(text: str) -> tuple[str, LineMap]:
     """Like :func:`to_v1`, but also return the v1-to-v2 line map."""
     out = _transpile(text)
-    return "\n".join(out) + "\n", LineMap(tuple(out.lines))
+    return "\n".join(out) + "\n", LineMap(tuple(out.lines), out.item_lines)
 
 
 def _param_list(cursor: _Cursor) -> str:

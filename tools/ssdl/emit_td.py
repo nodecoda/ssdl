@@ -105,9 +105,11 @@ class Diagnostic:
     level: str  # "error" | "skip"
     where: str
     message: str
+    line: int | None = None
 
     def render(self) -> str:
-        return f"{self.where}: {self.level}: {self.message}"
+        prefix = f"line {self.line}: " if self.line else ""
+        return f"{prefix}{self.where}: {self.level}: {self.message}"
 
 
 @dataclass
@@ -217,15 +219,24 @@ class Emitter:
         # the printed TableGen.
         self.records = RecordSet()
         self.current_scope: str | None = None
+        # Line of the machine item being lowered; diagnostics use it so a
+        # model with forty binds does not require a manual search.
+        self.current_line: int | None = None
 
     # -- diagnostics -----------------------------------------------------
-    def error(self, where: str, message: str) -> None:
-        self.errors.append(Diagnostic("error", where, message))
+    def at(self, item) -> None:
+        """Record the source line of the item about to be lowered."""
+        self.current_line = item.get("line") if isinstance(item, dict) else None
+
+    def error(self, where: str, message: str, *, line: int | None = None) -> None:
+        self.errors.append(Diagnostic("error", where, message, line or self.current_line))
 
     def skip(self, where: str, message: str) -> None:
-        diag = Diagnostic("skip", where, message)
+        diag = Diagnostic("skip", where, message, self.current_line)
         if self.strict:
-            self.errors.append(Diagnostic("error", where, message))
+            self.errors.append(
+                Diagnostic("error", where, message, self.current_line)
+            )
         else:
             self.skips.append(diag)
 
@@ -279,7 +290,7 @@ class Emitter:
         self.findings = diagnose_program(self.program)
         for finding in self.findings:
             if finding.level == FINDING_ERROR:
-                self.error(finding.where, finding.message)
+                self.error(finding.where, finding.message, line=finding.line)
 
         self.collect_features()
         self.declare_machines()
@@ -409,6 +420,7 @@ class Emitter:
         for decl in self.program.decls:
             if not isinstance(decl, FeatureDecl):
                 continue
+            self.current_line = decl.line
             where = f"feature {decl.name}"
             if decl.name in self.features:
                 self.error(where, "duplicate feature name")
@@ -601,6 +613,7 @@ class Emitter:
         declared_units: set[str],
         declared_bypasses: set[str],
     ) -> tuple[list[str], str]:
+        self.current_line = decl.line
         out: list[str] = []
         func_units: list[str] = []
         bypasses: list[str] = []
@@ -625,6 +638,7 @@ class Emitter:
         iid: list[str] = []
         seen_itins: set[str] = set()
         for item in itins:
+            self.at(item)
             name = item["name"]
             if name in seen_itins:
                 self.error(where, f"duplicate itin {name!r}")
@@ -673,6 +687,7 @@ class Emitter:
             if not isinstance(decl, ItinerariesDecl):
                 continue
             where = "itineraries"
+            self.current_line = decl.line
             if decl.sched_model is None:
                 self.error(where, "top-level itineraries must set 'sched_model = IDENT'")
                 continue
@@ -711,6 +726,7 @@ class Emitter:
         for decl in self.program.decls:
             if not isinstance(decl, MachineDecl):
                 continue
+            self.current_line = decl.line
             if decl.name in self.machines:
                 self.error(f"machine {decl.name}", "duplicate machine name")
                 continue
@@ -729,6 +745,7 @@ class Emitter:
             if info.decl.alias is not None:
                 continue
             for item in info.decl.items:
+                self.at(item)
                 kind = item.get("kind")
                 if kind not in ("write", "read", "write_seq"):
                     continue
@@ -743,6 +760,7 @@ class Emitter:
                     continue
                 self.global_rw.setdefault(name, (kind, f"machine {info.decl.name}"))
             for item in info.decl.items:
+                self.at(item)
                 if item.get("kind") not in ("resource", "res_group"):
                     continue
                 name = item["name"]
@@ -815,6 +833,7 @@ class Emitter:
         return "both"
 
     def lower_machine(self, info: MachineInfo) -> tuple[str, list[str]]:
+        self.current_line = info.decl.line
         decl = info.decl
         where = f"machine {decl.name}"
         if decl.alias is not None:
@@ -909,6 +928,7 @@ class Emitter:
         }
         for kind, message in skip_messages.items():
             for item in items[kind]:
+                self.at(item)
                 name = item.get("name") or item.get("kind")
                 self.skip(f"{where}.{name}", message)
 
@@ -935,6 +955,7 @@ class Emitter:
 
         seen_res: set[str] = set()
         for item in items["resource"]:
+            self.at(item)
             name = item["name"]
             if name in seen_res:
                 self.error(where, f"duplicate resource {name!r}")
@@ -958,6 +979,7 @@ class Emitter:
             out.append(self.define(where, name, "ProcResource", [str(units)], body))
 
         for item in items["res_group"]:
+            self.at(item)
             name = item["name"]
             if name in seen_res:
                 self.error(where, f"duplicate resource {name!r}")
@@ -1012,6 +1034,7 @@ class Emitter:
                 )
         local_writes: set[str] = set()
         for item in items["write"]:
+            self.at(item)
             if item["name"] in local_writes:
                 self.error(where, f"duplicate write {item['name']!r}")
                 continue
@@ -1019,6 +1042,7 @@ class Emitter:
             global_out.append(self.define(where, item["name"], "SchedWrite", scope=None))
         local_reads: set[str] = set()
         for item in items["read"]:
+            self.at(item)
             if item["name"] in local_reads:
                 self.error(where, f"duplicate read {item['name']!r}")
                 continue
@@ -1029,6 +1053,7 @@ class Emitter:
         # allow a sequence to refer to another sequence declared later.
         write_seqs: dict[str, dict[str, Any]] = {}
         for item in items["write_seq"]:
+            self.at(item)
             name = item["name"]
             if name in local_writes or name in write_seqs:
                 self.error(where, f"duplicate write {name!r}")
@@ -1043,6 +1068,7 @@ class Emitter:
             write_seqs[name] = item
         writes.update(write_seqs)
         for name, item in write_seqs.items():
+            self.at(item)
             seq = []
             for member in item["writes"]:
                 if member not in writes:
@@ -1058,22 +1084,26 @@ class Emitter:
 
         declared_units: set[str] = set()
         for item in items["func_unit"]:
+            self.at(item)
             if item["name"] in declared_units:
                 self.error(where, f"duplicate func_unit {item['name']!r}")
             declared_units.add(item["name"])
             global_out.append(self.define(where, item["name"], "FuncUnit", scope=None))
         declared_bypasses: set[str] = set()
         for item in items["bypass"]:
+            self.at(item)
             if item["name"] in declared_bypasses:
                 self.error(where, f"duplicate bypass {item['name']!r}")
             declared_bypasses.add(item["name"])
             global_out.append(self.define(where, item["name"], "Bypass", scope=None))
         for item in items["itin_class"]:
+            self.at(item)
             global_out.append(
                 self.define(where, item["name"], "InstrItinClass", scope=None)
             )
 
         for item in items["alias"]:
+            self.at(item)
             src, dst = item["src"], item["dst"]
             resolved = self.resolve_rw([src, dst], writes, reads, f"{where}.alias")
             if len(resolved) != 2:
@@ -1085,6 +1115,7 @@ class Emitter:
 
         bound: set[str] = set()
         for item in items["bind"]:
+            self.at(item)
             bind_props = item["props"]
             write = item["write"]
             if write not in writes:
@@ -1158,6 +1189,7 @@ class Emitter:
 
         advanced: set[str] = set()
         for item in items["advance"]:
+            self.at(item)
             adv_props = item["props"]
             read = item["read"]
             if read not in reads:
@@ -1217,6 +1249,7 @@ class Emitter:
 
         map_names: set[str] = set()
         for index, item in enumerate(items["map"]):
+            self.at(item)
             _, inst_entries = item["insts"]
             insts = inst_entries
             rw = item["rw"]
@@ -1299,6 +1332,7 @@ class Emitter:
         variant_subjects = variant_writes | variant_reads
         for kind in ("variant", "read_variant"):
             for item in items[kind]:
+                self.at(item)
                 name = item["name"]
                 cls = "SchedWriteVariant" if kind == "variant" else "SchedReadVariant"
                 target_ok = name in writes if kind == "variant" else name in reads
@@ -1400,6 +1434,7 @@ class Emitter:
                 visit_variant(node, [])
 
         for item in items["reg_file"]:
+            self.at(item)
             name = item["name"]
             fields = item["fields"]
             for key in fields:
@@ -1446,6 +1481,7 @@ class Emitter:
             out.append(self.define(where, name, "RegisterFile", args))
 
         for item in items["retire_unit"]:
+            self.at(item)
             fields = item["fields"]
             for key in fields:
                 if key not in ("buffer", "max_per_cycle"):
@@ -1474,6 +1510,7 @@ class Emitter:
             ("store_queue", "StoreQueue", "StoreQueue_"),
         ):
             for item in items[kind]:
+                self.at(item)
                 res = item["resource"]
                 if res not in seen_res:
                     self.error(where, f"{kind}: unknown resource {res!r}")
@@ -1483,6 +1520,7 @@ class Emitter:
 
         itineraries_name = self.top_itineraries.get(decl.name)
         for item in items["itineraries"]:
+            self.at(item)
             if itineraries_name is not None:
                 self.error(
                     where,
@@ -1519,6 +1557,7 @@ class Emitter:
                 return None
 
             for item in items["map_itin"]:
+                self.at(item)
                 resolved = self.resolve_rw(item["rw"], writes, reads, f"{where}.map_itin")
                 classes = []
                 for name in item["itins"]:

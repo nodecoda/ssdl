@@ -485,7 +485,11 @@ def v1_1_itineraries_binding_parses():
     itin = blocks[0]
     assert_true(itin.sched_model == "v11-machine", itin.sched_model)
     assert_true(itin.namespace == "V11", itin.namespace)
-    assert_true(itin.items[0] == {"kind": "func_units", "value": ["FU_ALU"]}, itin.items)
+    first = itin.items[0]
+    assert_true(
+        first["kind"] == "func_units" and first["value"] == ["FU_ALU"], itin.items
+    )
+    assert_true(first["line"] == 43, f"the item must keep its v1 line: {first}")
 
 
 @test
@@ -1691,7 +1695,9 @@ machine M {
     acquire = [line for line in lines if "acquire is read only by CodeGen" in line]
     assert_true(len(acquire) == 1, lines)
     assert_true(acquire[0].endswith("(x3)"), acquire)
-    assert_true(acquire[0].startswith("machine M.bind W1.acquire: note:"), acquire)
+    assert_true(
+        acquire[0].startswith("line 7: machine M.bind W1.acquire: note:"), acquire
+    )
 
 
 @test
@@ -3877,6 +3883,89 @@ machine both m {
     assert_true(
         [line_map.map_line(i) for i in (1, 2, 3)] == [1, 5, 9],
         f"line map: {line_map.v1_to_v2}",
+    )
+
+
+def emit_source_v2(source: str, strict: bool = False, attrs=None):
+    return emit_td.emit(parser.parse(source, syntax="v2"), strict=strict, attrs=attrs)
+
+
+def emit_error_text(source: str, *, syntax: str = "v1") -> str:
+    try:
+        if syntax == "v2":
+            emit_source_v2(source)
+        else:
+            emit_source(source)
+    except SSDLEmitError as exc:
+        return "\n".join(d.render() for d in exc.diagnostics)
+    raise Failure(f"expected an emit error for:\n{source}")
+
+
+@test
+def semantic_diagnostics_name_the_surface_line():
+    """A lowering error points at the item, not only at its machine."""
+    v2 = """feature plain A {
+    mattr = "a";
+    bool x = true;
+}
+
+machine both m {
+    resource PipeA { units = 1; }
+    resource PipeA { units = 2; }
+    write W;
+    bind W {
+        resources = [PipeB];
+        latency = 1;
+    }
+    map [ADD] {
+        0 = Nope;
+    }
+}
+"""
+    text = emit_error_text(v2, syntax="v2")
+    assert_in(
+        "line 8: machine m: error: resource 'PipeA' is already defined by 'machine m'",
+        text,
+    )
+    assert_in("line 10: machine m: error: bind W: unknown resource 'PipeB'", text)
+    assert_in("line 14: machine m: error: map: unknown SchedReadWrite 'Nope'", text)
+
+    v1 = """machine m {
+    write W;
+    bind W -> [Nope], latency = 1;
+}
+"""
+    text = emit_error_text(v1)
+    assert_in("line 3: machine m: error: bind W: unknown resource 'Nope'", text)
+
+
+@test
+def validate_diagnostics_name_the_surface_line():
+    """Sort errors carry the declaration line, v1 or v2 alike."""
+    v1 = "predicate S1 = feature(A);\nsti_decl P { default = S1; }\n"
+    errors = validate_mod.validate(parser.parse(v1))
+    assert_true(
+        any(error.startswith("line 2: sti_decl P.default:") for error in errors),
+        errors,
+    )
+
+    v2 = """feature extension A {
+    version = "1.0";
+    mattr = "a";
+    field = "HasA";
+    value = "true";
+}
+
+predicate sched S1 = feature(A);
+
+predicate sti P {
+    default = S1;
+}
+"""
+    errors = validate_mod.validate(parser.parse(v2, syntax="v2"))
+    assert_true(
+        any(error.startswith("line 10: sti_decl P.default:") for error in errors),
+        errors,
     )
 
 
