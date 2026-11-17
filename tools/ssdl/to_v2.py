@@ -245,7 +245,7 @@ def _feature(text: str) -> list[str]:
         if key == "bitmask" and value.startswith("{"):
             inner = value.strip()[1:-1].strip()
             mask = " ".join(f"{k} = {v};" for k, v in _fields(inner))
-            fields.append(f"bitmask {{ {mask} }}")
+            fields.append(f"bitmask = {{ {mask} }}")
         else:
             fields.append(f"{key} = {value};")
     return [f"feature {name} {{ {' '.join(fields)} }};"]

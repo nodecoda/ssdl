@@ -9,7 +9,7 @@ feature Feature64Bit {
 feature StdExtXssdl {
     kind = extension;
     version = "2.1";
-    bitmask {
+    bitmask = {
         group = 0;
         bit   = 8;
     }

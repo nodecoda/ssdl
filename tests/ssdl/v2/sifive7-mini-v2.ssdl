@@ -14,7 +14,7 @@ feature FeatureSSDL64Bit {
 feature StdExtXssdl {
     kind = extension;
     version = "2.1";
-    bitmask {
+    bitmask = {
         group = 0;
         bit   = 8;
     }
@@ -31,7 +31,7 @@ feature StdExtZssdlcnt {
     kind = extension;
     version = "2.0";
     implies = [StdExtZssdlcsr];
-    bitmask {
+    bitmask = {
         group = 1;
         bit   = 15;
     }
@@ -42,7 +42,7 @@ feature StdExtZssdlexp {
     kind = extension;
     version = "0.1";
     experimental = true;
-    bitmask {
+    bitmask = {
         group = 1;
         bit   = 13;
     }

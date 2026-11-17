@@ -426,6 +426,13 @@ def _feature(cursor: _Cursor, out: list[str]) -> None:
             fields.append(("field", host["field"]))
             fields.append(("value", host["value"]))
         elif key == "bitmask":
+            if not cursor.at("="):
+                token = cursor.peek()
+                raise V2Error(
+                    f"line {token.line}:{token.col}: bitmask needs '=' before "
+                    "the field body: bitmask = { group = 0; bit = 1; }"
+                )
+            cursor.expect("=")
             mask = _fields(
                 cursor.record_body(), {"group", "bit"}, f"feature {name} bitmask"
             )

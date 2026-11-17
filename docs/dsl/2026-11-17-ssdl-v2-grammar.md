@@ -283,7 +283,7 @@ feature_field
     (* extension *)
     | "version"      "=" STRING
     | "experimental" "=" BOOL
-    | "bitmask" "{" "group" "=" INT ";" "bit" "=" INT ";" "}"
+    | "bitmask" "=" "{" "group" "=" INT ";" "bit" "=" INT ";" "}"
     (* tune *)
     | "positive_directive" "=" STRING
     | "negative_directive" "=" STRING
@@ -317,7 +317,7 @@ feature Feature64Bit {
 feature StdExtI {
     kind = extension;
     version = "2.1";
-    bitmask { group = 0; bit = 8; }
+    bitmask = { group = 0; bit = 8; }
     desc = "Base Integer Instruction Set";
 }
 

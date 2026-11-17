@@ -3853,6 +3853,23 @@ machine instance i : m(2) {
 
 
 @test
+def v2_bitmask_has_one_block_spelling():
+    """A field that owns a block spells it 'field = { ... }'."""
+    source = (
+        'feature X { kind = extension; version = "1.0"; '
+        "bitmask = { group = 0; bit = 1; } }"
+    )
+    assert_in("bitmask = { group = 0, bit = 1 }", syntax_v2.to_v1(source))
+    assert_in(
+        "bitmask needs '='",
+        v2_error(
+            'feature X { kind = extension; version = "1.0"; '
+            "bitmask { group = 0; bit = 1; } }"
+        ),
+    )
+
+
+@test
 def v2_map_and_retire_unit_are_checked():
     """Map values are sched_rw names; a machine has at most one retire unit."""
     assert_in(
