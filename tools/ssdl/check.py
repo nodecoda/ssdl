@@ -2028,6 +2028,79 @@ machine M {
 
 
 @test
+def family_statements_are_layout_independent():
+    """AC3: breaking every statement across lines keeps the flat text intact.
+
+    The split points are chosen where the joining rule produces exactly one
+    space, so the comparison stays byte-for-byte, not merely semantic.
+    """
+    multi = parser.expand_source((ROOT / "tests/ssdl/multiline.ssdl").read_text())
+    compact = parser.expand_source(
+        """
+set D = [A, B] : kind = dimension, name_format = "_{value}";
+machine fam(vlen: INT) {
+    write W[D];
+    bind W[D] -> [P], latency = vlen / 128, uops = 1, release = [1, 2];
+    variant W[D] {
+        case all_of(feature(F), is_zero(1)): [W[D]];
+        default: [W[D]];
+    }
+}
+machine m512 : fam(512) {
+    resource P : units = 2;
+    read R;
+    map [ADD] -> [W_A];
+    advance R : cycles = 1 : writes = [W_A];
+}
+"""
+    )
+    if multi != compact:
+        left, right = multi.splitlines(), compact.splitlines()
+        index = 1
+        for index, (a, b) in enumerate(zip(left, right), 1):
+            if a != b:
+                break
+        raise Failure(
+            f"line {index}: {left[index - 1]!r} != {right[index - 1]!r}"
+        )
+
+
+@test
+def top_level_block_declarations_keep_their_braces():
+    """A block-shaped global is copied as one unit, body and closing brace.
+
+    Before the statement scanner, ``predicate P {`` was collected and the body
+    then failed as a top-level declaration; ``};`` lost its semicolon too.
+    """
+    flat = parser.expand_source(
+        """
+set D = [A] : kind = dimension;
+predicate P
+{
+    selector = cxx_expr([{ Subtarget->hasX() }]);
+    assembler = all_of([Fx]);
+}
+tii_predicate X = switch opcode
+{
+    case [ADD]: return true;
+    default: return false;
+};
+machine m : f(1)
+{
+}
+machine f(v: INT)
+{
+}
+"""
+    )
+    assert_true("predicate P {" in flat, flat)
+    assert_true("assembler = all_of([Fx]);" in flat, flat)
+    assert_true("tii_predicate X = switch opcode {" in flat, flat)
+    assert_true("};" in flat, flat)
+    parser.parse(flat)
+
+
+@test
 def mined_family_sources_expand_to_reparsable_v1_0():
     """Expanding an authored family source leaves plain, parseable v1.0 text.
 

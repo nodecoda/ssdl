@@ -1,0 +1,41 @@
+# AC3: every statement is broken across physical lines; the flat text must
+# not change.  Splits are chosen at whitespace the joining rule normalises to
+# one space, so the expansion stays byte-identical to the one-line twin.
+set D = [A, B] :
+    kind = dimension, name_format = "_{value}";
+
+machine fam(vlen: INT)
+{
+    write
+        W[D];
+
+    bind W[D] ->
+        [P],
+        latency = vlen
+            / 128,
+        uops = 1,
+        release = [1,
+                   2];
+
+    variant W[D]
+    {
+        case all_of(feature(F), is_zero(1)): [W[D]];
+        default: [W[D]];
+    }
+}
+
+machine m512 : fam(512)
+{
+    resource
+        P : units = 2;
+
+    read
+        R;
+
+    map [ADD] ->
+        [W_A];
+
+    advance R
+        : cycles = 1
+        : writes = [W_A];
+}

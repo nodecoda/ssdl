@@ -114,18 +114,6 @@ class Machine:
     args: list[object] = field(default_factory=list)
 
 
-def _strip_comment(line: str) -> str:
-    out = []
-    in_string = False
-    for index, char in enumerate(line):
-        if char == '"':
-            in_string = not in_string
-        if char == "#" and not in_string:
-            return line[:index]
-        out.append(char)
-    return line
-
-
 def _parse_item(text: str):
     """Split ``write W[A, B in [x, y]] rest`` with balanced brackets."""
     head = ITEM_HEAD_RE.match(text)
@@ -310,23 +298,175 @@ def _subst_fields(text: str, env: dict[str, object]) -> str:
     return ", ".join(rendered) + tail
 
 
-def _logical_lines(text: str) -> list[tuple[int, str]]:
-    """Join a ``set`` declaration that spans lines; everything else is one line."""
-    raw_lines = text.splitlines()
+def _scan_logical_lines(text: str) -> list[tuple[int, str]]:
+    """Split a family source into statements; layout is irrelevant.
+
+    A statement ends at ``;`` or at a block brace, both only at bracket depth
+    zero.  Physical newlines are whitespace, so a ``bind``/``map``/``machine``
+    head may be broken anywhere.  Strings, ``[{ ... }]`` code blocks and
+    comments are opaque: a ``;`` or ``{`` inside them never splits a statement.
+
+    ``#`` starts a comment anywhere outside a string or code block.  ``//`` is
+    floor division in this dialect (``LMUL // 4``), so it only starts a comment
+    at the start of a statement, after ``;``/``{``/``}`` or after ``:``.
+    ``/* ... */`` may span lines.  Intra-line spacing is preserved so the flat
+    output stays byte-identical to the line-oriented v1.2 text.
+    """
     out: list[tuple[int, str]] = []
-    index = 0
-    while index < len(raw_lines):
-        line = _strip_comment(raw_lines[index]).strip()
-        if line.startswith("set ") and not line.endswith(";"):
-            start = index + 1
-            parts = [line]
-            while index + 1 < len(raw_lines) and not parts[-1].endswith(";"):
-                index += 1
-                parts.append(_strip_comment(raw_lines[index]).strip())
-            out.append((start, " ".join(parts)))
-        else:
-            out.append((index + 1, line))
-        index += 1
+    buf: list[str] = []
+    line_no = 1
+    stmt_line = 1
+    bracket_depth = 0
+    inline_braces = 0
+    prev = ""
+    i = 0
+    n = len(text)
+
+    def space() -> None:
+        if buf and buf[-1] != " ":
+            buf.append(" ")
+
+    def flush() -> None:
+        nonlocal buf
+        statement = "".join(buf).strip()
+        if statement:
+            out.append((stmt_line, statement))
+        buf = []
+
+    while i < n:
+        char = text[i]
+        if char in " \t\r\n":
+            start = i
+            while i < n and text[i] in " \t\r\n":
+                if text[i] == "\n":
+                    line_no += 1
+                i += 1
+            run = text[start:i]
+            if buf:
+                if "\n" in run:
+                    # A statement broken across lines joins with one space;
+                    # spacing inside one physical line is kept verbatim.
+                    space()
+                else:
+                    buf.append(run)
+            continue
+
+        if char == "#":
+            space()
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if char == "/" and text.startswith("/*", i):
+            close = text.find("*/", i + 2)
+            if close < 0:
+                raise ExpandError(f"line {line_no}: unterminated /* comment")
+            line_no += text.count("\n", i, close + 2)
+            space()
+            i = close + 2
+            continue
+        if char == "/" and text.startswith("//", i) and prev in ("", ";", "{", "}", ":"):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+
+        if char == '"':
+            if not buf:
+                stmt_line = line_no
+            buf.append('"')
+            i += 1
+            while i < n:
+                inner = text[i]
+                if inner == "\\" and i + 1 < n:
+                    buf.append(inner)
+                    buf.append(text[i + 1])
+                    i += 2
+                    continue
+                if inner == "\n":
+                    raise ExpandError(f"line {line_no}: unterminated string")
+                buf.append(inner)
+                i += 1
+                if inner == '"':
+                    break
+            else:
+                raise ExpandError(f"line {line_no}: unterminated string")
+            prev = '"'
+            continue
+
+        if char == "[" and text.startswith("[{", i):
+            close = text.find("}]", i + 2)
+            if close < 0:
+                raise ExpandError(f"line {line_no}: unterminated [{{ code block")
+            if not buf:
+                stmt_line = line_no
+            buf.append("[{")
+            buf.append(text[i + 2 : close])
+            buf.append("}]")
+            line_no += text.count("\n", i, close + 2)
+            i = close + 2
+            prev = "]"
+            continue
+
+        if not buf:
+            stmt_line = line_no
+
+        if char in "([":
+            bracket_depth += 1
+            buf.append(char)
+            i += 1
+            prev = char
+            continue
+        if char in ")]":
+            bracket_depth = max(0, bracket_depth - 1)
+            buf.append(char)
+            i += 1
+            prev = char
+            continue
+
+        if char == ";" and bracket_depth == 0 and inline_braces == 0:
+            if not buf:
+                # ``};`` closes a block declaration; a bare ``;`` is noise.
+                if out and out[-1][1] == "}":
+                    out[-1] = (out[-1][0], "};")
+                i += 1
+                prev = ";"
+                continue
+            buf.append(";")
+            flush()
+            i += 1
+            prev = ";"
+            continue
+        if char == "{" and bracket_depth == 0:
+            if prev == "=":
+                # An inline table (``bitmask = { group = 0, bit = 8 }``) is
+                # part of the statement, not a block.
+                inline_braces += 1
+                buf.append("{")
+            else:
+                buf.append("{")
+                flush()
+            i += 1
+            prev = "{"
+            continue
+        if char == "}" and bracket_depth == 0:
+            if inline_braces:
+                inline_braces -= 1
+                buf.append("}")
+            else:
+                flush()
+                out.append((line_no, "}"))
+            i += 1
+            prev = "}"
+            continue
+
+        buf.append(char)
+        i += 1
+        prev = char
+
+    if bracket_depth:
+        raise ExpandError(f"line {line_no}: unbalanced () or [] at end of file")
+    if inline_braces:
+        raise ExpandError(f"line {line_no}: unterminated {{ }} table at end of file")
+    flush()
     return out
 
 
@@ -365,6 +505,30 @@ def _axis_units(
     return units
 
 
+def _brace_delta(text: str) -> int:
+    """Brace balance of one statement, ignoring strings and ``[{ }]`` blocks."""
+    delta = 0
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            continue
+        if char == "[" and text.startswith("[{", i):
+            close = text.find("}]", i + 2)
+            i = len(text) if close < 0 else close + 2
+            continue
+        if char == "{":
+            delta += 1
+        elif char == "}":
+            delta -= 1
+        i += 1
+    return delta
+
+
 GLOBAL_KEYWORDS = (
     "feature",
     "predicate",
@@ -387,10 +551,17 @@ def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine], list[str]]:
     globals_: list[str] = []
     current: Machine | None = None
     depth = 0
-    for line_no, line in _logical_lines(text):
+    global_depth = 0
+    for line_no, line in _scan_logical_lines(text):
         if not line:
             continue
         if current is None:
+            if global_depth:
+                # A top-level block declaration (predicate/itineraries/...) is
+                # copied as one unit, braces included.
+                globals_.append(line)
+                global_depth += _brace_delta(line)
+                continue
             match = SET_DECL_RE.match(line)
             if match:
                 name, rhs = match.group(1), match.group(2).strip()
@@ -458,6 +629,7 @@ def split_blocks(text: str) -> tuple[dict[str, Axis], list[Machine], list[str]]:
                 continue
             if line.split(" ", 1)[0].rstrip(":") in GLOBAL_KEYWORDS:
                 globals_.append(line)
+                global_depth = _brace_delta(line)
                 continue
             raise ExpandError(f"line {line_no}: expected a declaration, got {line.strip()!r}")
         else:
