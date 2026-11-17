@@ -1,0 +1,24 @@
+# v1 twin for tests/ssdl/v2/machine-roles-v2.ssdl.
+# role = model emits only the SchedMachineModel; role = cpu emits only the
+# ProcessorModel, pointed at the named model.
+feature Feature64Bit : kind = plain, mattr = "64bit", field = "IsRV64", value = "true", desc = "Implements RV64";
+feature StdExtXssdl : kind = extension, version = "2.1", bitmask = { group = 0, bit = 8 }, desc = "SSDL base extension";
+feature TunePostRA : kind = tune, field = "UsePostRAScheduler", value = "true", positive_directive = "use-postra-scheduler", negative_directive = "no-use-postra-scheduler", desc = "Schedule again after register allocation";
+
+set D = [A, B] : kind = dimension, div_factor = [1, 2];
+
+machine roles-model {
+    role = model;
+    issue_width = 4;
+    resource PipeA : units = 1;
+    write W[D];
+    bind W[D] -> [PipeA], latency = 1;
+}
+
+machine roles-cpu {
+    role = cpu;
+    model = roles-model;
+    features = [Feature64Bit, StdExtXssdl];
+    tune_features = [TunePostRA];
+    default_march = "rv64i2p1";
+}

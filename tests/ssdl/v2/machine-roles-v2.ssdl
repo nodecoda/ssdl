@@ -1,0 +1,50 @@
+# v2 twin of tests/ssdl/machine-roles.ssdl.
+
+feature Feature64Bit {
+    bool IsRV64 = true;
+    mattr = "64bit";
+    desc  = "Implements RV64";
+}
+
+feature StdExtXssdl {
+    kind = extension;
+    version = "2.1";
+    bitmask {
+        group = 0;
+        bit   = 8;
+    }
+    desc = "SSDL base extension";
+}
+
+feature TunePostRA {
+    kind = tune;
+    bool UsePostRAScheduler = true;
+    positive_directive = "use-postra-scheduler";
+    negative_directive = "no-use-postra-scheduler";
+    desc = "Schedule again after register allocation";
+}
+
+set dimension D = [A, B] {
+    projections = {
+        div_factor = [1, 2];
+    }
+}
+
+machine model roles-model {
+    issue_width = 4;
+    resource PipeA {
+        units = 1;
+    }
+    write W[D];
+    bind W[D] {
+        resources = [PipeA];
+        latency   = 1;
+    }
+}
+
+machine cpu roles-cpu {
+    model = roles-model;
+    features      = [Feature64Bit, StdExtXssdl];
+    tune_features = [TunePostRA];
+    default_march = "rv64i2p1";
+}

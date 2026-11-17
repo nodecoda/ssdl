@@ -3231,7 +3231,13 @@ V2_FIXTURES = [
     ),
     ("itineraries", "tests/ssdl/itineraries.ssdl", "tests/ssdl/v2/itineraries-v2.ssdl"),
     ("entities", "tests/ssdl/entities.ssdl", "tests/ssdl/v2/entities-v2.ssdl"),
+    (
+        "machine-roles",
+        "tests/ssdl/machine-roles.ssdl",
+        "tests/ssdl/v2/machine-roles-v2.ssdl",
+    ),
     ("variants", "tests/ssdl/variants.ssdl", "tests/ssdl/v2/variants-v2.ssdl"),
+    ("predicates", "tests/ssdl/predicates.ssdl", "tests/ssdl/v2/predicates-v2.ssdl"),
     ("map", "tests/ssdl/map.ssdl", "tests/ssdl/v2/map-v2.ssdl"),
     (
         "projection-contract",
@@ -3345,6 +3351,55 @@ machine family m {
         ("machine family f { map [ADD] { x = W; } }", "operand index must be an integer"),
     ]:
         assert_in(needle, v2_error(source))
+
+
+@test
+def v2_machine_roles_split_model_and_processor():
+    """AC6: ``machine model`` and ``machine cpu`` emit one record each."""
+    source = (ROOT / "tests/ssdl/v2/machine-roles-v2.ssdl").read_text(
+        encoding="utf-8"
+    )
+    flat = elaborate_mod.render(elaborate_mod.elaborate(source, syntax="v2"))
+    text, skips = emit_source(flat, strict=True)
+    assert_true(skips == [], f"skips: {skips}")
+    assert_in("def roles_modelModel : SchedMachineModel", text)
+    assert_in('def roles_cpu : RISCVProcessorModel<"roles-cpu", roles_modelModel', text)
+    assert_true(
+        "def roles_cpuModel : SchedMachineModel" not in text,
+        "a cpu must not emit a SchedMachineModel",
+    )
+    assert_true(
+        "def roles_model : RISCV" not in text,
+        "a model must not emit a ProcessorModel",
+    )
+
+    negatives = [
+        (
+            "machine model M { features = [F]; }",
+            "features belongs on a cpu, not a model",
+        ),
+        ("machine cpu C { }", "a cpu must name its model"),
+        ("machine cpu C { model = Missing; }", "'Missing' is not a declared machine"),
+        ("machine model M { model = N; }", "'model =' is only allowed on a cpu"),
+        (
+            "machine model M { resource P { units = 1; } }\n"
+            "machine cpu C { model = M; resource Q { units = 1; } }",
+            "a cpu cannot declare resource",
+        ),
+        (
+            "machine model M { resource P { units = 1; } }\n"
+            "machine cpu C { model = M; }\n"
+            "itineraries { sched_model = C; func_units = [FU]; }",
+            "is a cpu, not a model",
+        ),
+    ]
+    for src, needle in negatives:
+        try:
+            emit_source(syntax_v2.to_v1(src), strict=True)
+        except SSDLEmitError as exc:
+            assert_in(needle, str(exc))
+        else:
+            raise Failure(f"expected an emit error for:\n{src}")
 
 
 @test

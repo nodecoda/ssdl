@@ -688,6 +688,12 @@ class Emitter:
                     f"sched_model {decl.sched_model!r} is not a machine definition",
                 )
                 continue
+            if self.machine_role(info.decl) == "cpu":
+                self.error(
+                    where,
+                    f"sched_model {decl.sched_model!r} is a cpu, not a model",
+                )
+                continue
             if decl.sched_model in self.top_itineraries:
                 self.error(
                     where,
@@ -802,6 +808,12 @@ class Emitter:
                 self.error(where, f"unknown SchedReadWrite {entry!r}")
         return resolved
 
+    def machine_role(self, decl) -> str:
+        for item in decl.items:
+            if item.get("kind") == "prop" and item.get("name") == "role":
+                return item.get("value", "both")
+        return "both"
+
     def lower_machine(self, info: MachineInfo) -> tuple[str, list[str]]:
         decl = info.decl
         where = f"machine {decl.name}"
@@ -859,8 +871,38 @@ class Emitter:
                 "tune_features",
                 "default_march",
                 "unsupported_features",
+                "role",
+                "model",
             ):
                 self.error(where, f"unknown machine property {key!r}")
+
+        role = props.get("role", "both")
+        if role not in ("both", "model", "cpu"):
+            self.error(where, f"unknown machine role {role!r}")
+            role = "both"
+        model_name = props.get("model")
+        if role == "cpu":
+            if model_name is None:
+                self.error(where, "a cpu must name its model: model = IDENT")
+            elif model_name not in self.machines:
+                self.error(where, f"model {model_name!r} is not a declared machine")
+            elif self.machine_role(self.machines[model_name].decl) == "cpu":
+                self.error(where, f"model {model_name!r} is itself a cpu")
+        elif model_name is not None:
+            self.error(where, "'model =' is only allowed on a cpu")
+        if role == "model":
+            for key in ("features", "tune_features", "default_march"):
+                if key in props:
+                    self.error(where, f"{key} belongs on a cpu, not a model")
+        if role == "cpu":
+            for key in SCHED_MODEL_PROPS:
+                if key in props:
+                    self.error(where, f"{key} belongs on a model, not a cpu")
+            if "unsupported_features" in props:
+                self.error(where, "unsupported_features belongs on a model, not a cpu")
+            for kind, values in items.items():
+                if values:
+                    self.error(where, f"a cpu cannot declare {kind}")
 
         skip_messages = {
             "combo_func": "combo_func has no attachment point on ProcessorItineraries",
@@ -1500,26 +1542,35 @@ class Emitter:
 
         # The machine model record is not itself scoped: it *is* the scope.
         self.current_scope = None
-        model_fields: list[tuple[str, str]] = []
-        if itineraries_name is not None:
-            model_fields.append(("Itineraries", itineraries_name))
-        for key, field in SCHED_MODEL_PROPS.items():
-            if key in props:
-                value = props[key]
-                if isinstance(value, bool):
-                    value = "true" if value else "false"
-                model_fields.append((field, str(value)))
-        if "unsupported_features" in props:
-            preds = [f"Has{name}" for name in props["unsupported_features"]]
-            model_fields.append(("UnsupportedFeatures", join_list(preds)))
-        model_text = self.define(
-            where, f"{info.def_name}Model", "SchedMachineModel", (), model_fields
-        )
+        model_text = None
+        if role != "cpu":
+            model_fields: list[tuple[str, str]] = []
+            if itineraries_name is not None:
+                model_fields.append(("Itineraries", itineraries_name))
+            for key, field in SCHED_MODEL_PROPS.items():
+                if key in props:
+                    value = props[key]
+                    if isinstance(value, bool):
+                        value = "true" if value else "false"
+                    model_fields.append((field, str(value)))
+            if "unsupported_features" in props:
+                preds = [f"Has{name}" for name in props["unsupported_features"]]
+                model_fields.append(("UnsupportedFeatures", join_list(preds)))
+            model_text = self.define(
+                where, f"{info.def_name}Model", "SchedMachineModel", (), model_fields
+            )
 
         processor_texts: list[str] = []
-        features = props.get("features", [])
-        tune = props.get("tune_features", [])
-        march = props.get("default_march")
+        if role == "model":
+            features, tune, march = [], [], None
+        else:
+            features = props.get("features", [])
+            tune = props.get("tune_features", [])
+            march = props.get("default_march")
+        if role == "cpu" and model_name is not None:
+            sched_model_name = f"{td_def_name(model_name)}Model"
+        else:
+            sched_model_name = f"{info.def_name}Model"
         for name in features:
             if name in self.features and self.features[name].kind == "tune":
                 self.error(where, f"tune feature {name!r} belongs in tune_features, not features")
@@ -1534,8 +1585,10 @@ class Emitter:
                 )
         fargs = self._resolve_features(where, features)
         targs = self._resolve_features(where, tune)
-        if features:
-            args = [td_str(decl.name), f"{info.def_name}Model", join_list(fargs)]
+        if role == "model":
+            pass
+        elif features:
+            args = [td_str(decl.name), sched_model_name, join_list(fargs)]
             if tune or march:
                 args.append(join_list(targs))
             if march is not None:
@@ -1546,14 +1599,14 @@ class Emitter:
         else:
             if march is not None:
                 self.error(where, "default_march requires at least one feature")
-            args = [td_str(decl.name), f"{info.def_name}Model"]
+            args = [td_str(decl.name), sched_model_name]
             if tune:
                 args.append(join_list(targs))
             processor_texts.append(
                 self.define(where, info.def_name, "RISCVTuneProcessorModel", args)
             )
 
-        chunks = list(prelude) + [model_text]
+        chunks = list(prelude) + ([model_text] if model_text else [])
         if scoped:
             body = textwrap.indent("\n\n".join(scoped), "  ")
             chunks.append(f"let SchedModel = {info.def_name}Model in {{\n{body}\n}}")

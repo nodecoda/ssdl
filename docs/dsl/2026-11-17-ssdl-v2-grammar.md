@@ -959,15 +959,15 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 |---|---|---|
 | `set instructions` | `v2/sets.ssdl` | P3 |
 | `set dimension`（基本形式） | `v2/family-mini-v2.ssdl` | ✓ P2 |
-| `set dimension` + units/projections | `v2/dimensions.ssdl` | P3 |
+| `set dimension` + units/projections | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `set relation` | `v2/projection-contract-v2.ssdl` | ✓ P2 |
-| `predicate` 表达式 | `v2/predicates.ssdl` | P3 |
-| `predicate : select` | `v2/predicates.ssdl` | P3 |
+| `predicate` 表达式 | `v2/predicates-v2.ssdl` | ✓ P3 |
+| `predicate : select` | `v2/predicates.ssdl` | P5 |
 | `predicate prolog` | `v2/predicates.ssdl` | P3 |
 | `predicate : sti` / `: tii` | `v2/sti-tii.ssdl` | P5 或 P6 |
-| `feature` plain/extension/tune | `v2/features.ssdl` | P4 |
-| `feature` typed field | `v2/features.ssdl` | P4 |
-| `machine model` / `cpu` | `v2/machine-roles.ssdl` | P3 |
+| `feature` plain/extension/tune | `v2/machine-roles-v2.ssdl` | ✓ P3 |
+| `feature` typed field / host / bitmask | `v2/machine-roles-v2.ssdl` | ✓ P3 |
+| `machine model` / `cpu` | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `machine family` / `instance` | `v2/family-mini-v2.ssdl` | ✓ P2 |
 | `machine alias` | `v2/machine-roles.ssdl` | P3（parser 路径） |
 | `resource` / `res_group` | `v2/entities-v2.ssdl` | ✓ P2 |
@@ -1034,17 +1034,24 @@ Phase 2 的 v2 前端是 `tools/ssdl/syntax_v2.py` 的 `to_v1`：先把 v2 表�
 v1 族源码，再走既有 elaborator。因此语义内核、拼写规则、runtime 降级和
 records 契约完全未动；v2 能表达的构造在 v1 里必然已经存在。
 
-已进入 Phase 2 的构造：`set instructions|dimension|relation`（`projections`
-除外）、`extern fn`、`machine family|instance|alias`、全部机器实体与关系、
-`itineraries`（含命名 stage 与 body 内的 `sched_model`）。
+已进入前端的构造：`set instructions|dimension|relation`（含
+`projections`）、`extern fn`、`machine model|cpu|family|instance|alias`、
+全部机器实体与关系、`itineraries`（含命名 stage 与 body 内的
+`sched_model`）、`feature`（typed field / host / bitmask / extension /
+tune）、`predicate` 表达式形式（含 `sched_code(host [{...}])`）。
 
-尚未进入（前端显式报错，不静默降级）：`machine model|cpu`、`predicate`、
-`feature`、`set dimension { projections = ... }`。
+尚未进入（前端显式报错，不静默降级）：`predicate : select|sti|tii`
+（Phase 5 决策门）。
+
+`machine model` / `machine cpu` 在 flat 层落成 `role = model|cpu;` 机器属性：
+`model` 只发射 `SchedMachineModel` 与 model-scoped 记录，`cpu` 只发射
+`ProcessorModel`（`SchedModel` 指向 `model =` 命名的机器）。未写 `role` 的
+v1 机器保持 “model + processor” 的旧行为。
 
 已知透传限制：
 
-- `machine family|instance` 的名字若含 `-`，会撞上 v1.2 族扫描器的
-  `IDENT`（不含 `-`）；Phase 3 引入 `machine cpu` 时一并放宽。
+- `machine family|instance` 的名字现在允许 `-`：族扫描器的机器名正则已与
+  §1.1 对齐，拼写仍按原样进入 flat 文本，`emit_td` 负责把 `-` 转成 `_`。
 - `machine alias X = Y;` 只对 parser 路径有意义；`SemProgram` 没有 alias 节点，
   所以 AC4 的 IR parity 不覆盖它。
 - 全局 `itineraries` 在 IR 里是原样透传文本，源文件的对齐空格不属于契约；

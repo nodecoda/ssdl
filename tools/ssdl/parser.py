@@ -973,6 +973,9 @@ class Parser:
             val = self.parse_ident_list()
         elif key in ("post_ra_scheduler", "complete_model", "full_inst_rw_overlap_check", "enable_intervals"):
             val = self.expect_bool()
+        elif key in ("role", "model"):
+            # machine role: both|model|cpu; cpu names its model.
+            val = self.expect_ident()
         else:
             val = self.expect_int()
         self.expect(";")

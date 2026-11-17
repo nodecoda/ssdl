@@ -1,0 +1,14 @@
+# v1 twin for tests/ssdl/v2/predicates-v2.ssdl.
+predicate Copy1 = sched_code([{ TII->isVRegCopy(MI, 1) }]);
+predicate Copy2 = sched_code([{ TII->isVRegCopy(MI, 2) }]);
+predicate IsAddZero(i) = all_of(opcode([ADD]), is_zero(i));
+predicate Never = not(true);
+
+machine predcpu {
+    write W;
+    variant W {
+        case Copy1: [W];
+        case IsAddZero(1): [W];
+        default: [W];
+    }
+}

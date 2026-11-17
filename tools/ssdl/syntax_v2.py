@@ -10,15 +10,16 @@ implementation.
 Implemented in this slice:
 
 - ``set instructions|dimension|relation``
+- ``feature`` with typed fields, host and bitmask blocks
+- ``predicate`` expression form (``sched_code(host [{...}])`` included)
 - ``extern fn``
-- ``machine family|instance|alias``
+- ``machine model|cpu|family|instance|alias``
 - machine items with one record-body rule: resource/res_group/write/read/
   write_seq/combo_func/queues/reg_file/retire_unit/bind/advance/map/
   map_itin/alias/variant/read_variant/itineraries
 - v1 field separators are rejected with a v2 hint, never accepted
 
-Not yet in this slice (Phase 3/4): ``machine model|cpu``, ``predicate``,
-``feature``, typed feature fields, ``set dimension { projections = ... }``.
+Not yet in this slice (Phase 5): ``predicate : select|sti|tii``.
 They raise a clear ``V2Error`` instead of silently falling back.
 """
 from __future__ import annotations
@@ -39,15 +40,31 @@ _PROPS = {
     "issue_width", "micro_op_buffer_size", "loop_micro_op_buffer",
     "load_latency", "high_latency", "mispredict_penalty",
     "post_ra_scheduler", "complete_model", "full_inst_rw_overlap_check",
-    "enable_intervals",
+    "enable_intervals", "model",
 }
 
 
 def _render_tokens(tokens: list[parser.Token]) -> str:
+    # ``host [{ ... }]`` is the v2 spelling; the v1 flat text keeps ``[{...}]``.
+    kept: list[parser.Token] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if (
+            token.value == "host"
+            and index + 1 < len(tokens)
+            and tokens[index + 1].kind == "CODE"
+        ):
+            index += 1
+            continue
+        kept.append(token)
+        index += 1
     parts = []
-    for token in tokens:
+    for token in kept:
         if token.kind == "STRING":
             parts.append(json.dumps(token.value))
+        elif token.kind == "CODE":
+            parts.append("[{" + str(token.value) + "}]")
         else:
             parts.append(str(token.value))
     text = " ".join(parts)
@@ -221,20 +238,27 @@ def _set(cursor: _Cursor, out: list[str]) -> None:
             )
         props = [("kind", "dimension")]
         if cursor.at("{"):
-            body = cursor.record_body()
-            for key, item in body:
-                if key == "name_format":
+            cursor.expect("{")
+            while not cursor.at("}"):
+                key = cursor.ident()
+                cursor.expect("=")
+                if key == "projections":
+                    cursor.expect("{")
+                    while not cursor.at("}"):
+                        projection = cursor.ident()
+                        cursor.expect("=")
+                        values = cursor.list_tokens()
+                        cursor.expect(";")
+                        props.append((projection, values))
+                    cursor.expect("}")
+                    continue
+                item = cursor.expr({";"})
+                cursor.expect(";")
+                if key in ("name_format", "units"):
                     props.append((key, item))
-                elif key == "units":
-                    props.append((key, item))
-                elif key == "projections":
-                    raise V2Error(
-                        f"set dimension {name}: projections are the Phase 3 slice"
-                    )
                 else:
-                    raise V2Error(
-                        f"set dimension {name}: unknown field {key!r}"
-                    )
+                    raise V2Error(f"set dimension {name}: unknown field {key!r}")
+            cursor.expect("}")
         else:
             cursor.accept(";")
         out.append(f"set {name} = {value} : {_props(props)};")
@@ -244,6 +268,116 @@ def _set(cursor: _Cursor, out: list[str]) -> None:
         out.append(f"set {name} : kind = relation = {value};")
         return
     raise V2Error(f"line: unknown set kind {kind!r}")
+
+
+def _literal(cursor: _Cursor, where: str) -> str:
+    token = cursor.peek()
+    if token.kind == "STRING":
+        cursor.next()
+        return json.dumps(token.value)
+    if token.value in ("true", "false"):
+        cursor.next()
+        return json.dumps(str(token.value))
+    if token.kind == "INT":
+        cursor.next()
+        return json.dumps(str(token.value))
+    raise V2Error(
+        f"line {token.line}:{token.col}: {where} needs a bool/int/string literal, "
+        f"got {token.value!r}"
+    )
+
+
+def _feature(cursor: _Cursor, out: list[str]) -> None:
+    cursor.expect("feature")
+    name = cursor.ident()
+    header_kind = None
+    if cursor.accept(":"):
+        header_kind = cursor.ident()
+        if header_kind not in ("plain", "extension", "tune"):
+            raise V2Error(
+                f"feature {name}: unknown kind {header_kind!r}; "
+                "expected plain, extension or tune"
+            )
+    cursor.expect("{")
+    fields: list[tuple[str, str]] = []
+    body_kind = None
+    while not cursor.at("}"):
+        key = cursor.ident()
+        if key in ("bool", "int", "string"):
+            field_name = cursor.ident()
+            cursor.expect("=")
+            value = _literal(cursor, f"feature {name} field {field_name}")
+            cursor.expect(";")
+            fields.append(("field", json.dumps(field_name)))
+            fields.append(("value", value))
+        elif key == "host":
+            host = _fields(cursor.record_body(), {"field", "value"}, f"feature {name} host")
+            if "field" not in host or "value" not in host:
+                raise V2Error(f"feature {name}: host needs field and value")
+            fields.append(("field", host["field"]))
+            fields.append(("value", host["value"]))
+        elif key == "bitmask":
+            mask = _fields(
+                cursor.record_body(), {"group", "bit"}, f"feature {name} bitmask"
+            )
+            if "group" not in mask or "bit" not in mask:
+                raise V2Error(f"feature {name}: bitmask needs group and bit")
+            fields.append(("bitmask", f"{{ group = {mask['group']}, bit = {mask['bit']} }}"))
+        elif key == "kind":
+            cursor.expect("=")
+            body_kind = cursor.ident()
+            cursor.expect(";")
+            if body_kind not in ("plain", "extension", "tune"):
+                raise V2Error(
+                    f"feature {name}: unknown kind {body_kind!r}; "
+                    "expected plain, extension or tune"
+                )
+        else:
+            cursor.expect("=")
+            fields.append((key, cursor.expr({";"})))
+            cursor.expect(";")
+    cursor.expect("}")
+    if header_kind and body_kind and header_kind != body_kind:
+        raise V2Error(
+            f"feature {name}: header kind {header_kind!r} disagrees with "
+            f"body kind {body_kind!r}"
+        )
+    kind = body_kind or header_kind or "plain"
+    parts = [("kind", kind)] + fields
+    out.append(f"feature {name} : " + ", ".join(f"{k} = {v}" for k, v in parts) + ";")
+
+
+def _predicate(cursor: _Cursor, out: list[str]) -> None:
+    cursor.expect("predicate")
+    name = cursor.ident()
+    params: list[str] = []
+    if cursor.at("("):
+        cursor.expect("(")
+        while not cursor.at(")"):
+            param = cursor.ident()
+            if cursor.accept(":"):
+                kind = cursor.ident()
+                if kind not in ("INT", "BOOL"):
+                    raise V2Error(
+                        f"predicate {name}: parameter {param} needs INT or BOOL, "
+                        f"got {kind!r}"
+                    )
+            params.append(param)
+            if not cursor.accept(","):
+                break
+        cursor.expect(")")
+    if not cursor.at("="):
+        raise V2Error(
+            f"predicate {name}: only the expression form is implemented; "
+            "select/sti/tii are the Phase 5 decision gate"
+        )
+    cursor.expect("=")
+    tokens = cursor.collect({";"})
+    cursor.expect(";")
+    head = f"predicate {name}"
+    if params:
+        head += "(" + ", ".join(params) + ")"
+    out.append(f"{head} = {_render_tokens(tokens)};")
 
 
 def _extern(cursor: _Cursor, out: list[str]) -> None:
@@ -453,8 +587,11 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
     cursor.expect("=")
     value = cursor.expr({";"})
     cursor.expect(";")
-    if key == "model":
-        raise V2Error("line: machine cpu/model is Phase 3; use family/instance for now")
+    if key == "role":
+        raise V2Error(
+            "line: the machine role is a keyword; write "
+            "machine model|cpu|family|instance NAME"
+        )
     if key not in _PROPS:
         raise V2Error(f"line: unknown machine item {key!r}")
     out.append(f"{key} = {value};")
@@ -561,10 +698,10 @@ def to_v1(text: str) -> str:
                 cursor.expect(";")
                 out.append(f"machine {name} = {target};")
                 continue
-            if role not in ("family", "instance"):
+            if role not in ("family", "instance", "model", "cpu"):
                 raise V2Error(
-                    f"line {token.line}: machine {role} is Phase 3; "
-                    "use machine family/instance for now"
+                    f"line {token.line}: unknown machine role {role!r}; "
+                    "use model|cpu|family|instance|alias"
                 )
             name = cursor.ident()
             params = ""
@@ -580,6 +717,8 @@ def to_v1(text: str) -> str:
                 inherit = f" : {family}({_render_tokens(args)})"
             cursor.expect("{")
             body: list[str] = []
+            if role in ("model", "cpu"):
+                body.append(f"role = {role};")
             while not cursor.at("}"):
                 _machine_item(cursor, body)
                 if cursor.at(":") or cursor.at(","):
@@ -594,11 +733,10 @@ def to_v1(text: str) -> str:
             out.append(f"machine {name}{params}{inherit} {{ {' '.join(body)} }}")
         elif token.value == "itineraries":
             _itineraries(cursor, out)
-        elif token.value in ("predicate", "feature"):
-            raise V2Error(
-                f"line {token.line}: {token.value} is Phase 4; "
-                "the Phase 2 front end covers family/instance/entities"
-            )
+        elif token.value == "feature":
+            _feature(cursor, out)
+        elif token.value == "predicate":
+            _predicate(cursor, out)
         else:
             raise V2Error(
                 f"line {token.line}:{token.col}: unexpected top-level token {token.value!r}"

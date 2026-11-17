@@ -67,9 +67,12 @@ DIM_USE_RE = re.compile(rf"^({IDENT})$")
 VARIANT_HEAD_RE = re.compile(rf"^variant\s+({IDENT})\s*(?:\[(.*)\])?\s*\{{$")
 VARIANT_CASE_RE = re.compile(r"^(case\s+.+?|default)\s*:\s*\[(.*)\]\s*;$")
 SELECTED_RE = re.compile(rf"^({IDENT})\s*(?:\[(.*)\])?$")
-FAMILY_RE = re.compile(rf"^machine\s+({IDENT})\s*\((.*?)\)\s*\{{")
-INSTANCE_RE = re.compile(rf"^machine\s+({IDENT})\s*:\s*({IDENT})\s*\((.*?)\)\s*\{{")
-PLAIN_RE = re.compile(rf"^machine\s+({IDENT})\s*\{{")
+MACHINE_IDENT = r"[A-Za-z_][A-Za-z0-9_-]*"
+FAMILY_RE = re.compile(rf"^machine\s+({MACHINE_IDENT})\s*\((.*?)\)\s*\{{")
+INSTANCE_RE = re.compile(
+    rf"^machine\s+({MACHINE_IDENT})\s*:\s*({MACHINE_IDENT})\s*\((.*?)\)\s*\{{"
+)
+PLAIN_RE = re.compile(rf"^machine\s+({MACHINE_IDENT})\s*\{{")
 PARAM_RE = re.compile(rf"^\s*({IDENT})\s*:\s*(INT|BOOL)\s*$")
 EXTERN_RE = re.compile(
     rf"^extern\s+fn\s+({IDENT})\s*\(([^)]*)\)\s*->\s*(INT|BOOL)\s*:\s*({IDENT})\s*;$"
