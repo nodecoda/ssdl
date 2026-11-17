@@ -1,0 +1,19 @@
+# v2 mirror of tests/ssdl/family-mini.ssdl; both must elaborate to the same IR.
+set dimension D = [A, B, C] {
+    name_format = "_{value}";
+}
+
+machine family fam(vlen: INT) {
+    write W[D];
+    bind W[D] {
+        resources = [P];
+        latency   = vlen / 128;
+        uops      = 1;
+    }
+}
+
+machine instance m512 : fam(512) {
+    resource P {
+        units = 2;
+    }
+}

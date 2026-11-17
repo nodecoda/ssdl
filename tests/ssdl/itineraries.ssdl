@@ -1,0 +1,18 @@
+# v1 twin for tests/ssdl/v2/itineraries-v2.ssdl.
+# Top-level itineraries attach to a machine through sched_model; the stage
+# tuple is (index, units, [latency], [kind]).
+machine itincpu {
+    resource P : units = 1;
+}
+
+itineraries : sched_model = itincpu : packetizer_namespace = "T" {
+    func_units = [FU_TOP];
+    bypasses   = [no_bypass_top];
+
+    itin IIC_iTop {
+        stages   = [stage(1, [FU_TOP]), stage(2, [FU_TOP], 1, reserved)];
+        cycles   = [1, 3];
+        bypasses = [no_bypass_top];
+        uops     = 2;
+    }
+}

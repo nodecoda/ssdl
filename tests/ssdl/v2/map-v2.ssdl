@@ -1,0 +1,12 @@
+# v2 twin of tests/ssdl/map.ssdl: the operand position is written.
+machine family mapcpu {
+    write W;
+    read R;
+    map [ADD, SUB] {
+        0 = W;
+        1 = R;
+    }
+    map [LD] {
+        0 = W;
+    }
+}

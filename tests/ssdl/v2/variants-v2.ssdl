@@ -1,0 +1,13 @@
+# v2 twin of tests/ssdl/variants.ssdl.
+machine family varcpu {
+    write W;
+    read R;
+    variant W {
+        case all_of(opcode([ADD]), same_reg(1, 2)): [W];
+        default: [W];
+    }
+    read_variant R {
+        case all_of(opcode([ADD])): [R];
+        default: [R];
+    }
+}

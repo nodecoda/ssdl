@@ -1,0 +1,7 @@
+# v1 twin for tests/ssdl/v2/map-v2.ssdl: the operand position is list order.
+machine mapcpu {
+    write W;
+    read R;
+    map [ADD, SUB] -> [W, R];
+    map [LD] -> [W];
+}

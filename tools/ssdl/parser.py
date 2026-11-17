@@ -100,10 +100,10 @@ class Program:
 
 
 MULTI_PUNCT = ("...", "..", "->", "==", "!=", "<=", ">=", "&&", "||")
-SINGLE_PUNCT = set("{}()[]:;,.=<>!+-*/")
+SINGLE_PUNCT = set("{}()[]:;,.=<>!+-*/?%")
 
 
-def tokenize(text: str) -> list[Token]:
+def tokenize(text: str, *, floor_div: bool = False) -> list[Token]:
     toks: list[Token] = []
     i = 0
     line = 1
@@ -129,7 +129,7 @@ def tokenize(text: str) -> list[Token]:
             while i < n and text[i] != "\n":
                 advance(1)
             continue
-        if text.startswith("//", i):
+        if not floor_div and text.startswith("//", i):
             while i < n and text[i] != "\n":
                 advance(1)
             continue
@@ -198,6 +198,11 @@ def tokenize(text: str) -> list[Token]:
             while i < n and text[i].isdigit():
                 advance(1)
             toks.append(Token("INT", -int(text[start:i]), start_line, start_col))
+            continue
+        if floor_div and text.startswith("//", i):
+            start_line, start_col = line, col
+            advance(2)
+            toks.append(Token("PUNCT", "//", start_line, start_col))
             continue
         matched = None
         for p in MULTI_PUNCT:
@@ -1071,21 +1076,35 @@ class Parser:
         return ("stages", out)
 
 
-def parse(text: str) -> Program:
+def parse(text: str, syntax: str = "v1") -> Program:
+    if syntax == "v2":
+        if __package__ in (None, ""):
+            import syntax_v2  # type: ignore
+        else:
+            from . import syntax_v2
+        text = syntax_v2.to_v1(text)
     return Parser(text).parse()
 
 
 FAMILY_SOURCE = re.compile(r":\s*kind\s*=\s*(?:dimension|relation)\b|\bextern\s+fn\b")
 
 
-def expand_source(text: str) -> str:
-    """Expand the 1.2 family dialect to v1.0 text (a no-op for v1.0 sources).
+def expand_source(text: str, syntax: str = "v1") -> str:
+    """Expand a source to v1.0 text (a no-op for plain v1.0 sources).
 
-    Dimension declarations are the marker: without ``kind = dimension`` a
-    source cannot use axis-indexed names, so a file that has the marker is
-    expanded before parsing.  ``family_expand`` is the single implementation
-    of the norm rules, and its output is ordinary v1.0 SSDL.
+    ``syntax="v2"`` first transpiles the v2 surface to v1 family source; the
+    rest of the path is unchanged.  Dimension declarations are the marker:
+    without ``kind = dimension`` a source cannot use axis-indexed names, so a
+    file that has the marker is expanded before parsing.  ``family_expand`` is
+    the single implementation of the norm rules, and its output is ordinary
+    v1.0 SSDL.
     """
+    if syntax == "v2":
+        if __package__ in (None, ""):
+            import syntax_v2  # type: ignore
+        else:
+            from . import syntax_v2
+        text = syntax_v2.to_v1(text)
     if not FAMILY_SOURCE.search(text):
         return text
     if __package__ in (None, ""):
@@ -1095,10 +1114,10 @@ def expand_source(text: str) -> str:
     return expand(text)
 
 
-def load_source(path: str) -> str:
+def load_source(path: str, syntax: str = "v1") -> str:
     with open(path, encoding="utf-8") as f:
-        return expand_source(f.read())
+        return expand_source(f.read(), syntax=syntax)
 
 
-def parse_file(path: str) -> Program:
-    return parse(load_source(path))
+def parse_file(path: str, syntax: str = "v1") -> Program:
+    return parse(load_source(path, syntax=syntax), syntax="v1")

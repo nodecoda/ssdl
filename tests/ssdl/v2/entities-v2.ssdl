@@ -1,0 +1,40 @@
+# v2 twin of tests/ssdl/entities.ssdl.
+machine family entitiescpu {
+    resource P {
+        units = 1;
+    }
+    res_group AGU = [P] {
+        buffer = 2;
+    }
+
+    write W;
+    write_seq WS = [W] {
+        repeat = 2;
+    }
+    read R;
+
+    func_unit FU;
+    bypass B;
+    itin_class IC;
+    combo_func CF = [FU];
+
+    reg_file GPRFile {
+        num_phys             = 32;
+        classes              = [GPR];
+        costs                = [1];
+        allow_move_elim      = [true];
+        max_move_elim_per_cy = 2;
+        allow_zero_elim_only = false;
+    }
+
+    retire_unit {
+        buffer        = 8;
+        max_per_cycle = 2;
+    }
+    load_queue {
+        resource = P;
+    }
+    store_queue {
+        resource = P;
+    }
+}

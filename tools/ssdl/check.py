@@ -42,6 +42,7 @@ from ssdl import record_ir as record_ir_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
 from ssdl import sets as sets_mod  # noqa: E402
 from ssdl import semir as semir_mod  # noqa: E402
+from ssdl import syntax_v2  # noqa: E402
 from ssdl import td_schema as td_schema_mod  # noqa: E402
 from ssdl import td_types as td_types_mod  # noqa: E402
 from ssdl import validate as validate_mod  # noqa: E402
@@ -3217,6 +3218,201 @@ def profiles_name_every_instance_the_miner_generates():
         assert_true(profile["instance"] == instance, f"{name}: {profile}")
         assert_true(profile["processor"] == processor, f"{name}: {profile}")
         assert_true(profile["lmul"][0] == "MF8" and profile["lmul"][-1] == "M8", name)
+
+
+V2_FIXTURES = [
+    ("family-mini", "tests/ssdl/family-mini.ssdl", "tests/ssdl/v2/family-mini-v2.ssdl"),
+    ("multiline", "tests/ssdl/multiline.ssdl", "tests/ssdl/v2/multiline-v2.ssdl"),
+    ("two-instances", "tests/ssdl/two-instances.ssdl", "tests/ssdl/v2/two-instances-v2.ssdl"),
+    (
+        "two-instances-runtime",
+        "tests/ssdl/two-instances-runtime.ssdl",
+        "tests/ssdl/v2/two-instances-runtime-v2.ssdl",
+    ),
+    ("itineraries", "tests/ssdl/itineraries.ssdl", "tests/ssdl/v2/itineraries-v2.ssdl"),
+    ("entities", "tests/ssdl/entities.ssdl", "tests/ssdl/v2/entities-v2.ssdl"),
+    ("variants", "tests/ssdl/variants.ssdl", "tests/ssdl/v2/variants-v2.ssdl"),
+    ("map", "tests/ssdl/map.ssdl", "tests/ssdl/v2/map-v2.ssdl"),
+    (
+        "projection-contract",
+        "tests/ssdl/projection-contract.ssdl",
+        "tests/ssdl/v2/projection-contract-v2.ssdl",
+    ),
+]
+
+
+def v2_error(source: str) -> str:
+    try:
+        syntax_v2.to_v1(source)
+    except syntax_v2.V2Error as exc:
+        return str(exc)
+    raise Failure(f"expected a V2Error for:\n{source}")
+
+
+@test
+def v2_and_v1_frontends_build_the_same_ir():
+    """AC4: the surface changes, the semantic program does not."""
+    for label, v1_path, v2_path in V2_FIXTURES:
+        v1_text = (ROOT / v1_path).read_text(encoding="utf-8")
+        v2_text = (ROOT / v2_path).read_text(encoding="utf-8")
+        v1 = elaborate_mod.elaborate(v1_text)
+        v2 = elaborate_mod.elaborate(v2_text, syntax="v2")
+        assert_true(v1.dimensions == v2.dimensions, f"{label}: dimensions differ")
+        symbols = v1.symbols()
+        assert_true(symbols == v2.symbols(), f"{label}: symbol lists differ")
+        by1, by2 = v1.by_symbol(), v2.by_symbol()
+        for symbol in symbols:
+            assert_true(
+                by1[symbol].spelling == by2[symbol].spelling,
+                f"{label}: spelling differs for {symbol.render()}",
+            )
+            assert_true(
+                by1[symbol].phase is by2[symbol].phase,
+                f"{label}: phase differs for {symbol.render()}",
+            )
+        # Global declarations (itineraries) are pass-through text in the IR,
+        # so their source spacing is not part of the contract.  Machine
+        # statements are, and must be byte-identical.
+        assert_true(
+            [decl.text for machine in v1.machines for decl in machine.decls]
+            == [decl.text for machine in v2.machines for decl in machine.decls],
+            f"{label}: rendered machine statements differ",
+        )
+
+
+@test
+def v2_rejects_v1_field_separators_and_kind_tails():
+    """AC5/AC3: every v1 separator gets a v2 error, not a silent accept."""
+    cases = [
+        (
+            "machine family f { resource P : units = 2; }",
+            "v1 field separator",
+        ),
+        (
+            "machine family f { advance R : cycles = 1; }",
+            "v1 field separator",
+        ),
+        (
+            "machine family f { bind W -> [P], latency = 1; }",
+            "expected '{' to open a field body",
+        ),
+        (
+            "set D = [A] : kind = dimension;",
+            "v2 requires a set kind",
+        ),
+        (
+            "set dimension D = [A] : kind = dimension;",
+            "v1 set property separator",
+        ),
+    ]
+    for source, needle in cases:
+        message = v2_error(source)
+        assert_in(needle, message)
+
+
+@test
+def v2_map_operand_positions_are_explicit():
+    """AC7: the operand position is written, not implied by list order."""
+    flat = syntax_v2.to_v1(
+        "machine family f { write W; read R; map [ADD] { 1 = R; 0 = W; } }"
+    )
+    assert_in("map [ADD] -> [W, R];", flat)
+
+    v1_source = """
+machine m {
+    write W;
+    read R;
+    map [ADD, SUB] -> [W, R];
+    map [MUL] -> [W] : unsupported = true;
+}
+"""
+    v2_source = """
+machine family m {
+    write W;
+    read R;
+    map [ADD, SUB] { 0 = W; 1 = R; }
+    map [MUL] { 0 = W; unsupported = true; }
+}
+"""
+    v1 = elaborate_mod.elaborate(v1_source)
+    v2 = elaborate_mod.elaborate(v2_source, syntax="v2")
+    assert_true(v1.symbols() == v2.symbols(), "map: symbol lists differ")
+    assert_true(elaborate_mod.render(v1) == elaborate_mod.render(v2), "map: render differs")
+
+    for source, needle in [
+        ("machine family f { map [ADD] { 0 = W; 0 = R; } }", "duplicate operand index 0"),
+        ("machine family f { map [ADD] { 0 = W; 2 = R; } }", "contiguous from 0"),
+        ("machine family f { map [ADD] { x = W; } }", "operand index must be an integer"),
+    ]:
+        assert_in(needle, v2_error(source))
+
+
+@test
+def v2_entity_fields_are_checked():
+    """Each entity accepts exactly its field table, with no duplicates."""
+    for source, needle in [
+        (
+            "machine family m { resource P { unit = 2; } }",
+            "resource P: unknown field 'unit'",
+        ),
+        (
+            "machine family m { write W; bind W { resources = [P]; latency = 1; latency = 2; } }",
+            "bind W: repeated field 'latency'",
+        ),
+        (
+            "machine family m { reg_file G { num_phys = 8; cost = [1]; } }",
+            "reg_file G: unknown field 'cost'",
+        ),
+        (
+            "machine family m { retire_unit { buffer = 8; max_per_cycle = 2; cycles = 1; } }",
+            "retire_unit: unknown field 'cycles'",
+        ),
+    ]:
+        assert_in(needle, v2_error(source))
+
+
+@test
+def v2_stage_fields_are_named_and_checked():
+    """A stage is a field body; index/units are required, typos are rejected."""
+    for source, needle in [
+        (
+            "machine family m { itineraries { itin I { stages = ["
+            "stage { index = 1; index = 2; units = [F]; }]; } } }",
+            "repeated field 'index'",
+        ),
+        (
+            "machine family m { itineraries { itin I { stages = ["
+            "stage { index = 1; units = [F]; foo = 2; }]; } } }",
+            "unknown field 'foo'",
+        ),
+        (
+            "machine family m { itineraries { itin I { stages = ["
+            "stage { index = 1; units = [F]; kind = reserved; }]; } } }",
+            "kind requires latency",
+        ),
+        (
+            "machine family m { itineraries { itin I { stages = ["
+            "stage { index = 1; }]; } } }",
+            "index and units are required",
+        ),
+    ]:
+        assert_in(needle, v2_error(source))
+
+
+@test
+def v2_floor_division_is_not_a_comment():
+    """v2 comments are '#' and '/* */'; '//' is the floor-division operator."""
+    source = """
+machine family f(vlen: INT) {
+    write W;
+    bind W { resources = [P]; latency = vlen // 128; }
+}
+machine instance m128 : f(128) {
+    resource P { units = 1; }
+}
+"""
+    text = elaborate_mod.render(elaborate_mod.elaborate(source, syntax="v2"))
+    assert_in("bind W -> [P], latency = 1;", text)
 
 
 def main() -> int:

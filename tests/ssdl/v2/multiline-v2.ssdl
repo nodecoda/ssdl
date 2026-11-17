@@ -1,0 +1,40 @@
+# v2 twin of tests/ssdl/multiline.ssdl.
+# v2 has no line-joining rule: every field is terminated by ';'.
+
+set dimension D = [A, B] {
+    name_format = "_{value}";
+}
+
+machine family fam(vlen: INT) {
+    write W[D];
+
+    bind W[D] {
+        resources = [P];
+        latency   = vlen / 128;
+        uops      = 1;
+        release   = [1, 2];
+    }
+
+    variant W[D] {
+        case all_of(feature(F), is_zero(1)): [W[D]];
+        default: [W[D]];
+    }
+
+}
+
+machine instance m512 : fam(512) {
+    resource P {
+        units = 2;
+    }
+
+    read R;
+
+    map [ADD] {
+        0 = W_A;
+    }
+
+    advance R {
+        cycles = 1;
+        writes = [W_A];
+    }
+}

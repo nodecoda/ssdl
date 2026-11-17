@@ -241,8 +241,20 @@ def elaborate(
     *,
     add_axis: tuple[str, str] | None = None,
     origins: list[tuple[str, str, int]] | None = None,
+    syntax: str = "v1",
 ) -> semir.SemProgram:
-    """Build the semantic program; all values here are ELAB."""
+    """Build the semantic program; all values here are ELAB.
+
+    ``syntax="v2"`` transpiles the v2 surface to v1 family source first; the
+    semantic kernel below is shared, so both front ends must produce the same
+    ``SemProgram``.
+    """
+    if syntax == "v2":
+        if __package__ in (None, ""):
+            from ssdl import syntax_v2  # type: ignore
+        else:
+            from . import syntax_v2
+        text = syntax_v2.to_v1(text)
     dimensions, relations, externs, machines, globals_ = fe.split_blocks(text)
     lookups = fe._build_lookups(relations, externs) if (relations or externs) else {}
     if add_axis:
@@ -356,14 +368,23 @@ def expand_text(
     *,
     add_axis: tuple[str, str] | None = None,
     origins: list[tuple[str, str, int]] | None = None,
+    syntax: str = "v1",
 ) -> str:
-    return render(elaborate(text, add_axis=add_axis, origins=origins))
+    return render(
+        elaborate(text, add_axis=add_axis, origins=origins, syntax=syntax)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("input")
     ap.add_argument("-o", "--out")
+    ap.add_argument(
+        "--syntax",
+        choices=("v1", "v2"),
+        default="v1",
+        help="surface syntax of the input (default: v1)",
+    )
     ap.add_argument("--symbols", action="store_true", help="print declaration identities")
     ap.add_argument(
         "--check-golden",
@@ -375,10 +396,15 @@ def main(argv: list[str] | None = None) -> int:
     path = Path(args.input)
     text = path.read_text(encoding="utf-8")
     try:
-        program = elaborate(text)
+        program = elaborate(text, syntax=args.syntax)
     except fe.ExpandError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except Exception as exc:
+        if type(exc).__name__ == "V2Error":
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        raise
 
     if args.symbols:
         for symbol in program.symbols():

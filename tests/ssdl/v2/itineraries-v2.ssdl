@@ -1,0 +1,24 @@
+# v2 twin of tests/ssdl/itineraries.ssdl.
+# ``sched_model`` is a body field, not a ':' property.
+
+machine family itincpu {
+    resource P {
+        units = 1;
+    }
+}
+
+itineraries : packetizer_namespace = "T" {
+    sched_model = itincpu;
+    func_units  = [FU_TOP];
+    bypasses    = [no_bypass_top];
+
+    itin IIC_iTop {
+        stages = [
+            stage { index = 1; units = [FU_TOP]; },
+            stage { index = 2; units = [FU_TOP]; latency = 1; kind = reserved; },
+        ];
+        cycles   = [1, 3];
+        bypasses = [no_bypass_top];
+        uops     = 2;
+    }
+}

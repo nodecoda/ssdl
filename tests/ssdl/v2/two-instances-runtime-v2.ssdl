@@ -1,0 +1,20 @@
+# v2 twin of tests/ssdl/two-instances-runtime.ssdl.
+
+set dimension D = [A, B] {
+    name_format = "_{value}";
+}
+
+machine family fam(depth: INT) {
+    resource P {
+        units = 1;
+        name  = "Pipe{depth}";
+    }
+    write W[D];
+    bind W[D] {
+        resources = [P];
+        latency   = opcode([ADD]) ? depth + 3 : depth + 6;
+    }
+}
+
+machine instance shallow : fam(1) { }
+machine instance deep : fam(2) { }

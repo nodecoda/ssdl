@@ -1,0 +1,22 @@
+# v2 twin of tests/ssdl/two-instances.ssdl.
+
+set dimension D = [A] {
+    name_format = "_{value}";
+}
+
+machine family fam(vlen: INT) {
+    resource PipeA {
+        units = 1;
+    }
+    write W[D];
+    bind W[D] {
+        resources = [PipeA];
+        latency   = vlen / 128;
+    }
+    load_queue {
+        resource = PipeA;
+    }
+}
+
+machine instance small : fam(128) { }
+machine instance big : fam(256) { }
