@@ -97,6 +97,9 @@ machine m {
 }
 ```
 
+这四个要素的静态绑定、时间轴与吞吐公式见
+`docs/dsl/2026-11-17-scheduling-model-elements.md`。
+
 同一个 `machine` 也可以直接写成“族 + 实例”，把稀疏维度只写一次：
 
 ```text
