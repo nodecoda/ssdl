@@ -4,3 +4,8 @@ __pycache__/
 .omx/
 .codex/
 *.swp
+
+# MachineScheduler demo artifacts (scripts/debug-sched-demo.sh)
+docs/examples/sched-debug/*.mir
+docs/examples/sched-debug/*.s
+docs/examples/sched-debug/*.log
