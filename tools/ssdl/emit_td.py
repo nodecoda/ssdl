@@ -335,6 +335,16 @@ class Emitter:
             self.predicates.finish()
         except PredicateError as exc:
             for message in exc.errors:
+                line = None
+                if message.startswith("line "):
+                    head, _, rest = message.partition(": ")
+                    if head[5:].isdigit():
+                        line = int(head[5:])
+                        subject, _, body = rest.partition(": ")
+                        self.error(
+                            subject or "lowering", body or rest, line=line
+                        )
+                        continue
                 self.error("lowering", message)
 
         if self.errors:
@@ -884,16 +894,19 @@ class Emitter:
             "store_queue": [],
             "itineraries": [],
         }
+        prop_lines: dict[str, int | None] = {}
         for item in decl.items:
             kind = item["kind"]
             if kind == "prop":
                 props[item["name"]] = item["value"]
+                prop_lines[item["name"]] = item.get("line")
             elif kind in items:
                 items[kind].append(item)
             else:  # pragma: no cover - parser only produces known kinds
                 self.error(where, f"unknown machine item {kind!r}")
 
         for key in props:
+            self.current_line = prop_lines.get(key) or info.decl.line
             if key not in SCHED_MODEL_PROPS and key not in (
                 "features",
                 "tune_features",
@@ -1620,9 +1633,11 @@ class Emitter:
         else:
             sched_model_name = f"{info.def_name}Model"
         for name in features:
+            self.current_line = prop_lines.get("features") or info.decl.line
             if name in self.features and self.features[name].kind == "tune":
                 self.error(where, f"tune feature {name!r} belongs in tune_features, not features")
         for name in tune:
+            self.current_line = prop_lines.get("tune_features") or info.decl.line
             # TuneFeatures is list<SubtargetFeature>: upstream mixes plain
             # features (TuneSiFive7) with RISCVTuneFeature records.  Only an
             # architectural extension is misplaced here.
@@ -1631,7 +1646,9 @@ class Emitter:
                     where,
                     f"extension feature {name!r} belongs in features, not tune_features",
                 )
+        self.current_line = prop_lines.get("features") or info.decl.line
         fargs = self._resolve_features(where, features)
+        self.current_line = prop_lines.get("tune_features") or info.decl.line
         targs = self._resolve_features(where, tune)
         if role == "model":
             pass

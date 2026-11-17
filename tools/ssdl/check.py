@@ -3965,6 +3965,30 @@ machine both m {
 
 
 @test
+def name_errors_keep_their_declaration_line():
+    """Duplicate names, bad feature refs and delegates all name their line."""
+    v2 = """feature plain A {
+    mattr = "a";
+    bool x = true;
+}
+
+machine both m {
+    write W;
+    write W;
+    features = [Nope];
+}
+
+predicate sti P {
+    delegates = [Nope];
+}
+"""
+    text = emit_error_text(v2, syntax="v2")
+    assert_in("line 8: machine m: error: duplicate write 'W'", text)
+    assert_in("line 9: machine m: error: unknown feature 'Nope'", text)
+    assert_in("line 12: sti_decl P: error: unknown delegate 'Nope'", text)
+
+
+@test
 def validate_diagnostics_name_the_surface_line():
     """Sort errors carry the declaration line, v1 or v2 alike."""
     v1 = "predicate S1 = feature(A);\nsti_decl P { default = S1; }\n"

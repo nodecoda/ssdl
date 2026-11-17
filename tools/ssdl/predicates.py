@@ -155,6 +155,18 @@ class PredicateLowerer:
         self.def_names: set[str] = set(self.reserved_names)
         self.errors: list[str] = []
         self.stack: list[str] = []
+        # Declaration line per diagnostic prefix, so a predicate error can
+        # point at its declaration instead of only at the lowering stage.
+        self.decl_lines: dict[str, int] = {}
+        for decl in self.program.decls:
+            if isinstance(decl, PredicateDecl):
+                self.decl_lines[f"predicate {decl.name}"] = decl.line
+            elif isinstance(decl, STIDecl):
+                self.decl_lines[f"sti_decl {decl.name}"] = decl.line
+            elif isinstance(decl, STIFunction):
+                self.decl_lines[f"sti_function {decl.name}"] = decl.line
+            elif isinstance(decl, TIIPredicate):
+                self.decl_lines[f"tii_predicate {decl.name}"] = decl.line
 
     # -- record table ----------------------------------------------------
     def define(
@@ -199,7 +211,13 @@ class PredicateLowerer:
             except SetError as exc:
                 self.errors.extend(exc.errors)
         if self.errors:
-            raise PredicateError(self.errors)
+            raise PredicateError([self._with_line(error) for error in self.errors])
+
+    def _with_line(self, message: str) -> str:
+        if message.startswith("line "):
+            return message
+        line = self.decl_lines.get(message.split(":", 1)[0])
+        return f"line {line}: {message}" if line else message
 
     def register_def(self, name: str, where: str) -> None:
         if name in self.def_names:
