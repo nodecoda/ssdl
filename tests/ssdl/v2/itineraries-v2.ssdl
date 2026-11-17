@@ -14,8 +14,8 @@ itineraries : packetizer_namespace = "T" {
 
     itin IIC_iTop {
         stages = [
-            stage { index = 1; units = [FU_TOP]; },
-            stage { index = 2; units = [FU_TOP]; latency = 1; kind = reserved; },
+            stage { cycles = 1; units = [FU_TOP]; },
+            stage { cycles = 2; units = [FU_TOP]; timeinc = 1; kind = reserved; },
         ];
         cycles   = [1, 3];
         bypasses = [no_bypass_top];

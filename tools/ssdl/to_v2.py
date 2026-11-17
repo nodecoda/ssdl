@@ -410,10 +410,10 @@ def _stage_args(text: str) -> str:
         raise ToV2Error(f"expected stage(...), got {text!r}")
     args = [arg.strip() for arg in _split_top(match.group(1), ",") if arg.strip()]
     if len(args) < 2:
-        raise ToV2Error(f"stage needs an index and units: {text!r}")
-    fields = [f"index = {args[0]};", f"units = {args[1]};"]
+        raise ToV2Error(f"stage needs a cycle count and units: {text!r}")
+    fields = [f"cycles = {args[0]};", f"units = {args[1]};"]
     if len(args) >= 3:
-        fields.append(f"latency = {args[2]};")
+        fields.append(f"timeinc = {args[2]};")
     if len(args) >= 4:
         fields.append(f"kind = {args[3]};")
     return "stage { " + " ".join(fields) + " }"

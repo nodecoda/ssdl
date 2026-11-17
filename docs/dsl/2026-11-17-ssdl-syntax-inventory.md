@@ -164,7 +164,7 @@
 | `advance R : cycles = 1 : writes = [W];` | `advance R { cycles = 1; writes = [W]; }` |
 | `map [ADD] -> [W, read_default];` | `map ADD { 0 = W; 1 = read_default; }` |
 | `feature F : kind = plain, field = "IsRV64", value = "true";` | `feature F { bool IsRV64 = true; }` |
-| `stage(1, [FU_ALU], 1, required)` | `stage { index = 1; units = [FU_ALU]; latency = 1; kind = required; }` |
+| `stage(1, [FU_ALU], 1, required)` | `stage { cycles = 1; units = [FU_ALU]; timeinc = 1; kind = required; }` |
 | `predicate` / `sti_*` / `tii_*` | `predicate P : sched\|select\|sti\|tii`（P2 门禁） |
 | `[{ ... }]` | `host { ... }`（保留旧写法到 v1 删除） |
 

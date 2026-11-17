@@ -53,7 +53,7 @@ python3 tools/ssdl/family_sweep.py --syntax v2 --out /tmp/ssdl-sweep-v2
 | `sti_decl X { ... }` + `sti_function F : X { sched_model = M; ... }` | `predicate X : sti { ... impl F : M { ... } }` | `STIPredicateDecl` + `STIPredicate` |
 | `tii_predicate X = switch opcode { ... };` | `predicate X : tii { switch opcode { ... } }` | `TIIPredicate` |
 | `itineraries : sched_model = M : packetizer_namespace = "N" { ... }` | `itineraries : packetizer_namespace = "N" { sched_model = M; ... }` | `ProcessorItineraries` |
-| `stage(1, [FU], 2, reserved)` | `stage { index = 1; units = [FU]; latency = 2; kind = reserved; }` | `InstrItinData` |
+| `stage(1, [FU], 2, reserved)` | `stage { cycles = 1; units = [FU]; timeinc = 2; kind = reserved; }` | `InstrItinData` |
 
 ---
 

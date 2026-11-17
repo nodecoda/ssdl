@@ -40,17 +40,28 @@ v1 把 `//` 当行注释，同时又在表达式里用 `//` 表示地板除；�
 
 ### 1.1 `-` 的词法规则（吸收 S5）
 
-`-` 属于 `IDENT` **当且仅当**它前面是 `ident_char`、后面是 `ident_start`：
+`-` 是普通标识符字符：在标识符内**一律**并入 `IDENT`，唯一例外是 `->`
+（它在词法阶段优先匹配）。这条规则必须是上下文无关的，否则
+`ssdl-sifive-7` 这类真实 CPU 名无法原样书写：
 
 ```text
+ssdl-sifive-7       # 一个 IDENT
 sifive-7-series     # 一个 IDENT
+rv64-2p1            # 一个 IDENT
 a-b                 # 一个 IDENT
-a - b               # 减法（空格分隔）
-x-1                 # 减法（`-` 后是数字）
-rv64-2p1            # 一个 IDENT（`-` 后是字母）
+a - b               # 标识符 a、减号、标识符 b（减法按 §7 求值）
+-1                  # 负整数字面量：token 起始位置的 `-` + 数字
 ```
 
-`->` 在词法阶段优先于 `IDENT` 和减号匹配。
+名字位置与值位置的区别是**位置**，不是字符：
+
+- 名字位置（`machine` 名、`write`/`read`、列表元素、`sched_model` 等）
+  原样使用 `IDENT`，`-` 永远属于名字。
+- 数值字段（`latency` / `uops` / `cycles` / 参数表达式等）的字段值按 §7
+  重新解析；因此 `n-1`、`n - 1` 都是减法。需要把名字与减法写在一起时，
+  唯一可靠的办法是留空格：`n - 1`。
+
+v1 的 `-` 行为与本节一致，v2 不改变既有 CPU 名的拼写。
 
 ### 1.2 `host` 边界
 
@@ -411,8 +422,6 @@ machine_prop
 ### 6.2 角色允许项
 
 | 项 | `both` | `model` | `cpu` | `family` | `instance` | `alias` |
-|---|:--:|:--:|:--:|:--:|:--:|
-| 项 | `both` | `model` | `cpu` | `family` | `instance` | `alias` |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|
 | machine 属性（`issue_width` 等） | ✓ | ✓ | — | ✓ | ✓ | — |
 | `model =` | — | — | ✓ | — | — | — |
@@ -653,12 +662,21 @@ stage_body
     ;
 
 stage_field
-    = "index"   "=" INT
+    = "cycles"  "=" INT
     | "units"   "=" ident_list
-    | "latency" "=" INT
+    | "timeinc" "=" INT
     | "kind"    "=" ( "required" | "reserved" )
     ;
 ```
+
+`cycles` 是这一级行程占用的周期数（`InstrStage` 的第一个参数），不是
+stage 在列表中的序号；`timeinc` 是进入下一级前的 time increment（第三个
+参数）。这两个名字必须与语义一致，不要退回 TD 的位置化拼写。
+
+`itin.cycles` 是 **operand cycles**（`InstrItinData` 的第三个参数），
+不是每级 stage 的周期数：第 0 个元素是该指令结果的可用周期，其余元素是
+各操作数的读取周期；它可以省略，长度与 `stages` 无关。`stage` 的 `units`
+必须出现在 `itineraries.func_units` 中。
 
 ```text
 itineraries : packetizer_namespace = "SiFive7" {
@@ -666,8 +684,8 @@ itineraries : packetizer_namespace = "SiFive7" {
     bypasses   = [no_bypass];
     itin IIC_iLoad {
         stages = [
-            stage { index = 1; units = [FU_ALU]; },
-            stage { index = 2; units = [FU_LSU]; latency = 1; },
+            stage { cycles = 1; units = [FU_ALU]; },
+            stage { cycles = 2; units = [FU_LSU]; timeinc = 1; },
         ];
         cycles = [3, 1];
     }
@@ -754,7 +772,7 @@ attr_and
     ;
 
 attr_cmp
-    = attr_unary [ ( "==" | "!=" | "<" | ">" ) attr_atom ]
+    = attr_unary [ ( "==" | "!=" | "<" | ">" | "<=" | ">=" ) attr_atom ]
     ;
 
 attr_unary

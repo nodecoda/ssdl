@@ -1089,18 +1089,23 @@ def parse(text: str, syntax: str = "v1") -> Program:
     return Parser(text).parse()
 
 
-FAMILY_SOURCE = re.compile(r":\s*kind\s*=\s*(?:dimension|relation)\b|\bextern\s+fn\b")
+FAMILY_SOURCE = re.compile(
+    r":\s*kind\s*=\s*(?:dimension|relation)\b"
+    r"|\bextern\s+fn\b"
+    r"|(?m:^\s*machine\s+[A-Za-z_][\w-]*\s*(?:\(|:\s*[A-Za-z_][\w-]*\s*\())"
+)
 
 
 def expand_source(text: str, syntax: str = "v1") -> str:
     """Expand a source to v1.0 text (a no-op for plain v1.0 sources).
 
     ``syntax="v2"`` first transpiles the v2 surface to v1 family source; the
-    rest of the path is unchanged.  Dimension declarations are the marker:
-    without ``kind = dimension`` a source cannot use axis-indexed names, so a
-    file that has the marker is expanded before parsing.  ``family_expand`` is
-    the single implementation of the norm rules, and its output is ordinary
-    v1.0 SSDL.
+    rest of the path is unchanged.  The marker is either a parameterized
+    ``machine`` header (a family template), a ``machine NAME : F(args)``
+    instantiation, a dimension/relation declaration, or an ``extern fn``;
+    only those sources can need expansion.  Without a marker the text is
+    returned untouched.  ``family_expand`` is the single implementation of
+    the norm rules, and its output is ordinary v1.0 SSDL.
     """
     if syntax == "v2":
         if __package__ in (None, ""):

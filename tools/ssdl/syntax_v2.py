@@ -421,6 +421,20 @@ def _feature(cursor: _Cursor, out: list[str]) -> None:
     out.append(f"feature {name} : " + ", ".join(f"{k} = {v}" for k, v in parts) + ";")
 
 
+def _reject_none_of(tokens: list[parser.Token], where: str) -> None:
+    """`none_of` is a feature-list combinator, not a schedule predicate."""
+    for index, token in enumerate(tokens[:-1]):
+        if (
+            token.kind == "IDENT"
+            and token.value == "none_of"
+            and tokens[index + 1].value == "("
+        ):
+            raise V2Error(
+                f"{where}: none_of is only valid in a select `during` list; "
+                "write all_of(not(P)) for a schedule predicate"
+            )
+
+
 def _predicate(cursor: _Cursor, out: list[str]) -> None:
     cursor.expect("predicate")
     if cursor.peek().value == "prolog":
@@ -465,6 +479,7 @@ def _predicate(cursor: _Cursor, out: list[str]) -> None:
             tokens = cursor.collect({";"})
             cursor.expect(";")
             _check_host(tokens, head)
+            _reject_none_of(tokens, head)
             out.append(f"{head} = {_render_tokens(tokens)};")
         else:
             token = cursor.peek()
@@ -478,6 +493,7 @@ def _predicate(cursor: _Cursor, out: list[str]) -> None:
     tokens = cursor.collect({";"})
     cursor.expect(";")
     _check_host(tokens, head)
+    _reject_none_of(tokens, head)
     out.append(f"{head} = {_render_tokens(tokens)};")
 
 
@@ -665,6 +681,8 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         out.append(f"reg_file {name} {{ {fields} }}")
         return
     if key == "retire_unit":
+        if any(line.startswith("retire_unit ") for line in out):
+            raise V2Error("retire_unit: at most one per machine")
         body = cursor.record_body()
         cursor.accept(";")
         _fields(body, {"buffer", "max_per_cycle"}, "retire_unit")
@@ -721,7 +739,13 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
                 )
             index = cursor.number()
             cursor.expect("=")
-            value = cursor.expr({";"})
+            if cursor.peek().kind != "IDENT":
+                token = cursor.peek()
+                raise V2Error(
+                    f"line {token.line}:{token.col}: map values are sched_rw "
+                    "names (a write or read), not expressions"
+                )
+            value = cursor.ident() + _dim_index(cursor)
             cursor.expect(";")
             if index in entries:
                 raise V2Error(f"map: duplicate operand index {index}")
@@ -762,6 +786,7 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
             elif field == "case":
                 pred_tokens = cursor.collect({":"}, ternary=True)
                 _check_host(pred_tokens, f"{key} {subject}")
+                _reject_none_of(pred_tokens, f"{key} {subject}")
                 pred = _render_tokens(pred_tokens)
                 cursor.expect(":")
                 selected = cursor.list_tokens()
@@ -823,24 +848,34 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
                             raise V2Error(
                                 f"stage: repeated field {sorted(duplicated)[0]!r}"
                             )
-                        unknown = set(keys) - {"index", "units", "latency", "kind"}
+                        if "index" in keys:
+                            raise V2Error(
+                                "stage: 'index' was renamed to 'cycles' "
+                                "(the stage's cycle count)"
+                            )
+                        if "latency" in keys:
+                            raise V2Error(
+                                "stage: 'latency' was renamed to 'timeinc' "
+                                "(the time increment before the next stage)"
+                            )
+                        unknown = set(keys) - {"cycles", "units", "timeinc", "kind"}
                         if unknown:
                             raise V2Error(
                                 f"stage: unknown field {sorted(unknown)[0]!r}"
                             )
                         stage_fields = dict(body)
-                        index = stage_fields.get("index")
+                        cycles = stage_fields.get("cycles")
                         units = stage_fields.get("units")
-                        if index is None or units is None:
-                            raise V2Error("stage: index and units are required")
+                        if cycles is None or units is None:
+                            raise V2Error("stage: cycles and units are required")
                         extra = ""
-                        if "latency" in stage_fields:
-                            extra += f", {stage_fields['latency']}"
+                        if "timeinc" in stage_fields:
+                            extra += f", {stage_fields['timeinc']}"
                             if "kind" in stage_fields:
                                 extra += f", {stage_fields['kind']}"
                         elif "kind" in stage_fields:
-                            raise V2Error("stage: kind requires latency")
-                        stages.append(f"stage({index}, {units}{extra})")
+                            raise V2Error("stage: kind requires timeinc")
+                        stages.append(f"stage({cycles}, {units}{extra})")
                         cursor.accept(",")
                     cursor.expect("]")
                     itin_lines.append(f"stages = [{', '.join(stages)}];")

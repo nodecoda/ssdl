@@ -3582,30 +3582,56 @@ def v2_entity_fields_are_checked():
 
 @test
 def v2_stage_fields_are_named_and_checked():
-    """A stage is a field body; index/units are required, typos are rejected."""
+    """A stage names its cycle count and timeinc, not a position/latency."""
     for source, needle in [
         (
             "machine family m { itineraries { itin I { stages = ["
-            "stage { index = 1; index = 2; units = [F]; }]; } } }",
-            "repeated field 'index'",
+            "stage { cycles = 1; cycles = 2; units = [F]; }]; } } }",
+            "repeated field 'cycles'",
         ),
         (
             "machine family m { itineraries { itin I { stages = ["
-            "stage { index = 1; units = [F]; foo = 2; }]; } } }",
+            "stage { cycles = 1; units = [F]; foo = 2; }]; } } }",
             "unknown field 'foo'",
         ),
         (
             "machine family m { itineraries { itin I { stages = ["
-            "stage { index = 1; units = [F]; kind = reserved; }]; } } }",
-            "kind requires latency",
+            "stage { cycles = 1; units = [F]; kind = reserved; }]; } } }",
+            "kind requires timeinc",
         ),
         (
             "machine family m { itineraries { itin I { stages = ["
-            "stage { index = 1; }]; } } }",
-            "index and units are required",
+            "stage { cycles = 1; }]; } } }",
+            "cycles and units are required",
+        ),
+        (
+            "machine family m { itineraries { itin I { stages = ["
+            "stage { index = 1; units = [F]; }]; } } }",
+            "'index' was renamed to 'cycles'",
+        ),
+        (
+            "machine family m { itineraries { itin I { stages = ["
+            "stage { cycles = 1; units = [F]; latency = 2; }]; } } }",
+            "'latency' was renamed to 'timeinc'",
         ),
     ]:
         assert_in(needle, v2_error(source))
+
+
+@test
+def v2_map_and_retire_unit_are_checked():
+    """Map values are sched_rw names; a machine has at most one retire unit."""
+    assert_in(
+        "map values are sched_rw names",
+        v2_error("machine family m { write W; map [ADD] { 0 = 1+2; } }"),
+    )
+    assert_in(
+        "retire_unit: at most one per machine",
+        v2_error(
+            "machine family m { retire_unit { buffer = 4; } "
+            "retire_unit { buffer = 8; } }"
+        ),
+    )
 
 
 @test
@@ -3622,6 +3648,72 @@ machine instance m128 : f(128) {
 """
     text = elaborate_mod.render(elaborate_mod.elaborate(source, syntax="v2"))
     assert_in("bind W -> [P], latency = 1;", text)
+
+
+@test
+def family_without_dimensions_is_still_expanded():
+    """A parameterized machine is a family even with no [axis] names.
+
+    The expansion trigger must not depend on dimension declarations: a family
+    that only forwards a parameter into a scalar field still has to be
+    instantiated before parsing.
+    """
+    source = """
+machine family f(n: INT) {
+    write W;
+    bind W { resources = []; latency = n; }
+}
+machine instance i : f(4) {
+}
+"""
+    text = elaborate_mod.render(elaborate_mod.elaborate(source, syntax="v2"))
+    assert_in("machine i {", text)
+    assert_in("bind W -> [], latency = 4;", text)
+    assert_true("machine f(" not in text, "the family template must not be emitted")
+
+    v1 = parser.expand_source(
+        "machine f(n: INT) { write W; bind W { resources = []; latency = n; } }\n"
+        "machine i : f(4) { }",
+        syntax="v1",
+    )
+    assert_in("machine i {", v1)
+    assert_in("latency = 4", v1)
+
+
+@test
+def hyphen_is_an_identifier_character_not_a_lexical_operator():
+    """'-' stays inside an identifier; expression fields re-parse their text.
+
+    Context-free lexing is what keeps real CPU names such as
+    ``ssdl-sifive-7`` writable.  Arithmetic still works because numeric field
+    values are re-parsed by §7, so both ``n-1`` and ``n - 1`` fold to 3.
+    """
+    idents = [
+        tok.value
+        for tok in parser.tokenize(
+            "ssdl-sifive-7 sifive-7-series a-b a - b", floor_div=True
+        )
+        if tok.kind == "IDENT"
+    ]
+    assert_in("ssdl-sifive-7", idents)
+    assert_in("sifive-7-series", idents)
+    assert_in("a-b", idents)
+    assert_true("a" in idents and "b" in idents, f"spaced '-' must split: {idents}")
+
+    flat = syntax_v2.to_v1("machine both ssdl-sifive-7 { write W; }")
+    assert_in("machine ssdl-sifive-7 {", flat)
+
+    for expr in ("n-1", "n - 1"):
+        source = f"""
+machine family f(n: INT) {{
+    write W;
+    bind W {{ resources = []; latency = {expr}; }}
+}}
+machine instance i : f(4) {{
+}}
+"""
+        text = elaborate_mod.render(elaborate_mod.elaborate(source, syntax="v2"))
+        assert_in("bind W -> [], latency = 3;", text)
 
 
 def main() -> int:
