@@ -3548,24 +3548,24 @@ def v2_predicate_forms_are_checked():
     """select/sti/tii have one spelling; mistakes are rejected with a hint."""
     for source, needle in [
         (
-            "predicate P : select { desc = \"x\"; }",
+            "predicate select P { desc = \"x\"; }",
             "select needs when and/or during",
         ),
         (
-            "predicate P : select { when = [{ x }]; }",
+            "predicate select P { when = [{ x }]; }",
             "when needs host",
         ),
         (
-            "predicate P : sti { impl F : m1 { sched_model = m2; } }",
+            "predicate sti P { impl F : m1 { sched_model = m2; } }",
             "is scoped to 'm1' but sched_model = 'm2'",
         ),
         (
-            "predicate P : sti { nope = true; }",
+            "predicate sti P { nope = true; }",
             "unknown sti field 'nope'",
         ),
         (
-            "predicate P : wat { }",
-            "unknown predicate kind 'wat'",
+            "predicate wat P { }",
+            "predicate needs a kind right after the keyword",
         ),
         (
             "predicate prolog = [{ x }];",
@@ -3573,6 +3573,47 @@ def v2_predicate_forms_are_checked():
         ),
     ]:
         assert_in(needle, v2_error(source))
+
+
+@test
+def v2_declaration_kind_leads_the_declaration():
+    """kind sits right after the keyword; the old spellings point at the fix."""
+    for source, needle in [
+        (
+            "feature F { bool x = true; }",
+            "feature needs a kind right after the keyword",
+        ),
+        (
+            "feature F : plain { bool x = true; }",
+            "write the kind after the keyword, not 'NAME : kind'",
+        ),
+        (
+            "feature plain F { kind = plain; bool x = true; }",
+            "feature: kind moved to the header",
+        ),
+        (
+            "predicate P = is_reg(0);",
+            "predicate needs a kind right after the keyword",
+        ),
+        (
+            "predicate P : select { when = [{ x }]; }",
+            "predicate needs a kind right after the keyword",
+        ),
+    ]:
+        assert_in(needle, v2_error(source))
+
+    round_trip = (
+        "feature extension X { version = \"1.0\"; bitmask = { group = 0; bit = 1; }; }\n"
+        "predicate sched P(i) = is_reg(i);\n"
+    )
+    v1_image = syntax_v2.to_v1(round_trip)
+    migrated = to_v2_mod.to_v2(v1_image)
+    assert_in("feature extension X {", migrated)
+    assert_in("predicate sched P(i) =", migrated)
+    assert_true(
+        syntax_v2.to_v1(migrated) == v1_image,
+        "the v1 image must be stable across a migration round trip",
+    )
 
 
 @test
@@ -3774,13 +3815,18 @@ def predicate_signatures_are_checked_before_lowering():
         ("is_reg(-1)", "operand index must be non-negative"),
         ("is_reg(0, map = F)", "is_reg: unexpected named argument 'map'"),
     ]:
-        errors = validate_mod.validate(parser.parse(f"predicate P = {expr};"))
+        errors = validate_mod.validate(
+            parser.parse(f"predicate sched P = {expr};", syntax="v2")
+        )
         assert_true(
             any(needle in error for error in errors),
             f"{expr}: expected {needle!r}, got {errors}",
         )
     assert_true(
-        validate_mod.validate(parser.parse("predicate P = is_reg(0);")) == [],
+        validate_mod.validate(
+            parser.parse("predicate sched P = is_reg(0);", syntax="v2")
+        )
+        == [],
         "a well-formed atom call must validate",
     )
 
@@ -3799,10 +3845,10 @@ def predicate_signatures_are_checked_before_lowering():
 @test
 def v2_source_map_reports_surface_lines():
     """A v1 parse error after transpiling points at the v2 declaration."""
-    source = """feature A {
+    source = """feature plain A {
     bool x = true;
 }
-feature B {
+feature plain B {
     bool y = true;
 }
 machine both m {
@@ -3824,7 +3870,7 @@ machine both m {
         raise Failure("expected a v1 parse error after transpiling")
 
     flat, line_map = syntax_v2.to_v1_mapped(
-        "machine family m {\n write W;\n}\n\nfeature F {\n"
+        "machine family m {\n write W;\n}\n\nfeature plain F {\n"
         " bool x = true;\n}\n\nmachine both n { write V; }\n"
     )
     assert_true(len(flat.splitlines()) == 3, f"unexpected v1 text: {flat!r}")
@@ -3856,14 +3902,14 @@ machine instance i : m(2) {
 def v2_bitmask_has_one_block_spelling():
     """A field that owns a block spells it 'field = { ... }'."""
     source = (
-        'feature X { kind = extension; version = "1.0"; '
-        "bitmask = { group = 0; bit = 1; } }"
+        'feature extension X { version = "1.0"; '
+        "bitmask = { group = 0; bit = 1; }; }"
     )
     assert_in("bitmask = { group = 0, bit = 1 }", syntax_v2.to_v1(source))
     assert_in(
         "bitmask needs '='",
         v2_error(
-            'feature X { kind = extension; version = "1.0"; '
+            'feature extension X { version = "1.0"; '
             "bitmask { group = 0; bit = 1; } }"
         ),
     )

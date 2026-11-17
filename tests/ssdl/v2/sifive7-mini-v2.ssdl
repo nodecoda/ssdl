@@ -5,52 +5,47 @@
 # itineraries and a top-level itinerary, machine alias, and the whole
 # entity/relation surface.
 
-feature FeatureSSDL64Bit {
+feature plain FeatureSSDL64Bit {
     bool IsRV64 = true;
     mattr = "ssdl-64bit";
     desc  = "Implements RV64";
 }
 
-feature StdExtXssdl {
-    kind = extension;
+feature extension StdExtXssdl {
     version = "2.1";
     bitmask = {
         group = 0;
         bit   = 8;
-    }
+    };
     desc = "SSDL base extension";
 }
 
-feature StdExtZssdlcsr {
-    kind = extension;
+feature extension StdExtZssdlcsr {
     version = "2.0";
     desc = "SSDL CSR instructions";
 }
 
-feature StdExtZssdlcnt {
-    kind = extension;
+feature extension StdExtZssdlcnt {
     version = "2.0";
     implies = [StdExtZssdlcsr];
     bitmask = {
         group = 1;
         bit   = 15;
-    }
+    };
     desc = "SSDL counters";
 }
 
-feature StdExtZssdlexp {
-    kind = extension;
+feature extension StdExtZssdlexp {
     version = "0.1";
     experimental = true;
     bitmask = {
         group = 1;
         bit   = 13;
-    }
+    };
     desc = "SSDL experimental extension";
 }
 
-feature TuneSSDLPostRA {
-    kind = tune;
+feature tune TuneSSDLPostRA {
     bool UsePostRAScheduler = true;
     positive_directive = "use-ssdl-postra-scheduler";
     negative_directive = "no-use-ssdl-postra-scheduler";
@@ -63,12 +58,12 @@ set instructions ALUInsts = inst(category == "alu");
 set instructions Logical  = [AND, XOR, ...ALUInsts];
 
 # ============ predicates ============
-predicate IsZeroReg(i: INT) = reg_is(i, ZeroRegs);
-predicate IsALU = opcode(ALUInsts);
-predicate IsALUAndZero(i: INT) = all_of(opcode(Logical), IsZeroReg(i));
-predicate HasXssdl = feature(StdExtXssdl);
+predicate sched IsZeroReg(i: INT) = reg_is(i, ZeroRegs);
+predicate sched IsALU = opcode(ALUInsts);
+predicate sched IsALUAndZero(i: INT) = all_of(opcode(Logical), IsZeroReg(i));
+predicate sched HasXssdl = feature(StdExtXssdl);
 
-predicate SelNoXssdl : select {
+predicate select SelNoXssdl {
     when   = host [{ !Subtarget->hasStdExtXssdl() }];
     during = none_of([StdExtXssdl]);
     desc   = "SSDL base extension is absent";
@@ -81,7 +76,7 @@ predicate prolog = host [{
 }];
 
 # ============ STI ============
-predicate isZeroIdiom : sti {
+predicate sti isZeroIdiom {
     default     = false;
     opcode_mask = true;
     impl SSDLZeroIdiom : ssdl-sifive-7 {
@@ -93,7 +88,7 @@ predicate isZeroIdiom : sti {
     }
 }
 
-predicate isDependencyBreaking : sti {
+predicate sti isDependencyBreaking {
     default     = false;
     opcode_mask = true;
     delegates   = [isZeroIdiom];
@@ -106,7 +101,7 @@ predicate isDependencyBreaking : sti {
     }
 }
 
-predicate isXorZeroIdiom : tii {
+predicate tii isXorZeroIdiom {
     switch opcode {
         case [XOR]: return all_of(opcode([XOR]), IsZeroReg(1));
         default:    return false;

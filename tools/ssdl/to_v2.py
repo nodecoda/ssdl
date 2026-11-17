@@ -241,14 +241,17 @@ def _feature(text: str) -> list[str]:
         raise ToV2Error(f"feature without a field list: {text!r}")
     name = body[:colon].strip()
     fields = []
+    kind = "plain"
     for key, value in _fields(body[colon + 1 :]):
-        if key == "bitmask" and value.startswith("{"):
+        if key == "kind":
+            kind = value
+        elif key == "bitmask" and value.startswith("{"):
             inner = value.strip()[1:-1].strip()
             mask = " ".join(f"{k} = {v};" for k, v in _fields(inner))
-            fields.append(f"bitmask = {{ {mask} }}")
+            fields.append(f"bitmask = {{ {mask} }};")
         else:
             fields.append(f"{key} = {value};")
-    return [f"feature {name} {{ {' '.join(fields)} }};"]
+    return [f"feature {kind} {name} {{ {' '.join(fields)} }};"]
 
 
 def _predicate(text: str) -> list[str]:
@@ -280,13 +283,13 @@ def _predicate(text: str) -> list[str]:
                 out.append(f"{key} = {value};")
             else:
                 raise ToV2Error(f"unknown predicate field {key!r}")
-        return [f"predicate {head} : select {{ {' '.join(out)} }};"]
+        return [f"predicate select {head} {{ {' '.join(out)} }};"]
     eq = _find_top(body, "=")
     if eq < 0:
         raise ToV2Error(f"predicate without '=': {text!r}")
     name = body[:eq].strip()
     expr = _hostify(body[eq + 1 :].strip())
-    return [f"predicate {name} = {expr};"]
+    return [f"predicate sched {name} = {expr};"]
 
 
 def _predicate_prolog(text: str) -> list[str]:
@@ -313,7 +316,7 @@ def _tii_predicate(text: str) -> list[str]:
             f"tii_predicate {name}: v2 spells the TII hook as a switch; "
             "a bare return has no v2 form yet"
         )
-    return [f"predicate {name} : tii {{ {statement} }};"]
+    return [f"predicate tii {name} {{ {statement} }};"]
 
 
 def _resource(text: str) -> list[str]:
@@ -620,7 +623,7 @@ def _emit_sti(name: str, fields: list[str], impls: list[tuple[str, list[str]]]) 
                 "to scope the impl to"
             )
         parts.append(f"impl {impl_name} : {machine} {{ {' '.join(statements)} }}")
-    return [f"predicate {name} : sti {{ {' '.join(parts)} }};"]
+    return [f"predicate sti {name} {{ {' '.join(parts)} }};"]
 
 
 def _balance(text: str) -> int:

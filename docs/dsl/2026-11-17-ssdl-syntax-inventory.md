@@ -26,12 +26,12 @@
 | `set`（集合） | `set X = [A, B];` / `set X = inst(cond);` / `set X = reg(cond);` | v1.0 3.2 | 三种 set_expr + `...` 展开 + range | `set instructions X = ...` |
 | `set`（维度） | `set LMUL = [M1, M2] : kind = dimension, name_format = "_{value}";` | v1.2 C2 | 同上；`INT..INT` 形式 | `set dimension LMUL = [...] { name_format = "..."; }` |
 | `set`（关系） | `set DivFactor : kind = relation = [(8, 1), (16, 15)];` | v1.3 AC9 | n 元键；重复/空表报错 | `set relation DivFactor = [...]` |
-| `predicate`（调度） | `predicate P = all_of(...);` | v1.0 3.3 | 表达式；`true/false/not/all_of/any_of/feature/atom` | `predicate P : sched = ...;` |
-| `predicate`（选择/汇编） | `predicate P { selector = cxx_expr([{...}]); assembler = all_of([...]); desc = "..."; }` | v1.0 3.3 | 块形式 + 可选 `recompute_per_function` | `predicate P : select { when = host {...}; during = ...; }` |
+| `predicate`（调度） | `predicate P = all_of(...);` | v1.0 3.3 | 表达式；`true/false/not/all_of/any_of/feature/atom` | `predicate sched P = ...;` |
+| `predicate`（选择/汇编） | `predicate P { selector = cxx_expr([{...}]); assembler = all_of([...]); desc = "..."; }` | v1.0 3.3 | 块形式 + 可选 `recompute_per_function` | `predicate select P { when = host {...}; during = ...; }` |
 | `predicate_prolog` | `predicate_prolog([{ ... }]);` | v1.0 3.4 | 全局 C++ 片段 | `host { ... }` 统一 |
-| `feature`（plain） | `feature F : kind = plain, field = "IsRV64", value = "true";` | v1.0 3.5 + E1 | 额外接受 `mattr`；未知字段按字符串/整数/布尔宽容接受 | `feature F { bool IsRV64 = true; mattr = "64bit"; }` |
-| `feature`（extension） | `feature E : kind = extension, version = "2.1", bitmask = { group = 0, bit = 8 };` | v1.0 3.5 | 同上 + `experimental`/`implies` | `feature E { extension { version = "..."; bit = (0, 8); } }` |
-| `feature`（tune） | `feature T : kind = tune, field = "...", value = "...";` | v1.0 3.5 | `positive_directive`/`negative_directive` | `feature T { tune ... }` |
+| `feature`（plain） | `feature F : kind = plain, field = "IsRV64", value = "true";` | v1.0 3.5 + E1 | 额外接受 `mattr`；未知字段按字符串/整数/布尔宽容接受 | `feature plain F { bool IsRV64 = true; mattr = "64bit"; }` |
+| `feature`（extension） | `feature E : kind = extension, version = "2.1", bitmask = { group = 0, bit = 8 };` | v1.0 3.5 | 同上 + `experimental`/`implies` | `feature extension E { version = "..."; bitmask = { group = 0; bit = 8; }; }` |
+| `feature`（tune） | `feature T : kind = tune, field = "...", value = "...";` | v1.0 3.5 | `positive_directive`/`negative_directive` | `feature tune T { ... }` |
 | `sti_decl` | `sti_decl X { opcode_mask = true; delegates = [...]; }` | v1.0 3.8 | 空声明 `sti_decl X;` 也可 | 并入 `predicate : sti`（P2 门禁） |
 | `sti_function` | `sti_function X : Decl { sched_model = M; dep_breaking_class ...; }` | v1.0 3.9 | 尾随 `;` 可选（S6） | 并入 `predicate : sti { impl ... }` |
 | `tii_predicate` | `tii_predicate X = switch opcode { ... };` | v1.0 3.10 | `return` 形式分号歧义（S7） | 并入 `predicate : tii` |

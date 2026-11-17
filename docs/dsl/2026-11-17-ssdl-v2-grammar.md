@@ -162,14 +162,13 @@ set relation DivFactor = [(8, 1), (16, 15), (32, 28), (64, 57)];
 
 ```ebnf
 predicate_decl
-    = "predicate" IDENT "=" predicate_expr ";"
+    = "predicate" "sched"  IDENT [ "(" [ param { "," param } [ "," ] ] ")" ]
+      "=" predicate_expr ";"
+    | "predicate" "select" IDENT [ "(" [ param { "," param } [ "," ] ] ")" ]
+      predicate_body
+    | "predicate" "sti"    IDENT predicate_body
+    | "predicate" "tii"    IDENT predicate_body
     | "predicate" "prolog" "=" host_block ";"
-    | "predicate" IDENT [ "(" [ param { "," param } [ "," ] ] ")" ]
-      ":" predicate_kind [ predicate_body ]
-    ;
-
-predicate_kind
-    = "sched" | "select" | "sti" | "tii"
     ;
 
 predicate_body
@@ -211,25 +210,27 @@ statement
 
 语义：
 
-- 表达式形式等价于 `: sched`；显式写法是 `predicate P : sched = expr;`。
-- `: select` 的 `when` 是 host 代码，`during` 是 feature 谓词；两者可只写其一。
-- `: sti` 的声明与实现合并：`impl <名字> : <machine> { ... }` 中，`<名字>`
+- `kind` 一律写在 `predicate` 之后、名字之前。旧写法 `predicate P = ...`
+  与 `predicate P : select` 会报错并提示新位置。
+- `sched` 的 `when` 是表达式；`select` 的 `when` 是 host 代码，`during` 是
+  feature 谓词；两者可只写其一。
+- `sti` 的声明与实现合并：`impl <名字> : <machine> { ... }` 中，`<名字>`
   是 v1 `sti_function` 的名字，也是生成的 `STIPredicate` def 名；`<machine>`
   是 `SchedModel` 作用域。`sched_model` 字段可以省略，写了必须与 `<machine>`
   一致。lowering 到 v1 的 `STIPredicateDecl` + `STIPredicate`。
-- `: tii` 的 `switch opcode` lowering 到 `TIIPredicate`。
+- `tii` 的 `switch opcode` lowering 到 `TIIPredicate`。
 - `predicate prolog = host [...];` 是全局共享代码，等价 v1 的 `PredicateProlog`。
 
 ```text
-predicate IsZeroReg(i: INT) = reg_is(i, ZeroRegs);
+predicate sched IsZeroReg(i: INT) = reg_is(i, ZeroRegs);
 
-predicate HasStdExtI : select {
+predicate select HasStdExtI {
     when   = host [{ Subtarget->hasStdExtI() }];
     during = all_of([StdExtI]);
     desc   = "'I' (Base Integer Instruction Set)";
 }
 
-predicate IsDependencyBreaking : sti {
+predicate sti IsDependencyBreaking {
     opcode_mask = true;
     delegates   = [isZeroIdiom];
     impl OrrXzrXzr : siFive7 {
@@ -239,7 +240,7 @@ predicate IsDependencyBreaking : sti {
     }
 }
 
-predicate IsDependencyBreaking : tii {
+predicate tii IsDependencyBreaking {
     switch opcode {
         case [ORR]: return all_of(opcode([ORR]), IsZeroReg(1));
         case [EOR]: return all_of(opcode([EOR]), same_reg(1, 2));
@@ -249,7 +250,7 @@ predicate IsDependencyBreaking : tii {
 ```
 
 > 注：同一名字不能同时声明为 `sti` 与 `tii`；上例只展示两种形态。
-> Phase 5 决策门已通过：`: select`/`: sti`/`: tii` 的 records 与 v1
+> Phase 5 决策门已通过：`select`/`sti`/`tii` 的 records 与 v1
 > 逐字段一致（`v2/sifive7-mini-v2.ssdl` 对拍 `sifive7-mini.expected.td`），
 > 因此 v2.0 删除 `predicate_prolog`/`sti_decl`/`sti_function`/`tii_predicate`
 > 四个顶层关键字，§11 的降级预案不启用。
@@ -260,7 +261,7 @@ predicate IsDependencyBreaking : tii {
 
 ```ebnf
 feature_decl
-    = "feature" IDENT [ ":" feature_kind ] feature_body
+    = "feature" feature_kind IDENT feature_body
     ;
 
 feature_kind
@@ -272,8 +273,7 @@ feature_body
     ;
 
 feature_field
-    = "kind"        "=" feature_kind
-    | "desc"        "=" STRING
+    = "desc"        "=" STRING
     | "implies"     "=" ident_list
     | "mattr"       "=" STRING
     | "inline_behavior" "=" ( "ignore" | "default" | "inverse" | "must_match" )
@@ -300,7 +300,8 @@ host_feature_field
 
 语义：
 
-- `kind` 默认 `plain`。
+- `kind` 必须显式写在 `feature` 之后；体内 `kind =` 与头部 `NAME : kind`
+  两种旧写法都会报错并提示新位置。
 - `plain` 的 `bool/int/string <Field> = <value>` 直接 lowering 到
   `SubtargetFeatureKV` 的 `Field/Value`。
 - `extension` 的 `version`/`bitmask`/`experimental` 走 v1.3 的三层 emit。
@@ -308,21 +309,19 @@ host_feature_field
 - `host [{ ... }]` 保留给无法类型化的 host-only 字段。
 
 ```text
-feature Feature64Bit {
+feature plain Feature64Bit {
     bool IsRV64 = true;
     mattr = "64bit";
     desc  = "Implements RV64";
 }
 
-feature StdExtI {
-    kind = extension;
+feature extension StdExtI {
     version = "2.1";
-    bitmask = { group = 0; bit = 8; }
+    bitmask = { group = 0; bit = 8; };
     desc = "Base Integer Instruction Set";
 }
 
-feature TunePostRA {
-    kind = tune;
+feature tune TunePostRA {
     bool UsePostRAScheduler = true;
     positive_directive = "use-postra-scheduler";
     negative_directive = "no-use-postra-scheduler";

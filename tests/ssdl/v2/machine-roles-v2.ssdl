@@ -1,23 +1,21 @@
 # v2 twin of tests/ssdl/machine-roles.ssdl.
 
-feature Feature64Bit {
+feature plain Feature64Bit {
     bool IsRV64 = true;
     mattr = "64bit";
     desc  = "Implements RV64";
 }
 
-feature StdExtXssdl {
-    kind = extension;
+feature extension StdExtXssdl {
     version = "2.1";
     bitmask = {
         group = 0;
         bit   = 8;
-    }
+    };
     desc = "SSDL base extension";
 }
 
-feature TunePostRA {
-    kind = tune;
+feature tune TunePostRA {
     bool UsePostRAScheduler = true;
     positive_directive = "use-postra-scheduler";
     negative_directive = "no-use-postra-scheduler";

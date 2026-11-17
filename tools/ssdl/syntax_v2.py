@@ -20,7 +20,7 @@ Implemented in this slice:
 - v1 field separators are rejected with a v2 hint, never accepted
 - record bodies are shape-checked against ``field_types.ENTITY_FIELDS``
 
-``predicate : sched|select|sti|tii`` and ``predicate prolog`` are implemented.
+``predicate sched|select|sti|tii`` and ``predicate prolog`` are implemented.
 """
 from __future__ import annotations
 
@@ -398,18 +398,31 @@ def _literal(cursor: _Cursor, where: str) -> str:
 
 def _feature(cursor: _Cursor, out: list[str]) -> None:
     cursor.expect("feature")
+    kind_token = cursor.peek()
+    if (
+        kind_token.kind == "IDENT"
+        and cursor.index + 1 < len(cursor.tokens)
+        and cursor.tokens[cursor.index + 1].value == ":"
+    ):
+        raise V2Error(
+            f"line {kind_token.line}:{kind_token.col}: feature: write the kind "
+            "after the keyword, not 'NAME : kind'"
+        )
+    feature_kind = cursor.ident()
+    if feature_kind not in ("plain", "extension", "tune"):
+        raise V2Error(
+            f"line {kind_token.line}:{kind_token.col}: feature needs a kind right "
+            "after the keyword: feature plain|extension|tune NAME { ... }"
+        )
     name = cursor.ident()
-    header_kind = None
-    if cursor.accept(":"):
-        header_kind = cursor.ident()
-        if header_kind not in ("plain", "extension", "tune"):
-            raise V2Error(
-                f"feature {name}: unknown kind {header_kind!r}; "
-                "expected plain, extension or tune"
-            )
+    if cursor.at(":"):
+        token = cursor.peek()
+        raise V2Error(
+            f"line {token.line}:{token.col}: feature: write the kind after the "
+            "keyword, not 'NAME : kind'"
+        )
     cursor.expect("{")
     fields: list[tuple[str, str]] = []
-    body_kind = None
     while not cursor.at("}"):
         key = cursor.ident()
         if key in ("bool", "int", "string"):
@@ -421,6 +434,7 @@ def _feature(cursor: _Cursor, out: list[str]) -> None:
             fields.append(("value", value))
         elif key == "host":
             host = _fields(cursor.record_body(), {"field", "value"}, f"feature {name} host")
+            cursor.expect(";")
             if "field" not in host or "value" not in host:
                 raise V2Error(f"feature {name}: host needs field and value")
             fields.append(("field", host["field"]))
@@ -436,30 +450,22 @@ def _feature(cursor: _Cursor, out: list[str]) -> None:
             mask = _fields(
                 cursor.record_body(), {"group", "bit"}, f"feature {name} bitmask"
             )
+            cursor.expect(";")
             if "group" not in mask or "bit" not in mask:
                 raise V2Error(f"feature {name}: bitmask needs group and bit")
             fields.append(("bitmask", f"{{ group = {mask['group']}, bit = {mask['bit']} }}"))
         elif key == "kind":
-            cursor.expect("=")
-            body_kind = cursor.ident()
-            cursor.expect(";")
-            if body_kind not in ("plain", "extension", "tune"):
-                raise V2Error(
-                    f"feature {name}: unknown kind {body_kind!r}; "
-                    "expected plain, extension or tune"
-                )
+            token = cursor.peek()
+            raise V2Error(
+                f"line {token.line}:{token.col}: feature: kind moved to the header: "
+                "feature plain|extension|tune NAME { ... }"
+            )
         else:
             cursor.expect("=")
             fields.append((key, cursor.expr({";"})))
             cursor.expect(";")
     cursor.expect("}")
-    if header_kind and body_kind and header_kind != body_kind:
-        raise V2Error(
-            f"feature {name}: header kind {header_kind!r} disagrees with "
-            f"body kind {body_kind!r}"
-        )
-    kind = body_kind or header_kind or "plain"
-    parts = [("kind", kind)] + fields
+    parts = [("kind", feature_kind)] + fields
     out.append(f"feature {name} : " + ", ".join(f"{k} = {v}" for k, v in parts) + ";")
 
 
@@ -487,6 +493,13 @@ def _predicate(cursor: _Cursor, out: list[str]) -> None:
         out.append(f"predicate_prolog({code});")
         return
 
+    kind_token = cursor.peek()
+    pred_kind = cursor.ident()
+    if pred_kind not in ("sched", "select", "sti", "tii"):
+        raise V2Error(
+            f"line {kind_token.line}:{kind_token.col}: predicate needs a kind "
+            "right after the keyword: predicate sched|select|sti|tii NAME ..."
+        )
     name = cursor.ident()
     params: list[str] = []
     if cursor.at("("):
@@ -494,11 +507,11 @@ def _predicate(cursor: _Cursor, out: list[str]) -> None:
         while not cursor.at(")"):
             param = cursor.ident()
             if cursor.accept(":"):
-                kind = cursor.ident()
-                if kind not in ("INT", "BOOL"):
+                param_kind = cursor.ident()
+                if param_kind not in ("INT", "BOOL"):
                     raise V2Error(
                         f"predicate {name}: parameter {param} needs INT or BOOL, "
-                        f"got {kind!r}"
+                        f"got {param_kind!r}"
                     )
             params.append(param)
             if not cursor.accept(","):
@@ -508,27 +521,14 @@ def _predicate(cursor: _Cursor, out: list[str]) -> None:
     if params:
         head += "(" + ", ".join(params) + ")"
 
-    if cursor.accept(":"):
-        kind = cursor.ident()
-        if kind == "select":
-            _predicate_select(cursor, out, head)
-        elif kind == "sti":
-            _predicate_sti(cursor, out, name)
-        elif kind == "tii":
-            _predicate_tii(cursor, out, name)
-        elif kind == "sched":
-            cursor.expect("=")
-            tokens = cursor.collect({";"})
-            cursor.expect(";")
-            _check_host(tokens, head)
-            _reject_none_of(tokens, head)
-            out.append(f"{head} = {_render_tokens(tokens)};")
-        else:
-            token = cursor.peek()
-            raise V2Error(
-                f"line {token.line}:{token.col}: unknown predicate kind {kind!r}; "
-                "expected sched, select, sti or tii"
-            )
+    if pred_kind == "select":
+        _predicate_select(cursor, out, head)
+        return
+    if pred_kind == "sti":
+        _predicate_sti(cursor, out, name)
+        return
+    if pred_kind == "tii":
+        _predicate_tii(cursor, out, name)
         return
 
     cursor.expect("=")

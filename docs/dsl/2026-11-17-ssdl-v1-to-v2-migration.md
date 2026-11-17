@@ -43,15 +43,15 @@ python3 tools/ssdl/family_sweep.py --syntax v2 --out /tmp/ssdl-sweep-v2
 | `map [ADD] -> [W, R];` | `map [ADD] { 0 = W; 1 = R; }` | `InstRW`（下标即操作数位置） |
 | `write_seq S = [W] repeat = 2;` | `write_seq S = [W] { repeat = 2; }` | 保留（未 lowering） |
 | `load_queue : resource = P;` | `load_queue { resource = P; }` | `LoadQueue` |
-| `feature X : kind = extension, version = "2.1";` | `feature X { kind = extension; version = "2.1"; }` | `SubtargetFeature` + 扩展表 |
+| `feature X : kind = extension, version = "2.1";` | `feature extension X { version = "2.1"; }` | `SubtargetFeature` + 扩展表 |
 | `feature X : ..., bitmask = { group = 0, bit = 8 };` | `feature X { ... bitmask { group = 0; bit = 8; } }` | 位图探测 |
-| `feature X : kind = plain, field = "F", value = "true";` | `feature X { bool F = true; }` 或 `host { field = "F"; value = "true"; }` | `SubtargetFeatureKV` |
+| `feature X : kind = plain, field = "F", value = "true";` | `feature plain X { bool F = true; }` 或 `host { field = "F"; value = "true"; }` | `SubtargetFeatureKV` |
 | `predicate P = all_of(...);` | `predicate P = all_of(...);` | `MCInstPredicate` |
 | `predicate P = sched_code([{...}]);` | `predicate P = sched_code(host [{...}]);` | C++ 代码片 |
-| `predicate P { selector = cxx_expr([{...}]); assembler = ...; }` | `predicate P : select { when = host [{...}]; during = ...; }` | `Predicate` + `AssemblerPredicate` |
+| `predicate P { selector = cxx_expr([{...}]); assembler = ...; }` | `predicate select P { when = host [{...}]; during = ...; }` | `Predicate` + `AssemblerPredicate` |
 | `predicate_prolog([{...}]);` | `predicate prolog = host [{...}];` | `PredicateProlog` |
-| `sti_decl X { ... }` + `sti_function F : X { sched_model = M; ... }` | `predicate X : sti { ... impl F : M { ... } }` | `STIPredicateDecl` + `STIPredicate` |
-| `tii_predicate X = switch opcode { ... };` | `predicate X : tii { switch opcode { ... } }` | `TIIPredicate` |
+| `sti_decl X { ... }` + `sti_function F : X { sched_model = M; ... }` | `predicate sti X { ... impl F : M { ... } }` | `STIPredicateDecl` + `STIPredicate` |
+| `tii_predicate X = switch opcode { ... };` | `predicate tii X { switch opcode { ... } }` | `TIIPredicate` |
 | `itineraries : sched_model = M : packetizer_namespace = "N" { ... }` | `itineraries : packetizer_namespace = "N" { sched_model = M; ... }` | `ProcessorItineraries` |
 | `stage(1, [FU], 2, reserved)` | `stage { cycles = 1; units = [FU]; timeinc = 2; kind = reserved; }` | `InstrItinData` |
 

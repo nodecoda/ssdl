@@ -1,8 +1,8 @@
 # v2 twin of tests/ssdl/predicates.ssdl.
-predicate Copy1 = sched_code(host [{ TII->isVRegCopy(MI, 1) }]);
-predicate Copy2 = sched_code(host [{ TII->isVRegCopy(MI, 2) }]);
-predicate IsAddZero(i: INT) = all_of(opcode([ADD]), is_zero(i));
-predicate Never = not(true);
+predicate sched Copy1 = sched_code(host [{ TII->isVRegCopy(MI, 1) }]);
+predicate sched Copy2 = sched_code(host [{ TII->isVRegCopy(MI, 2) }]);
+predicate sched IsAddZero(i: INT) = all_of(opcode([ADD]), is_zero(i));
+predicate sched Never = not(true);
 
 machine family predcpu {
     write W;
