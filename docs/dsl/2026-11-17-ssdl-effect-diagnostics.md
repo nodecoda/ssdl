@@ -118,3 +118,8 @@ python3 tools/ssdl/family_sweep.py --records /tmp/riscv.rec \
 
 这些数字随上游模型变化；`riscv_model_diagnostics_match_the_committed_table`
 会在 sweep 目录存在时重新生成并比对，表格过期即失败。
+
+## 族源
+
+入口按 `kind = dimension` 标记自动展开 v1.2 族源再诊断（`parser.load_source`），
+所以 `family.ssdl` 与它的 `flat.ssdl` 产生完全相同的 finding。

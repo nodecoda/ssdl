@@ -7,6 +7,8 @@ here.  The emitter decides which declarations it can lower.
 """
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1073,6 +1075,30 @@ def parse(text: str) -> Program:
     return Parser(text).parse()
 
 
-def parse_file(path: str) -> Program:
+FAMILY_SOURCE = re.compile(r":\s*kind\s*=\s*dimension\b")
+
+
+def expand_source(text: str) -> str:
+    """Expand the 1.2 family dialect to v1.0 text (a no-op for v1.0 sources).
+
+    Dimension declarations are the marker: without ``kind = dimension`` a
+    source cannot use axis-indexed names, so a file that has the marker is
+    expanded before parsing.  ``family_expand`` is the single implementation
+    of the norm rules, and its output is ordinary v1.0 SSDL.
+    """
+    if not FAMILY_SOURCE.search(text):
+        return text
+    if __package__ in (None, ""):
+        from family_expand import expand  # type: ignore
+    else:
+        from .family_expand import expand
+    return expand(text)
+
+
+def load_source(path: str) -> str:
     with open(path, encoding="utf-8") as f:
-        return parse(f.read())
+        return expand_source(f.read())
+
+
+def parse_file(path: str) -> Program:
+    return parse(load_source(path))

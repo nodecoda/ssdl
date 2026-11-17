@@ -21,21 +21,26 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 if __package__ in (None, ""):
     from diagnose import ERROR, NOTE, diagnose, render_findings  # type: ignore
-    from parser import MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, parse_file  # type: ignore
+    from family_expand import check_coverage  # type: ignore
+    from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, expand_source, parse  # type: ignore
 else:
     from .diagnose import ERROR, NOTE, diagnose, render_findings
+    from .family_expand import check_coverage
     from .parser import (
+        FAMILY_SOURCE,
         ItinerariesDecl,
         MachineDecl,
+        expand_source,
+        parse,
         PredicateDecl,
         Program,
         STIDecl,
         STIFunction,
         TIIPredicate,
-        parse_file,
     )
 
 
@@ -328,11 +333,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
     try:
-        program = parse_file(args.input)
+        raw = Path(args.input).read_text(encoding="utf-8")
+        flat = expand_source(raw)
+        program = parse(flat)
     except Exception as exc:
         print(f"{args.input}: {exc}", file=sys.stderr)
         return 2
+    # Coverage is a property of the expanded text, not of the AST: it compares
+    # the write and bind member sets that the axes produced.
+    coverage = check_coverage(flat) if FAMILY_SOURCE.search(raw) else []
     errors, findings = validate_all(program)
+    errors = coverage + errors
     for error in errors:
         print(error, file=sys.stderr)
     shown = [

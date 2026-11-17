@@ -1935,6 +1935,70 @@ def riscv_model_diagnostics_match_the_committed_table():
 
 
 @test
+def family_source_expands_before_parsing():
+    """A v1.2 source is normed to v1.0 text before the parser sees it."""
+    text = parser.expand_source(
+        """
+set A = [x, y] : kind = dimension, name_format = "_{value}";
+machine M {
+  write W[A];
+  bind W_x -> [];
+  bind W_y -> [];
+}
+"""
+    )
+    program = parser.parse(text)
+    machine = next(d for d in program.decls if isinstance(d, parser.MachineDecl))
+    writes = [item["name"] for item in machine.items if item["kind"] == "write"]
+    binds = [item["write"] for item in machine.items if item["kind"] == "bind"]
+    assert_true(writes == ["W_x", "W_y"], writes)
+    assert_true(binds == ["W_x", "W_y"], binds)
+
+
+@test
+def mined_family_sources_match_their_flat_expansion():
+    """Expanding the authored family source reproduces the sweep's flat source."""
+    bases = Path("/tmp/ssdl-sweep-final")
+    if not bases.is_dir():
+        return
+    checked = 0
+    for model_dir in sorted(bases.iterdir()):
+        family = model_dir / "family.ssdl"
+        flat = model_dir / "flat.ssdl"
+        if not (family.is_file() and flat.is_file()):
+            continue
+        assert_true(
+            parser.load_source(str(family)) == flat.read_text(),
+            f"{model_dir.name}: expansion differs from flat.ssdl",
+        )
+        checked += 1
+    assert_true(checked == 14, f"models: {checked}")
+
+
+@test
+def validate_reports_family_coverage_errors():
+    """An axis-expanded write without a bind is a validate error, not a surprise."""
+    work = Path(tempfile.mkdtemp(prefix="ssdl-cov-"))
+    path = work / "cov.ssdl"
+    path.write_text(
+        """
+set A = [x, y] : kind = dimension, name_format = "_{value}";
+machine M {
+  write W[A];
+  bind W[A in [x]] -> [];
+}
+"""
+    )
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "tools/ssdl/validate.py"), str(path)],
+        capture_output=True,
+        text=True,
+    )
+    assert_true(proc.returncode == 1, proc.stderr)
+    assert_true("write W_y has no bind" in proc.stderr, proc.stderr)
+
+
+@test
 def sifive7_family_table_records_the_sparse_shape():
     """The Step 2 table must pin the axes, not just the three model names.
 

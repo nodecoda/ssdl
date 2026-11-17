@@ -547,7 +547,11 @@ def main() -> int:
     ap.add_argument("input")
     ap.add_argument("--verbose", action="store_true", help="include notes")
     args = ap.parse_args()
-    program = parse_file(args.input)
+    try:
+        program = parse_file(args.input)
+    except Exception as exc:
+        print(f"{args.input}: {exc}", file=sys.stderr)
+        return 2
     findings = diagnose(program)
     shown = [
         finding
