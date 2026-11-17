@@ -27,6 +27,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
+from ssdl.census_riscv import llvm_commit  # noqa: E402
+from ssdl.diagnose import diagnose  # noqa: E402
+from ssdl.parser import parse_file  # noqa: E402
 from ssdl.records import load, unquote  # noqa: E402
 
 
@@ -82,6 +85,44 @@ class Result:
     status: str
     detail: str
     summary: list[str]
+    diagnostics: list[dict] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.diagnostics is None:
+            self.diagnostics = []
+
+
+LEVEL_ORDER = {"error": 0, "warning": 1, "note": 2}
+
+
+def diagnose_flat(flat: Path) -> list[dict]:
+    """Count effect findings in one mined source, keyed by level and effect."""
+    counts: dict[tuple[str, str], int] = {}
+    for finding in diagnose(parse_file(str(flat))):
+        key = (finding.level, finding.effect or "")
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        {"level": level, "effect": effect, "count": count}
+        for (level, effect), count in sorted(
+            counts.items(), key=lambda item: (LEVEL_ORDER[item[0][0]], item[0][1])
+        )
+    ]
+
+
+def diagnostics_table(results: list[Result], llvm_commit_id: str = "unknown") -> str:
+    """Deterministic CSV: one row per model, level, and effect."""
+    lines = [
+        "# RISC-V scheduling effect diagnostics; regenerate with "
+        "tools/ssdl/family_sweep.py --diagnose-only",
+        f"# llvm={llvm_commit_id}",
+        "model,level,effect,count",
+    ]
+    for result in results:
+        for item in result.diagnostics:
+            lines.append(
+                f"{result.model},{item['level']},{item['effect']},{item['count']}"
+            )
+    return "\n".join(lines) + "\n"
 
 
 def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -91,6 +132,11 @@ def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
 def run_model(item: dict, args: argparse.Namespace) -> Result:
     out = args.out / sanitise(item["model"])
     out.mkdir(parents=True, exist_ok=True)
+    flat = out / "flat.ssdl"
+    if args.diagnose_only:
+        if not flat.is_file():
+            return Result(item["model"], "FAIL", f"missing {flat}", [])
+        return Result(item["model"], "match", "", [], diagnose_flat(flat))
     profile = {
         "profiles": {
             "sweep": {
@@ -110,7 +156,6 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
     profile_path.write_text(json.dumps(profile))
 
     ssdl = out / "family.ssdl"
-    flat = out / "flat.ssdl"
     td = out / "flat.td"
     rec = out / "generated.rec"
     eq = out / "equiv.txt"
@@ -138,20 +183,25 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
         proc = run(cmd, ROOT)
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout).strip().splitlines()
-            return Result(item["model"], "FAIL", detail[0] if detail else "command failed", [])
+            return Result(
+                item["model"], "FAIL", detail[0] if detail else "command failed", []
+            )
         last_stdout = proc.stdout
+    diagnostics = diagnose_flat(flat)
     eq.write_text(last_stdout)
     text = last_stdout
     summary = [line for line in text.splitlines() if line.startswith(("intree:", "generated:"))]
     if "records match" in text:
-        return Result(item["model"], "match", "", summary)
+        return Result(item["model"], "match", "", summary, diagnostics)
     detail = next((line for line in text.splitlines() if line.startswith("MISMATCH")), "no match")
     first = next(
         (line.strip() for line in text.splitlines() if line.strip().endswith("only in intree")
          or line.strip().endswith("only in generated") or line.endswith("differ")),
         "",
     )
-    return Result(item["model"], "MISMATCH", f"{detail}; {first}".strip("; "), summary)
+    return Result(
+        item["model"], "MISMATCH", f"{detail}; {first}".strip("; "), summary, diagnostics
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -164,6 +214,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vlen", type=int, default=128)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--only", nargs="*")
+    ap.add_argument(
+        "--diagnose-only",
+        action="store_true",
+        help="skip mine/expand/lower and diagnose the flat sources already in --out",
+    )
+    ap.add_argument(
+        "--diagnostics-table",
+        type=Path,
+        help="write the per-model effect-finding counts as CSV",
+    )
     args = ap.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -189,7 +249,34 @@ def main(argv: list[str] | None = None) -> int:
     for result in results:
         evidence = result.summary[0].split("intree:")[-1].strip() if result.summary else result.detail
         lines.append(f"| `{result.model}` | {result.status} | {evidence} |")
+    lines.append("")
+    lines.append("| model | errors | warnings | notes |")
+    lines.append("|---|---|---|---|")
+    for result in results:
+        counts = {
+            level: sum(item["count"] for item in result.diagnostics if item["level"] == level)
+            for level in ("error", "warning", "note")
+        }
+        lines.append(
+            f"| `{result.model}` | {counts['error']} | {counts['warning']} | {counts['note']} |"
+        )
+    warnings = [
+        (result.model, item)
+        for result in results
+        for item in result.diagnostics
+        if item["level"] in ("error", "warning")
+    ]
+    if warnings:
+        lines.append("")
+        lines.append("## Loud findings")
+        lines.append("")
+        for model, item in warnings:
+            lines.append(f"- `{model}`: `{item['effect']}` ×{item['count']} ({item['level']})")
     (args.out / "summary.md").write_text("\n".join(lines) + "\n")
+    if args.diagnostics_table:
+        args.diagnostics_table.write_text(
+            diagnostics_table(results, llvm_commit(args.llvm_src))
+        )
     return 0 if matched == len(results) else 1
 
 

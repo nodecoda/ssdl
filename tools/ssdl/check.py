@@ -1890,6 +1890,51 @@ def riscv_census_matches_the_committed_table():
 
 
 @test
+def riscv_model_diagnostics_match_the_committed_table():
+    """Effect findings on all 14 models are pinned, and no model has an error.
+
+    The mined sources are a sweep artifact, so this skips when the sweep
+    directory is absent, exactly like the census test skips without
+    ``/tmp/riscv.rec``.
+    """
+    bases = Path("/tmp/ssdl-sweep-final")
+    table = ROOT / "data/riscv-sched-diagnostics.csv"
+    commit = family_sweep_mod.llvm_commit(
+        Path(os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm"))
+    )
+    if not bases.is_dir() or not table.is_file() or commit == "unknown":
+        return
+    results = [
+        family_sweep_mod.Result(
+            model_dir.name,
+            "match",
+            "",
+            [],
+            family_sweep_mod.diagnose_flat(model_dir / "flat.ssdl"),
+        )
+        for model_dir in sorted(bases.iterdir())
+        if model_dir.is_dir() and (model_dir / "flat.ssdl").is_file()
+    ]
+    assert_true(len(results) == 14, f"models: {len(results)}")
+    text = family_sweep_mod.diagnostics_table(results, commit)
+    assert_true(
+        text == table.read_text(),
+        "diagnostics table is stale; regenerate with tools/ssdl/family_sweep.py "
+        "--diagnose-only --diagnostics-table data/riscv-sched-diagnostics.csv",
+    )
+    loud = {
+        (result.model, item["effect"])
+        for result in results
+        for item in result.diagnostics
+        if item["level"] in ("error", "warning")
+    }
+    assert_true(
+        loud == {("XiangShanNanHuModel", "SchedMachineModel.LoopMicroOpBufferSize")},
+        f"loud findings: {sorted(loud)}",
+    )
+
+
+@test
 def sifive7_family_table_records_the_sparse_shape():
     """The Step 2 table must pin the axes, not just the three model names.
 

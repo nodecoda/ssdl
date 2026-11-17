@@ -94,3 +94,27 @@ findings 会进入 `SSDLEmitError`。
 诊断不复制语义：每条规则只引用一个 `Class.Field`，消息和证据都来自
 `effects.py`。因此改审计结论只改一处；`check.py` 的 `effect_*` 检查保证
 键、证据行和角色一致。
+
+## 输出聚合
+
+同一 `(level, message, effect)` 只打印一行，首次出现的位置保留，末尾附 `(xN)`。
+真实模型会在几千个 write 上设置同一个字段（例如 `acquire`），逐站点打印没有信息量。
+
+## 真实模型基线
+
+`data/riscv-sched-diagnostics.csv` 固定了 14 个 RISC-V 调度模型的诊断计数：
+
+```bash
+python3 tools/ssdl/family_sweep.py --records /tmp/riscv.rec \
+    --out /tmp/ssdl-sweep-final --diagnose-only \
+    --diagnostics-table data/riscv-sched-diagnostics.csv
+```
+
+| 结论 | 证据 |
+|---|---|
+| 0 个 error | 没有模型写出“不可能生效”的构造 |
+| 1 个 warning | `XiangShanNanHuModel` 的 `LoopMicroOpBufferSize = 48`：TD 注释写的是“Instruction queue size”，但唯一消费者是 TTI 的 unroll 阈值，MachineScheduler / llvm-mca 都不读 |
+| note 主体是 `AcquireAtCycles` 和 `Unsupported` | `acquire` 只在 CodeGen 的 hazard/scheduler 里生效，MCA 直接建 `CycleSegment(0, release)`；`unsupported` 让 CodeGen 回退但让 MCA 硬报错 |
+
+这些数字随上游模型变化；`riscv_model_diagnostics_match_the_committed_table`
+会在 sweep 目录存在时重新生成并比对，表格过期即失败。
