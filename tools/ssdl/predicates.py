@@ -341,6 +341,9 @@ class PredicateLowerer:
     def operand_index(self, arg, env: dict[str, Any], where: str) -> int:
         tag = arg[0]
         if tag == "int":
+            if arg[1] < 0:
+                self.error(where, f"operand index must be non-negative, got {arg[1]}")
+                return 0
             return arg[1]
         if tag == "ident":
             name = arg[1]

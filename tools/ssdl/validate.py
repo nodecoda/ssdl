@@ -27,12 +27,14 @@ if __package__ in (None, ""):
     from diagnose import ERROR, NOTE, diagnose, render_findings  # type: ignore
     from family_expand import check_coverage  # type: ignore
     import field_types as field_types_mod  # type: ignore
+    import predicate_types as predicate_types_mod  # type: ignore
     from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, expand_source, parse  # type: ignore
     import syntax_v2  # type: ignore
 else:
     from .diagnose import ERROR, NOTE, diagnose, render_findings
     from .family_expand import check_coverage
     from . import field_types as field_types_mod
+    from . import predicate_types as predicate_types_mod
     from . import syntax_v2
     from .parser import (
         FAMILY_SOURCE,
@@ -55,32 +57,7 @@ SEL = "sel"
 # Atom predicates map onto MCInstPredicate subclasses.  The list mirrors the
 # grammar in the 1.1 draft; ``func``/``func_tii`` are included because they are
 # addressed in section 3.6 even though their norm mapping is still open.
-ATOM_PREDICATES = {
-    "opcode",
-    "pseudo",
-    "is_reg",
-    "is_vreg",
-    "is_not_vreg",
-    "is_imm",
-    "is_valid_reg",
-    "is_invalid_reg",
-    "is_zero",
-    "reg_is",
-    "imm_is",
-    "imm_is_enum",
-    "imm_lt",
-    "imm_gt",
-    "imm_le",
-    "imm_ge",
-    "imm_range",
-    "reg_simple",
-    "imm_simple",
-    "num_ops",
-    "same_reg",
-    "func",
-    "func_tii",
-    "non_portable",
-}
+ATOM_PREDICATES = set(predicate_types_mod.SIGNATURES)
 
 COMBINERS = {"all_of", "any_of"}
 
@@ -256,6 +233,8 @@ class SortChecker:
             sorts = [self.infer(arg, where) for arg in args]
             return MC if all(s == MC for s in sorts) else SCHED
         if name in ATOM_PREDICATES:
+            for problem in predicate_types_mod.check_call(name, args):
+                self.error(where, problem)
             return MC
         return self.named_sort(where, name, args)
 

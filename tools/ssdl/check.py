@@ -32,6 +32,8 @@ from ssdl import elaborate as elaborate_mod  # noqa: E402
 from ssdl import emit_td, expand_records as expand_mod, parser  # noqa: E402
 from ssdl import equiv as equiv_mod  # noqa: E402
 from ssdl import paths as paths_mod  # noqa: E402
+from ssdl import predicate_types as predicate_types_mod  # noqa: E402
+from ssdl import predicates as predicates_mod  # noqa: E402
 from ssdl import family_expand as family_mod  # noqa: E402
 from ssdl import family_mine as family_mine_mod  # noqa: E402
 from ssdl import family_sweep as family_sweep_mod  # noqa: E402
@@ -3757,6 +3759,40 @@ def validate_v1_fields_use_the_shared_table():
     assert_true(
         any("resources" in e and "name list" in e for e in errors),
         f"bind resources not checked: {errors}",
+    )
+
+
+@test
+def predicate_signatures_are_checked_before_lowering():
+    """Atom arity and kinds are a table, not a lowering-only accident."""
+    for expr, needle in [
+        ("is_reg(true)", "is_reg: argument 0 expects an operand index"),
+        ("num_ops(\"x\")", "num_ops: argument 0 expects an integer"),
+        ("same_reg(1)", "same_reg: expects 2 positional argument(s)"),
+        ("imm_range(0, 1)", "imm_range: expects 3 positional argument(s)"),
+        ("func(\"a\")", "func: expects 2 positional argument(s)"),
+        ("is_reg(-1)", "operand index must be non-negative"),
+        ("is_reg(0, map = F)", "is_reg: unexpected named argument 'map'"),
+    ]:
+        errors = validate_mod.validate(parser.parse(f"predicate P = {expr};"))
+        assert_true(
+            any(needle in error for error in errors),
+            f"{expr}: expected {needle!r}, got {errors}",
+        )
+    assert_true(
+        validate_mod.validate(parser.parse("predicate P = is_reg(0);")) == [],
+        "a well-formed atom call must validate",
+    )
+
+    lowering_names = set(predicates_mod.ATOM_PREDICATES) | {
+        "func",
+        "func_tii",
+        "non_portable",
+    }
+    assert_true(
+        lowering_names == set(predicate_types_mod.SIGNATURES),
+        "the lowering set and the signature table disagree: "
+        f"{sorted(lowering_names ^ set(predicate_types_mod.SIGNATURES))}",
     )
 
 
