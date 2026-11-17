@@ -1,6 +1,6 @@
 # SSDL — 调度与子目标描述语言
 
-**Scheduling and Subtarget Description Language** · v1.2（已验证）
+**Scheduling and Subtarget Description Language** · v1.3（已验证）
 
 SSDL 是 LLVM 后端调度模型的领域专用语言：它不描述指令本身，只描述
 **指令与微架构之间的运行时契约**——资源、延迟、读写推进、变体、特性、行程。
@@ -18,7 +18,7 @@ SSDL 是 LLVM 后端调度模型的领域专用语言：它不描述指令本身
 export SSDL_LLVM_SRC=/path/to/llvm-project          # LLVM 源码树
 export SSDL_LLVM_BUILD=/path/to/llvm-build          # 含 bin/llvm-tblgen 的构建目录
 
-python3 tools/ssdl/check.py                         # 84/84 checks passed
+python3 tools/ssdl/check.py                         # 102/102 checks passed
 ```
 
 `check.py` 有两条硬性前置：`SSDL_LLVM_SRC` 指向一个 LLVM checkout，
@@ -64,7 +64,8 @@ SSDL 的取舍是：**语义完整的替代品，不是更可读的替代品**�
 | `itineraries` | 旧式行程表 | `ProcessorItineraries` |
 
 语法全文见 `docs/dsl/2026-11-16-ssdl-v1.0-final.md`；
-v1.2 的维度与机器参数见 `docs/dsl/2026-11-17-ssdl-v1.2-draft.md`。
+v1.2 的维度与机器参数见 `docs/dsl/2026-11-17-ssdl-v1.2-draft.md`；
+v1.3 的身份/阶段/lowering 见 `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md`。
 
 一个最小模型：
 
@@ -137,7 +138,9 @@ python3 tools/ssdl/expand_records.py /tmp/mini.json | head -40
 ```text
 tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具（纯标准库）
   parser.py         SSDL 文本 → Program
-  family_expand.py  v1.2 维度 / 机器参数展开
+  semir.py          语义 IR：身份 / 阶段 / 声明
+  elaborate.py      family 源 → IR → v1.0 文本（拼写在 lowering 定落）
+  family_expand.py  v1.3 展开核：语句扫描、表达式、runtime 降级
   record_ir.py      RecordSet：SSDL 的一等产物
   emit_td.py        RecordSet → TD 文本 / records.json
   records.py        llvm-tblgen -print-records 的读取器
@@ -148,7 +151,7 @@ tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具�
   family_tables.py  从源码抽取 RISC-V 族与词表
   family_mine.py    记录 → 规范基 + 公式（只报告，不发明）
   family_sweep.py   14 个模型的全链路 sweep
-  check.py          84 项自检
+  check.py          102 项自检
 tests/ssdl/         mini 模型、错误样例、expected TD、stub target
 data/               小基线：普查表、诊断表、profiles、族表、公式表
 docs/dsl/           规范、领域模型、验证报告
@@ -203,26 +206,28 @@ python3 tools/ssdl/family_sweep.py            # 默认写 $SSDL_CACHE/sweep-fina
 ### 6.3 回归
 
 ```bash
-python3 tools/ssdl/check.py                   # 84/84
+python3 tools/ssdl/check.py                   # 102/102
 ```
 
-`check.py` 的 84 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
+`check.py` 的 102 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
 schema 类型检查、关键字引用同步、14 模型对拍、族展开、效果诊断。
 
 ---
 
-## 7. 已知边界（v1.2）
+## 7. 已知边界（v1.3）
 
-1. **多实例族的资源命名**：resource 是全局 TD def；带资源的族多实例时，
-   要么每个实例用不同资源名，要么一文件一实例。上游用 `NAME # "..."` 拼名，
-   SSDL 明确禁止参数参与标识符拼接。
-2. **没有条件表达式**：`BOOL` 参数不能选择数值分支；
-   `latency = has_fast ? 4 : 7 + c` 这类写法只能拆族或由 host profile 投影。
-3. **多行语句**：只有 `set` 会跨行合并；`bind` / `machine` 字段必须写在一行。
-4. **投影属于 host profile**：语言只规定调用契约，`worst` / `legal_sew` /
-   `cycles` 的求值不在语言内。
-5. **匿名记录编号**：直读路径会生成自己的 `anonymous_N`，
-   比较不把编号当作契约。
+v1.2 的五条边界已逐条消除或契约化，完整说明见
+`docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md` §4。仍然存在的限制：
+
+1. **非 resource 的 model-scoped def 不自动加前缀**：`write_seq` 等仍共享
+   TableGen def；两个 machine 用同一 local 名、不同成员时是硬错误。
+2. **接口名默认显式**：被指令 `SchedRW` 引用的 write/read 名不做隐式改写。
+3. **runtime 条件只覆盖标量字段**：`latency` / `uops` / `cycles`；
+   列表字段需要逐元素变体，直接报错。
+4. **没有语句级 `if`**：只有字段级 `?:`；`if` 是未实现的决策记录，不在 AC 内。
+5. **relation 是有限表**：适合小表，没有一般公式；profile 的 `cycles` 行是
+   手工钉住的样本，不是从上游重新推导。
+6. **无元编程**：无 `foreach`、无递归、无用户函数。
 
 ---
 
@@ -230,7 +235,8 @@ schema 类型检查、关键字引用同步、14 模型对拍、族展开、效�
 
 | 文档 | 内容 |
 |---|---|
-| `docs/dsl/2026-11-17-ssdl-v1.2-verification.md` | **证据入口**：14/14、直读路径、诊断基线 |
+| `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md` | **v1.3 入口**：身份/拼写、阶段、lowering、五条边界处置 |
+| `docs/dsl/2026-11-17-ssdl-v1.2-verification.md` | **v1.2 基线证据**：14/14、直读路径、诊断基线 |
 | `docs/dsl/2026-11-16-ssdl-v1.0-final.md` | 9 关键字完整语法 |
 | `docs/dsl/2026-11-17-ssdl-v1.2-draft.md` | 维度、机器参数、族与实例 |
 | `docs/dsl/2026-11-16-ssdl-domain-model.md` | 语义层 / 策略层 / ABI 层 |
