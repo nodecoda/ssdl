@@ -1,0 +1,22 @@
+# SiFive7 VCompress, LMUL = M1.
+#
+# Upstream: llvm/lib/Target/RISCV/RISCVSchedSiFive7.td
+#   SiFive7GetCyclesVCompress -> cycles = ceil(VLEN / SEW) * LMUL
+#   WriteVCompressV           -> latency = 7 + cycles, release = [1, 8 + cycles]
+#
+# This is the v1.2 expression path: a machine parameter (`vlen`) and an axis
+# projection (`SEW`, from the dimension's units) are evaluated during norm.
+
+set SEW = [8, 16, 32, 64] : kind = dimension, name_format = "_E{value}", units = [8, 16, 32, 64];
+
+machine VCompress(vlen: INT) {
+    write WriteVCompressV_M1[SEW];
+    bind WriteVCompressV_M1[SEW] -> [], latency = 7 + vlen / SEW, acquire = [0, 1], release = [1, 8 + vlen / SEW];
+}
+
+machine sifive7_vlen128 : VCompress(128) {
+}
+machine sifive7_vlen512 : VCompress(512) {
+}
+machine sifive7_vlen1024 : VCompress(1024) {
+}

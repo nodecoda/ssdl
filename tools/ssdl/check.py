@@ -2063,6 +2063,56 @@ def mined_family_sources_expand_to_reparsable_v1_0():
 
 
 @test
+def v1_2_parameter_expressions_reproduce_upstream_latencies():
+    """A machine parameter and an axis projection evaluate during norm.
+
+    The fixture encodes SiFive7's VCompress formula from the in-tree TD:
+    ``cycles = VLEN / SEW`` for LMUL = M1, ``latency = 7 + cycles``,
+    ``release = [1, 8 + cycles]``.  The three VLEN instances must reproduce the
+    values in the pinned records dump.
+    """
+    program = parser.parse_file(str(ROOT / "tests/ssdl/sifive7-vcompress-family.ssdl"))
+    records = record_ir_mod.RecordSet()
+    emit_td.emit(program, records=records, target_include="SSDLStub.td")
+    if not has_llvm_source():
+        return
+    table = expand_mod.expand_obj(
+        records.to_json(),
+        expand_mod.schema_for(
+            os.environ.get("SSDL_LLVM_SRC", "/home/ubuntu/llvm/trees/explore/llvm")
+        ),
+    )
+    upstream = {}
+    dump = Path("/tmp/riscv.rec")
+    if dump.is_file():
+        recs = records_mod.load(str(dump))
+        upstream = {
+            vlen: equiv_mod.build(recs, model)
+            for vlen, model in (
+                (128, "SiFive7VLEN128X100Model"),
+                (512, "SiFive7VLEN512Model"),
+                (1024, "SiFive7VLEN1024X300Model"),
+            )
+        }
+    for vlen in (128, 512, 1024):
+        for sew in (8, 16, 32, 64):
+            cycles = vlen // sew
+            name = f"sifive7_vlen{vlen}_WR_WriteVCompressV_M1_E{sew}"
+            lines = table.body[name]
+            assert_true(f"Latency = {7 + cycles}" in lines, f"{name}: {lines}")
+            assert_true(f"ReleaseAtCycles = [1, {8 + cycles}]" in lines, f"{name}: {lines}")
+            assert_true("AcquireAtCycles = [0, 1]" in lines, f"{name}: {lines}")
+            if vlen in upstream:
+                expected = upstream[vlen].writes[f"WriteVCompressV_M1_E{sew}"]
+                assert_true(
+                    expected["latency"] == 7 + cycles
+                    and expected["release"] == (1, 8 + cycles)
+                    and expected["acquire"] == (0, 1),
+                    f"{vlen}/{sew}: upstream {expected}",
+                )
+
+
+@test
 def validate_reports_family_coverage_errors():
     """An axis-expanded write without a bind is a validate error, not a surprise."""
     work = Path(tempfile.mkdtemp(prefix="ssdl-cov-"))

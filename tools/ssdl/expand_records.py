@@ -251,12 +251,8 @@ def _hoist(node, sink: list[dict], counter: list[int]):
     return node
 
 
-def expand_table(path: str, schema: td_schema.Schema) -> records.JsonRecordFile:
-    """Expand every record of an ``ssdl-records-1`` table."""
-    import json
-
-    with open(path, encoding="utf-8") as f:
-        obj = json.load(f)
+def expand_obj(obj: dict, schema: td_schema.Schema) -> records.JsonRecordFile:
+    """Expand a decoded ``ssdl-records-1`` table."""
     sink: list[dict] = []
     counter = [_anonymous_base(obj)]
     entries = []
@@ -284,6 +280,14 @@ def expand_table(path: str, schema: td_schema.Schema) -> records.JsonRecordFile:
             out.cls[name] = one.cls[name]
             out.body[name] = lines
     return out
+
+
+def expand_table(path: str, schema: td_schema.Schema) -> records.JsonRecordFile:
+    """Expand every record of an ``ssdl-records-1`` table on disk."""
+    import json
+
+    with open(path, encoding="utf-8") as f:
+        return expand_obj(json.load(f), schema)
 
 
 def main(argv: list[str] | None = None) -> int:
