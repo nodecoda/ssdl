@@ -65,8 +65,8 @@ v2 只是 v1 的另一种打印，`SemProgram`、records 契约完全未动：
 
 完整 EBNF 见 `docs/dsl/2026-11-17-ssdl-v2-grammar.md`；v1 → v2 的逐条对照、
 迁移工具和诚实边界见 `docs/dsl/2026-11-17-ssdl-v1-to-v2-migration.md`。
-AArch64（31 模型）的可支持性普查、4 个缺口与 31 模型 sweep 实测见
-`docs/dsl/2026-11-18-ssdl-aarch64-coverage.md`。
+AArch64（31 模型）的可支持性普查、4 个缺口的关闭记录与 31/31 sweep
+见 `docs/dsl/2026-11-18-ssdl-aarch64-coverage.md`。
 每条工具链都接受 `--syntax v1|v2`；v1 源仍可读，`tests/ssdl/*.ssdl` 是
 v2 fixture 的 v1 对拍孪生，`tests/ssdl/v1-compat/` 只钉住没有 v2 写法的旧构造。
 
@@ -218,12 +218,13 @@ $SSDL_CACHE/mine/           family_mine.py 的报告
 ### 6.1 重新生成 records dump
 
 ```bash
-scripts/fetch-records.sh 700e551714cc
+scripts/fetch-records.sh 700e551714cc                        # riscv.rec
+scripts/fetch-records.sh --target aarch64 700e551714cc       # aarch64.rec
 ```
 
 脚本会在 `$SSDL_LLVM_SRC` 上开一个临时 worktree，检出指定 commit，
-用 `$SSDL_LLVM_BUILD/bin/llvm-tblgen` 生成 `$SSDL_CACHE/riscv.rec`，
-结束后清理 worktree。`data/riscv-sched-census.csv` 的表头记录了基线 commit。
+用 `$SSDL_LLVM_BUILD/bin/llvm-tblgen` 生成 `$SSDL_CACHE/<target>.rec`，
+结束后清理 worktree。`data/*-sched-census.csv` 的表头记录了基线 commit。
 
 ### 6.2 重跑 14 模型 sweep（可选，耗时较长）
 
@@ -236,14 +237,27 @@ python3 tools/ssdl/family_sweep.py --syntax v2 --out /tmp/ssdl-sweep-v2
 validate / emit_td / 两条 equiv 对拍。**门禁结果：14/14 records match**，
 即“从 v2 源出发也能逐字段复现上游模型”。
 
+AArch64 走直读路径（records → SSDL → records），同一套对拍：
+
+```bash
+python3 tools/ssdl/sweep_aarch64.py                     # 31 个模型，写 $SSDL_CACHE/aarch64-sweep
+python3 tools/ssdl/sweep_aarch64.py --check             # 与 data/aarch64-sched-sweep.json 对比
+```
+
+**门禁结果：31/31 models records match**，`--records-json` 与
+`llvm-tblgen` 两条路径都对拍；TD 路径用一份按模型引用合成的 stub
+（指令/寄存器名是目标词表，不属于 SSDL），只为让 TableGen 做类型检查。
+
 ### 6.3 回归
 
 ```bash
-python3 tools/ssdl/check.py                   # 131/131
+python3 tools/ssdl/check.py                   # 139/139
+python3 tools/ssdl/golden.py --check          # 23 expansions
 ```
 
-`check.py` 的 131 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
-schema 类型检查、关键字引用同步、14 模型对拍、族展开、效果诊断。
+`check.py` 的 139 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
+schema 类型检查、关键字引用同步、14 模型对拍、31 模型 AArch64 sweep 表、
+族展开、效果诊断。
 
 ---
 
@@ -264,6 +278,9 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
 7. **迁移器只搬语法**：`to_v2` 不保留注释，`tii_predicate X = return P;`
    没有 v2 写法（保留在 `tests/ssdl/v1-compat/`）；裸 `machine X { ... }`
    在往返时会显式化成 `role = both;`（默认值，records 不变）。
+8. **目标词表不在语言内**：`ADD`、`WZR`、`HasSVE` 属于目标 `.td`；AArch64
+   sweep 的 `llvm-tblgen` 路径用合成 stub 提供这些名字，只验证类型与结构。
+   `unsupported_features` 默认不转写（需要 host predicate defs，`--unsupported-features`）。
 
 ---
 
@@ -283,7 +300,7 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
 | `docs/dsl/2026-11-17-ssdl-family-expansion.md` | 族展开规则 |
 | `docs/dsl/2026-11-17-riscv-sched-census.md` | RISC-V 调度结构普查 |
 | `docs/dsl/2026-11-17-riscv-sched-families.md` | 族与词表的抽取方法 |
-| `docs/dsl/2026-11-18-ssdl-aarch64-coverage.md` | **AArch64 可支持性**：31 模型普查、构造映射、4 个缺口、2/31 sweep 与修法 |
+| `docs/dsl/2026-11-18-ssdl-aarch64-coverage.md` | **AArch64 已支持（Verified）**：31 模型普查、4 个缺口关闭、31/31 sweep、诚实边界 |
 | `docs/dsl/2026-11-16-ssdl-keyword-reference.md` | 自动生成的关键字参考（勿手改） |
 
 ---

@@ -3301,6 +3301,76 @@ def family_sweep_covers_every_riscv_model_with_a_processor():
 
 
 @test
+def resources_are_emitted_after_their_super():
+    """A ``super`` name must already exist: TableGen rejects forward refs.
+
+    The record dump is unordered, so upstream Cyclone declares CyUnitB (whose
+    super is CyUnitI) before CyUnitI itself; the emitter has to sort.
+    """
+    source = """
+machine M {
+  resource B : super = I, buffer = 8;
+  resource I : units = 4;
+  write W;
+  bind W -> [B], latency = 1;
+}
+"""
+    text, skips = emit_td.emit(parser.parse(source), strict=True)
+    assert_true(skips == [], skips)
+    assert_true(
+        text.index("def I : ProcResource") < text.index("def B : ProcResource"),
+        "the super resource must be defined first:\n" + text,
+    )
+
+
+@test
+def tii_named_only_from_a_machine_is_emitted_before_it():
+    """A variant case is the only reference; the def still precedes the model."""
+    source = """
+tii_predicate T =
+    switch opcode {
+        case [ADD]: return true;
+        default:    return false;
+    };
+machine M {
+  write W;
+  resource P;
+  bind W -> [P], latency = 1;
+  variant W {
+    case mc(T): [W];
+    default: [W];
+  }
+}
+"""
+    text, skips = emit_td.emit(parser.parse(source), strict=True)
+    assert_true(skips == [], skips)
+    assert_in("def T : TIIPredicate<", text)
+    assert_in("MCSchedPredicate<T>", text)
+    assert_true(
+        text.index("def T : TIIPredicate<") < text.index("def MModel"),
+        "the TII def must precede the machine that names it:\n" + text,
+    )
+
+
+@test
+def aarch64_sweep_covers_every_model_and_matches_the_table():
+    """Every AArch64 model with a processor is pinned as ``match``."""
+    dump = paths_mod.records_path("aarch64")
+    if not dump.is_file():
+        return
+    models = family_sweep_mod.discover(dump, None)
+    names = {item["model"] for item in models}
+    assert_true(len(models) == 31, f"models: {len(models)}")
+    table = json.loads((ROOT / "data/aarch64-sched-sweep.json").read_text())
+    assert_true(table.get("format") == "ssdl-aarch64-sweep-1", table.get("format"))
+    assert_true(set(table.get("models", {})) == names, "the table lists other models")
+    failures = [
+        name for name, entry in table["models"].items() if entry.get("status") != "match"
+    ]
+    assert_true(failures == [], f"not matching: {failures}")
+
+
+@test
 def family_read_axis_keeps_the_real_sifive7_members():
     """The shape Step A fixed: ReadVWSLLV is 7 real members plus WorstCase."""
     upstream_path = paths_mod.RECORDS

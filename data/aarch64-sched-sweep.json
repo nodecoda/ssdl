@@ -1,0 +1,254 @@
+{
+  "format": "ssdl-aarch64-sweep-1",
+  "llvm": "700e551714cc",
+  "models": {
+    "A64FXModel": {
+      "instrw": 516,
+      "reads": 10,
+      "resources": 8,
+      "status": "match",
+      "variants": 2,
+      "writes": 213
+    },
+    "Ampere1BModel": {
+      "instrw": 236,
+      "reads": 10,
+      "resources": 8,
+      "status": "match",
+      "variants": 2,
+      "writes": 116
+    },
+    "Ampere1Model": {
+      "instrw": 208,
+      "reads": 10,
+      "resources": 8,
+      "status": "match",
+      "variants": 2,
+      "writes": 125
+    },
+    "C1NanoModel": {
+      "instrw": 583,
+      "reads": 20,
+      "resources": 30,
+      "status": "match",
+      "variants": 23,
+      "writes": 217
+    },
+    "C1PremiumModel": {
+      "instrw": 519,
+      "reads": 41,
+      "resources": 33,
+      "status": "match",
+      "variants": 152,
+      "writes": 267
+    },
+    "C1UltraModel": {
+      "instrw": 519,
+      "reads": 40,
+      "resources": 35,
+      "status": "match",
+      "variants": 151,
+      "writes": 244
+    },
+    "CortexA320Model": {
+      "instrw": 402,
+      "reads": 10,
+      "resources": 9,
+      "status": "match",
+      "variants": 3,
+      "writes": 74
+    },
+    "CortexA510Model": {
+      "instrw": 406,
+      "reads": 10,
+      "resources": 12,
+      "status": "match",
+      "variants": 3,
+      "writes": 61
+    },
+    "CortexA53Model": {
+      "instrw": 73,
+      "reads": 10,
+      "resources": 7,
+      "status": "match",
+      "variants": 2,
+      "writes": 48
+    },
+    "CortexA55Model": {
+      "instrw": 141,
+      "reads": 10,
+      "resources": 9,
+      "status": "match",
+      "variants": 4,
+      "writes": 75
+    },
+    "CortexA57Model": {
+      "instrw": 334,
+      "reads": 18,
+      "resources": 7,
+      "status": "match",
+      "variants": 28,
+      "writes": 120
+    },
+    "CycloneModel": {
+      "instrw": 148,
+      "reads": 15,
+      "resources": 13,
+      "status": "match",
+      "variants": 7,
+      "writes": 54
+    },
+    "ExynosM3Model": {
+      "instrw": 241,
+      "reads": 13,
+      "resources": 35,
+      "status": "match",
+      "variants": 27,
+      "writes": 98
+    },
+    "ExynosM4Model": {
+      "instrw": 280,
+      "reads": 14,
+      "resources": 41,
+      "status": "match",
+      "variants": 41,
+      "writes": 117
+    },
+    "ExynosM5Model": {
+      "instrw": 258,
+      "reads": 14,
+      "resources": 45,
+      "status": "match",
+      "variants": 46,
+      "writes": 114
+    },
+    "FalkorModel": {
+      "instrw": 404,
+      "reads": 17,
+      "resources": 12,
+      "status": "match",
+      "variants": 10,
+      "writes": 141
+    },
+    "HIP12Model": {
+      "instrw": 516,
+      "reads": 42,
+      "resources": 15,
+      "status": "match",
+      "variants": 33,
+      "writes": 171
+    },
+    "KryoModel": {
+      "instrw": 388,
+      "reads": 10,
+      "resources": 6,
+      "status": "match",
+      "variants": 0,
+      "writes": 419
+    },
+    "NeoverseN1Model": {
+      "instrw": 171,
+      "reads": 22,
+      "resources": 7,
+      "status": "match",
+      "variants": 28,
+      "writes": 92
+    },
+    "NeoverseN2Model": {
+      "instrw": 453,
+      "reads": 45,
+      "resources": 10,
+      "status": "match",
+      "variants": 30,
+      "writes": 173
+    },
+    "NeoverseN3Model": {
+      "instrw": 445,
+      "reads": 44,
+      "resources": 9,
+      "status": "match",
+      "variants": 34,
+      "writes": 143
+    },
+    "NeoverseV1Model": {
+      "instrw": 305,
+      "reads": 36,
+      "resources": 12,
+      "status": "match",
+      "variants": 36,
+      "writes": 173
+    },
+    "NeoverseV2Model": {
+      "instrw": 452,
+      "reads": 45,
+      "resources": 15,
+      "status": "match",
+      "variants": 46,
+      "writes": 224
+    },
+    "NeoverseV3AEModel": {
+      "instrw": 450,
+      "reads": 44,
+      "resources": 16,
+      "status": "match",
+      "variants": 39,
+      "writes": 185
+    },
+    "NeoverseV3Model": {
+      "instrw": 450,
+      "reads": 44,
+      "resources": 18,
+      "status": "match",
+      "variants": 39,
+      "writes": 201
+    },
+    "OlympusModel": {
+      "instrw": 1031,
+      "reads": 42,
+      "resources": 13,
+      "status": "match",
+      "variants": 37,
+      "writes": 210
+    },
+    "OryonModel": {
+      "instrw": 331,
+      "reads": 10,
+      "resources": 22,
+      "status": "match",
+      "variants": 0,
+      "writes": 115
+    },
+    "TSV110Model": {
+      "instrw": 224,
+      "reads": 13,
+      "resources": 7,
+      "status": "match",
+      "variants": 4,
+      "writes": 87
+    },
+    "ThunderX2T99Model": {
+      "instrw": 474,
+      "reads": 10,
+      "resources": 6,
+      "status": "match",
+      "variants": 2,
+      "writes": 80
+    },
+    "ThunderX3T110Model": {
+      "instrw": 394,
+      "reads": 10,
+      "resources": 11,
+      "status": "match",
+      "variants": 2,
+      "writes": 113
+    },
+    "ThunderXT8XModel": {
+      "instrw": 83,
+      "reads": 10,
+      "resources": 7,
+      "status": "match",
+      "variants": 2,
+      "writes": 51
+    }
+  }
+}

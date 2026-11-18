@@ -1,25 +1,25 @@
 # SSDL × AArch64：可支持性分析
 
 - date: 2026-11-18
-- status: **Evidence（可复算）**
+- status: **Verified（31/31，可复算）**
 - LLVM：`700e551714cc`（`$SSDL_LLVM_SRC`）
-- SSDL：`d766aa1`
+- SSDL：`10a2bff` 起（P4 转写器 + P5 sweep）
 - 方法：源码普查（`lib/Target/AArch64/AArch64Sched*.td`，31 个模型）
-  + 两轮实测（单模型端到端、31 模型 sweep）
+  + 三轮实测（单模型、全量 sweep、`--records-json` 与 `llvm-tblgen` 双路径）
 - 复现命令见 §7
 
 ## 0. 结论
 
-**能支持。语义层不需要扩展；语法层只差 4 个字段/规则级的小口；真正的阻塞在工具链。**
+**已支持。语义层没有扩展；语法层的 4 个字段/规则级小口全部关闭；工具链已参数化。**
 
 | 层 | 结论 | 证据 |
 |---|---|---|
 | 语义层 | 覆盖，且比 RISC-V **更简单** | `ItinRW`/`RegisterFile`/`LoadQueue`/`StoreQueue` 全部为 0；`defm`/`multiclass` 为 0 |
 | 语法层 | v2 的 6 个顶层关键字够用 | AArch64 只用到 `set` / `predicate`(sched·tii·prolog) / `feature` / `machine`(model·cpu·alias) |
-| 语法层 | 4 个小缺口（见 §4） | `map=`、`MCSchedPredicate<命名TIIPredicate>`、TII 外部方法名、`unsupported_features` 前缀 |
-| 工具层 | **主要工作量** | 31 个模型 sweep：2/31 已达 record 级全等；其余 29 个卡在 4 类转写缺口 + RISC-V 硬编码 |
+| 语法层 | 4 个小缺口全部关闭（见 §4） | `map=`、`mc(TiiName)`、`tii = "..."`、`unsupported_features` 直出 |
+| 工具层 | 已完成 | 31 个模型的 sweep：**31/31 record 级全等**（§5.2）；工具链按 `--target` 参数化 |
 
-一句话：**SSDL 的领域模型是够的；现在缺的是把 RISC-V 专用的工具链参数化，加 4 条小的 lowering。**
+一句话：**AArch64 的 31 个调度模型现在可以用 SSDL 表达，并在 records 层逐字段证明。**
 
 ## 1. 普查
 
@@ -132,7 +132,7 @@ AArch64 的谓词分三类，SSDL 的三种谓词形态正好对上：
 
 ## 4. 四个缺口（附实测）
 
-### G1 `map=` 只进签名表，不进 lowering
+### G1 `map=` 只进签名表，不进 lowering —— **已关闭**（`8d8cb68`）
 
 ```
 $ python3 tools/ssdl/emit_td.py probe.ssdl --syntax v2
@@ -145,7 +145,7 @@ line 3: predicate CheckLSL0: error: imm_is_enum: map= is not lowered yet
 （`def ..._m0 : CheckImmOperand_s<3,"..."> { let FunctionMapper = "..."; }`），
 因为内联表达式上挂不了 `let`。影响面：23 个谓词 def，4 个映射函数。
 
-### G2 命名 `TIIPredicate` 无法被 SCHED 谓词引用
+### G2 命名 `TIIPredicate` 无法被 SCHED 谓词引用 —— **已关闭**（`841c00f`）
 
 ```
 $ ... predicate tii RegShiftedFn { ... } predicate sched P = RegShiftedFn;
@@ -163,7 +163,11 @@ llvm-mca 的变体选择**。
 
 修法很小：`ensure_named` 认识 TII 名字，`mc(TiiName)` → `MCSchedPredicate<TiiName>`。
 
-### G3 `TIIPredicate` 的外部方法名不可指定
+**已实现**：`predicate sched P = mc(RegShiftedFn);` 与变体 case 里的 `mc(X)` 都
+lower 成 `MCSchedPredicate<RegShiftedFn>`；被引用的 TII def 先于引用者发射
+（机器内部引用时也一样，见 `emit_td.py` 的 `mid` 段）。
+
+### G3 `TIIPredicate` 的外部方法名不可指定 —— **已关闭**（`841c00f`）
 
 SSDL 发的是 `TIIPredicate<"<谓词名>", ...>`（`check.py:662` 的 golden 断言），
 但 AArch64 的 14 个 def **全部**是「def 名 ≠ C++ 方法名」：
@@ -180,10 +184,10 @@ SSDL 发的是 `TIIPredicate<"<谓词名>", ...>`（`check.py:662` 的 golden �
 | `Neoverse*Fn`（2 个） | `isNeoverse*` |
 
 这个字符串是 `AArch64InstrInfo::hasExtendedReg()` 的 C++ 契约，不能改名。
-修法：`predicate tii RegExtendedFn { tii = "hasExtendedReg"; switch ... }`
-（或 `method = "..."`），一个字段。
+修法：`predicate tii RegExtendedFn { method = "hasExtendedReg"; switch ... }`，
+一个字段。**已实现**：缺省仍是 def 名，14 个 AArch64 TII def 全部可直译。
 
-### G4 `unsupported_features` 硬编码 `Has` 前缀
+### G4 `unsupported_features` 硬编码 `Has` 前缀 —— **已关闭**（`df57e8e`）
 
 ```
 $ ... machine model m { unsupported_features = [HasSVE, HasMTE]; }
@@ -201,11 +205,18 @@ SSDL 目前只能在每个 model 里把列表摊平重写一遍。
 
 修法两件事：(a) 按已声明名字直出，`Has` 映射只留给 `extension` kind；
 (b) 增加 `set predicates X = [...]`（第 4 个 set kind），让复合列表写一次、
-各 model 用 `...X` 展开。这同时消掉 G4 的一半重复。
+各 model 用 `...X` 展开。
+
+**已实现 (a)**：`unsupported_features = [HasSVE, HasMTE];` 逐字发射，
+RISC-V 的 `Feature… → Has…` 映射仍由 `extension` 的 def 名承担。
+(b) 仍是可选的语法糖：31 模型 sweep 默认不转写 `UnsupportedFeatures`
+（host predicate defs 不在 SSDL 内），不需要它也能达标。
 
 ## 5. 实测
 
-### 5.1 单模型端到端（TSV110）
+### 5.1 单模型端到端（TSV110，修复前的基线）
+
+这一段保留 P4 之前的状态，用来对照缺口：
 
 ```text
 $ from_records.py aarch64.rec --model TSV110Model --machine tsv110
@@ -220,28 +231,38 @@ variant TSV110WrISReg/IEReg(+Br):   only in intree   ← SchedWriteVariant 直�
 ```
 
 **87/87 writes、224/224 InstRW、7/7 resources 完全一致**；
-7 处差异全部是「记录形态」而非「调度语义」，对应 §6 的两个转写缺口。
+7 处差异全部是「记录形态」而非「调度语义」，对应 P4 的两个转写缺口。
+修复后同一模型（`--in-mcpu tsv110`）两条路径都是 `records match`，
+见 §5.2。
 
 ### 5.2 31 模型 sweep
 
 以 `-print-records` 为 oracle，对每个模型跑
-`from_records → emit_td → equiv`：
+`from_records → emit_td → equiv`，两条对拍路径（`--records-json` 与
+`llvm-tblgen`）：
+
+```text
+$ python3 tools/ssdl/sweep_aarch64.py --check
+31/31 models records match
+```
 
 | 结果 | 数量 | 模型 |
 |---|---:|---|
-| record 级全等 | **2** | Kryo、Oryon |
-| 未达 record 级全等 | 29 | 其余 |
+| record 级全等 | **31** | 全部 |
 
-29 个的阻塞原因只有 4 类，全部在 `from_records.py` / `emit_td.py`，与语言无关：
+P4 关闭的 5 类转写缺口（上一版 29 个模型的全部阻塞）：
 
-| 阻塞 | 模型数 | 根因 | 修法 |
-|---|---:|---|---|
-| 变体引用的谓词 def 不转写（`TIIPredicate` / `CheckImmOperand_s` / `CheckSameRegOperand`） | 21 | `from_records.py:111` 直接抛 `unsupported MC predicate` | 先转写谓词块，再转写变体 |
-| 引用但未 bind 的全局 write 不声明（`WriteVd`/`WriteVq`/`WriteFImm`/`WriteFCopy`） | 3 | 只收集本模型 bind 过的 write | 收集 InstRW 引用到的全部 RW |
-| `let SchedModel` 外的 `ProcResource` 不收集（`A57UnitM`…） | 1 | 按 `SchedModel == M` 过滤 | 按「被本模型 bind 引用」收集 |
-| 融合式 read / direct variant 不转写 | 4 | 只认 `ReadAdvance` 的 `ReadType` 字段、只认 `SchedAlias<W,V>` | 识别 `SchedReadAdvance`、`SchedWriteVariant` 作为 write/read 本体 |
+| 缺口 | 修法 |
+|---|---|
+| 变体引用的谓词 def 不转写（`TIIPredicate` / `CheckImmOperand_s` / `CheckSameRegOperand` / `CheckNonPortable` / `SchedPredicate`） | 补全 MC 谓词树；`SchedPredicate` → `sched_code`；`FunctionMapper` → `map=` |
+| 引用但未 bind 的全局 write 不声明（`WriteVd`/`WriteVq`/`WriteFImm`/`WriteFCopy`） | 别名源与目标都声明 |
+| `let SchedModel` 外的 `ProcResource` 不收集（`A57UnitM`…） | 按「被本模型 bind 引用」收集，并递归 `Super`/成员 |
+| 融合式 read / direct variant 不转写 | 识别 `SchedReadAdvance`、`SchedWriteVariant` 作为 write/read 本体；read variant 仅在**所有 case 选中同一个** advance 时折回 subject（A55 的两个不同 advance 保留） |
+| 匿名 `ProcessorModel` 无法对拍 | `from_records --mcpu`、`equiv --in-mcpu` |
 
-结论：**这 29 个不是「SSDL 表达不了」，而是「转写器还没认全上游的两种等价写法」。**
+此外还修了两个通用 lowering 缺陷（RISC-V 未触发）：
+`-print-records` 跨行的 `code` 字段（Falkor）与资源 `Super` 的前向引用
+（Cyclone 的 `CyUnitB → CyUnitI`）。
 
 ## 6. 与 RISC-V 的差异
 
@@ -290,7 +311,12 @@ done
 ```
 
 `llvm-tblgen -print-records` 对 AArch64 约 1.2 秒 / 63 MB，比 RISC-V 的
-151 MB 还小，跑全量 sweep 的机器成本可以忽略。
+151 MB 还小，跑全量 sweep 的机器成本可以忽略。日常回归用脚本：
+
+```bash
+python3 tools/ssdl/sweep_aarch64.py            # 跑 31 个模型
+python3 tools/ssdl/sweep_aarch64.py --check    # 与 data/aarch64-sched-sweep.json 对比
+```
 
 ## 8. 诚实边界
 
@@ -306,10 +332,10 @@ done
 3. **SSDL 的 resource 作用域比上游严。** 上游允许 `ProcResource` 写在
    `let SchedModel` 外面（`AArch64SchedA57.td:48`），SSDL 要求写在 machine 内。
    语义不变，但转写器要按「被引用」而不是「带 SchedModel 字段」收集。
-4. **匿名 `ProcessorModel` 无法用 `--in-processor` 对比。**
+4. **匿名 `ProcessorModel` 通过 `--mcpu`/`--in-mcpu` 对比。**
    AArch64 的 85 个处理器全是 `def : ProcessorModel<...>`，没有 def 名；
-   `equiv.py` 按 def 名取记录，所以目前只能比 model 侧。
-   要比 CPU 侧，得给 `equiv` 加「按 `string Name` 找 ProcessorModel」的入口。
+   现在按 `string Name` 查找。sweep 每个模型至少对拍 1 个 `-mcpu` 的
+   features/tunes/march。
 5. **`non_portable` 不是万能逃生口。** 它在 MCInst 路径恒为 false
    （`TargetInstrPredicate.td:236-240`）。AArch64 自己用了 6 次
    `SchedPredicate<[{...}]>`，SSDL 的 `sched_code` 同样会得到「CodeGen 真 / MCA 假」
@@ -319,6 +345,13 @@ done
    85 个 CPU 的特性列表，这些数据必须由目标词表提供或由生成器导出。
 7. **没有条件表达式。** AArch64 的 `LoadLatency` 等是常量，暂不构成问题；
    但如果要描述「按特性选不同延迟」，仍要靠 host profile 投影。
+8. **TD 路径用合成 stub。** `sweep_aarch64.py` 让 `llvm-tblgen` 检查生成的
+   TableGen 时，只声明模型引用到的指令/寄存器/TII 名字（目标词表），
+   不加载 `AArch64.td`（否则与生成的 feature def 撞名）。这条路径验证类型
+   与结构，不验证「`ADD` 在目标里存在」——后者的 oracle 是 records dump。
+9. **`unsupported_features` 默认不转写。** host predicate defs（`HasSVE`…）
+   不在 SSDL 内；需要 `from_records --unsupported-features`。sweep 用默认
+   关闭，equiv 会把它列为「不属于 SSDL 模型」的 note，而不是差异。
 
 ## 9. 落地顺序（建议）
 
@@ -330,6 +363,9 @@ done
 | 3 | G4 `unsupported_features`：去 `Has` 前缀 + `set predicates` | 小 | 29 处不再手抄 |
 | 4 | `from_records` 4 个转写缺口 | 中 | 31/31 sweep |
 | 5 | 把 31 模型 sweep 接进 `check.py` 门禁 | 小 | AArch64 与 RISC-V 同级证据 |
+
+**状态**：0–5 全部完成（G4 的 `set predicates` 为可选语法糖，未做）；
+P4 转写器与 P5 sweep、P6 文档已入库，`check.py` 新增 3 项 AArch64 门禁。
 
 **不建议做的**：为 AArch64 增加新的顶层关键字、引入 `defm`/`foreach` 式的元编程、
 或把 `FunctionMapper` 做成字符串模板。这四条都会把「语法融合、语义分层」

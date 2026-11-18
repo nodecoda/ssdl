@@ -333,7 +333,13 @@ class Emitter:
         )
         early = self.predicates.lower_early()
 
+        before = len(self.predicates.global_defs)
         self.lower_machines()
+        # Naming a TII predicate from inside a machine (`mc(X)` in a variant
+        # case) emits its def while the machine text is being built.  Those
+        # defs must still precede the machine: TableGen rejects a forward
+        # reference in a class argument.
+        mid = [text for _, text in self.predicates.global_defs[before:]]
         late = self.predicates.lower_late()
         try:
             self.predicates.finish()
@@ -359,6 +365,7 @@ class Emitter:
             chunks.append(info.text)
         chunks.extend(self.top_itin_text)
         chunks.extend(early)
+        chunks.extend(mid)
         chunks.extend(self.global_texts)
         for info in self.machines.values():
             chunks.append(info.text)
@@ -997,42 +1004,80 @@ class Emitter:
         # model through one `let SchedModel = ... in {}` block.
         self.current_scope = f"{info.def_name}Model"
 
-        seen_res: set[str] = set()
-        for item in items["resource"]:
-            self.at(item)
-            name = item["name"]
-            if name in seen_res:
-                self.error(where, f"duplicate resource {name!r}")
-                continue
-            seen_res.add(name)
-            res_props = item["props"]
-            for key in res_props:
-                if key not in ("units", "buffer", "super"):
-                    self.error(where, f"resource {name}: unknown property {key!r}")
-            units = res_props.get("units", 1)
-            body = []
-            if "super" in res_props:
-                super_name = res_props["super"]
-                if super_name not in seen_res and not any(
-                    r["name"] == super_name for r in items["resource"]
-                ):
-                    self.error(where, f"resource {name}: unknown super {super_name!r}")
-                body.append(("Super", str(super_name)))
-            if "buffer" in res_props:
-                body.append(("BufferSize", str(res_props["buffer"])))
-            out.append(self.define(where, name, "ProcResource", [str(units)], body))
+        # A resource must be defined before anything that names it: TableGen
+        # rejects a forward reference in ``let Super = X`` and in a group's
+        # member list, and the record dump is unordered (upstream Cyclone
+        # declares CyUnitB, whose Super is CyUnitI, before CyUnitI itself).
+        res_nodes: dict[str, tuple[str, list[str], dict]] = {}
+        duplicates: set[str] = set()
 
+        def add_res_node(name: str, node: tuple[str, list[str], dict]) -> None:
+            if name in res_nodes:
+                duplicates.add(name)
+            res_nodes[name] = node
+
+        for item in items["resource"]:
+            super_name = item["props"].get("super")
+            add_res_node(
+                item["name"],
+                ("resource", [super_name] if super_name else [], item),
+            )
         for item in items["res_group"]:
+            add_res_node(item["name"], ("group", list(item["resources"]), item))
+        ordered_res: list[str] = []
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit_resource(name: str) -> None:
+            if name in visited or name not in res_nodes:
+                return
+            if name in visiting:
+                self.error(where, f"resource cycle through {name!r}")
+                return
+            visiting.add(name)
+            for dependency in res_nodes[name][1]:
+                visit_resource(dependency)
+            visiting.discard(name)
+            visited.add(name)
+            ordered_res.append(name)
+
+        for name in sorted(res_nodes):
+            visit_resource(name)
+
+        seen_res: set[str] = set()
+        for name in ordered_res:
+            kind, _, item = res_nodes[name]
             self.at(item)
-            name = item["name"]
-            if name in seen_res:
+            if name in duplicates or name in seen_res:
                 self.error(where, f"duplicate resource {name!r}")
                 continue
             seen_res.add(name)
+            if kind == "resource":
+                res_props = item["props"]
+                for key in res_props:
+                    if key not in ("units", "buffer", "super"):
+                        self.error(where, f"resource {name}: unknown property {key!r}")
+                units = res_props.get("units", 1)
+                body = []
+                if "super" in res_props:
+                    super_name = res_props["super"]
+                    if super_name not in res_nodes:
+                        self.error(
+                            where, f"resource {name}: unknown super {super_name!r}"
+                        )
+                    body.append(("Super", str(super_name)))
+                if "buffer" in res_props:
+                    body.append(("BufferSize", str(res_props["buffer"])))
+                out.append(
+                    self.define(where, name, "ProcResource", [str(units)], body)
+                )
+                continue
             members = []
             for member in item["resources"]:
-                if member not in seen_res:
-                    self.error(where, f"res_group {name}: unknown resource {member!r}")
+                if member not in res_nodes:
+                    self.error(
+                        where, f"res_group {name}: unknown resource {member!r}"
+                    )
                 members.append(member)
             res_props = item["props"]
             for key in res_props:
