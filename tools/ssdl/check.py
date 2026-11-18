@@ -3848,6 +3848,55 @@ machine instance tiny : f(2) { }
 
 
 @test
+def v2_map_takes_a_dense_operand_list():
+    """``map [A, B] -> [W, R]`` is the block form without the indices."""
+    dense = syntax_v2.to_v1(
+        """
+machine m {
+  write W;
+  read R;
+  map [ADD, SUB] -> [W, R];
+}
+"""
+    )
+    block = syntax_v2.to_v1(
+        """
+machine m {
+  write W;
+  read R;
+  map [ADD, SUB] { 0 = W; 1 = R; }
+}
+"""
+    )
+    assert_in("map [ADD, SUB] -> [W, R];", dense)
+    assert_true(dense == block, f"map forms differ:\n{dense}\n---\n{block}")
+
+    for source, needle in [
+        ("machine m { map [ADD] -> []; }", "operand list is empty"),
+        ("machine m { map [ADD] -> [W[0]]; }", "cannot carry a dimension index"),
+        ("machine m { map [ADD] -> [0]; }", "map values are sched_rw names"),
+    ]:
+        assert_in(needle, v2_error(source))
+
+
+@test
+def set_names_cannot_shadow_target_vocabulary():
+    """With the attribute schema, a set named after an entity is an error."""
+    source = """
+set instructions ADD = [SUB];
+predicate sched P = opcode(ADD);
+machine m { write W; resource P2 { units = 1; } bind W { resources = [P2]; latency = 1; } }
+"""
+    try:
+        emit_source(syntax_v2.to_v1(source), attrs=attrs_schema())
+    except SSDLEmitError as exc:
+        text = "\n".join(d.render() for d in exc.diagnostics)
+        assert_in("is both a target inst name and a set", text)
+        return
+    raise Failure("expected the set/entity collision to be reported")
+
+
+@test
 def v2_machine_roles_split_model_and_processor():
     """AC6: ``machine model`` and ``machine cpu`` emit one record each."""
     source = (ROOT / "tests/ssdl/v2/machine-roles-v2.ssdl").read_text(

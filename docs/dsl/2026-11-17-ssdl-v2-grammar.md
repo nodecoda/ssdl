@@ -149,6 +149,10 @@ projection
   列可以命名：`[(sew = 8, div = 1), ...]`。名字是文档加一致性检查——每行必须
   命名同样的列且顺序一致，写错或交换位置会报错，而不是悄悄转置一张表。
   命名与位置两种写法不能混用；求值语义完全相同。
+- 集合名不得与目标词表同名：`set instructions ADD = [SUB]` 会让 `opcode(ADD)`
+  静默变成集合。带 `--attrs` 时 SSDL 能看见两侧，直接报
+  `'ADD' is both a target inst name and a set; rename the set`；没有 schema 时
+  无法判定，文档写明这是能力边界。
 
 `name_format` 只能包含一个 `{value}`；`units` 与成员一一对应；缺失 `units`
 的维度不能用于数值表达式。
@@ -678,6 +682,9 @@ map ADD {
 
 - 同一 `map` 内下标不得重复；下标从 0 开始且不得有空洞。
 - `map [ADD, SUB] { ... }` 表示同一组读写映射到多条指令。
+- 密集情形用紧凑列表：`map [ADD, SUB] -> [W, R];`。位置就是操作数序号，
+  与 v1 和 `InstRW` 的读法一致；块形式留给稀疏下标与 `unsupported` 混写。
+  两种拼法产出同一组 `InstRW`，列表形式同样不接受 `dim_index` 目标。
 - `unsupported = true;` 与 v1 的 `: unsupported = true` 等价，可和下标字段混写。
 - `regex("...")` 仍可出现在 `inst_set` 中；与显式指令名混写仍报错。
 

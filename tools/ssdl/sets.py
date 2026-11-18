@@ -336,6 +336,16 @@ class SetEvaluator:
         if arg[0] == "ident":
             name = arg[1]
             if name in self.sets:
+                if name in self.schema.data[kind]:
+                    # A set named after a real entity silently changes what the
+                    # name means.  With the attribute schema we can see the
+                    # collision, so report it instead of picking the set.
+                    self.error(
+                        where,
+                        f"{name!r} is both a target {kind} name and a set; "
+                        "rename the set",
+                    )
+                    return []
                 set_kind, names = self.expand_set(name, where)
                 if set_kind != kind:
                     self.error(where, f"set {name!r} is a {set_kind} set, expected {kind}")

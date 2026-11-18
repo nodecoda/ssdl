@@ -799,7 +799,37 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         out.append(f"advance {subject}{index}{suffix};")
         return
     if key == "map":
-        insts = cursor.list_tokens()
+        insts = cursor.list_tokens({"{", "->"})
+        if cursor.accept("->"):
+            # Dense shorthand: the operand position is the list position, which
+            # is how the v1 surface and ``InstRW`` read.  The block form stays
+            # for sparse positions and for ``unsupported``.
+            values: list[str] = []
+            cursor.expect("[")
+            while not cursor.at("]"):
+                token = cursor.peek()
+                if token.kind != "IDENT":
+                    raise V2Error(
+                        f"line {token.line}:{token.col}: map values are sched_rw "
+                        f"names (a write or a read), got {token.value!r}"
+                    )
+                at = cursor.peek()
+                value = cursor.ident() + _dim_index(cursor)
+                if "[" in value:
+                    raise V2Error(
+                        f"line {at.line}:{at.col}: map: operand {len(values)} names "
+                        f"{value!r}, but a map target cannot carry a dimension "
+                        "index; write one map per axis member"
+                    )
+                values.append(value)
+                if not cursor.accept(","):
+                    break
+            cursor.expect("]")
+            cursor.accept(";")
+            if not values:
+                raise V2Error("map: the operand list is empty")
+            out.append(f"map {insts} -> [{', '.join(values)}];")
+            return
         cursor.expect("{")
         entries = {}
         unsupported = None
