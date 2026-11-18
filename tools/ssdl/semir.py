@@ -3,7 +3,7 @@
 
 The surface source is expanded into these nodes; the elaborator fills identity
 and phase.  They are the family-expansion IR, not the emitter input:
-``elaborate.render`` turns ``Decl.text`` back into the flat v1 image, and
+``elaborate.render`` turns ``Decl.text`` back into the flat IR image, and
 ``parser`` + ``emit_td`` consume that AST.  Removing the text seam would mean
 making ``family_expand`` produce AST nodes directly; the 2026-11-17 closeout
 spike measured that as a separate project, not a bounded change.
@@ -80,7 +80,7 @@ class Value:
 class Decl:
     """One declaration in the flat program.
 
-    ``text`` is the rendered v1.0 statement (a variant or a nested block may
+    ``text`` is the rendered IR statement (a variant or a nested block may
     span several lines).  ``line`` is the source line when the statement was
     produced by an indexed expansion, else 0.
     """

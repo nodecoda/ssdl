@@ -1,14 +1,16 @@
-# SSDL 1.3：语义 IR、身份/拼写分离与完整表达式
+# SSDL 语义 IR：身份/拼写分离与完整表达式
 
-- date: 2026-11-17
+- date: 2026-11-17（原 1.3 里程碑）
 - 状态：完成（AC1–AC11）
-- 基线：`docs/dsl/2026-11-17-ssdl-v1.2-verification.md`
+- 命名：语义层不带版本号。表面只有一个（v2），IR 只有一份；"1.3" 是里程碑
+  编号，不是可以与表面并列的版本。
+- 基线：`docs/dsl/history/2026-11-17-ssdl-v1.2-verification.md`
 - 证据：`python3 tools/ssdl/check.py` → **102/102**；
   `python3 tools/ssdl/golden.py --check` → **22/22**（8 fixture + 14 模型）
 
 ## 0. 一句话
 
-1.3 把实现从“文本行展开 + records 即真值”改为：
+这一版把实现从“文本行展开 + records 即真值”改为：
 
 ```text
 surface syntax → AST → elaborator（身份/阶段/拼写）→ semantic IR → TD records

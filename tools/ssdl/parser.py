@@ -1157,10 +1157,10 @@ class Parser:
 
 
 def _remap_program_lines(program: Program, source_map) -> None:
-    """Rewrite every recorded v1 line to the surface line it came from.
+    """Rewrite every recorded IR line to the surface line it came from.
 
     Only parse errors used to consult the map; declarations and machine items
-    kept v1 numbers, so semantic diagnostics could not name a v2 line.  The
+    kept IR numbers, so semantic diagnostics could not name a v2 line.  The
     map is applied once, after a successful parse, to the AST itself.
     """
     if source_map is None:
@@ -1211,7 +1211,7 @@ def parse(
             import syntax_v2  # type: ignore
         else:
             from . import syntax_v2
-        text, source_map = syntax_v2.to_v1_mapped(text)
+        text, source_map = syntax_v2.to_ir_mapped(text)
     elif syntax != IR:
         raise SSDLParseError(
             f"unknown input layer {syntax!r}: expected {SURFACE!r} or {IR!r}"
@@ -1254,7 +1254,7 @@ def expand_source_mapped(text: str, syntax: str = IR):
             import syntax_v2  # type: ignore
         else:
             from . import syntax_v2
-        text, source_map = syntax_v2.to_v1_mapped(text)
+        text, source_map = syntax_v2.to_ir_mapped(text)
     elif syntax != IR:
         raise SSDLParseError(
             f"unknown input layer {syntax!r}: expected {SURFACE!r} or {IR!r}"
@@ -1270,7 +1270,7 @@ def expand_source_mapped(text: str, syntax: str = IR):
 
 
 def _expanded_line_map(base_text: str, expanded_text: str, base_map):
-    """Map expanded v1 lines back to the template's declaration lines."""
+    """Map expanded IR lines back to the template's declaration lines."""
     decl_lines: dict[str, int] = {}
     for number, line in enumerate(base_text.splitlines(), 1):
         match = re.match(r"^machine\s+([A-Za-z_][\w-]*)\s*[\{:(]", line)

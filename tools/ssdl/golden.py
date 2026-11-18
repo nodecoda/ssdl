@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pin the v1.2 expansion of every family source, byte for byte.
 
-The v1.3 elaborator replaces the text expander in ``family_expand.py``; AC2
+The semantic elaborator replaces the text expander in ``family_expand.py``; AC2
 requires the new path to reproduce v1.2 output exactly.  This module hashes
 the *expansion* of each source (not the source itself), so a refactor that
 changes only the front end cannot hide behind an unchanged input.

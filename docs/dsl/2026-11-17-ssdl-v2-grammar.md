@@ -4,11 +4,12 @@
 - status: **Draft / normative target**
 - 基线：`docs/dsl/2026-11-17-ssdl-syntax-inventory.md`
 - 语义：不变。`SemProgram`、身份/阶段/拼写、records 契约见
-  `2026-11-17-ssdl-v1.3-semantic-ir.md`。
+  `2026-11-18-ssdl-semantic-ir.md`。
 - 原则：一个概念一个关键字；同一概念的多个角色用紧跟关键字的 kind 表达；
   一种字段体；位置敏感项显式；host 边界显式；规范 = 实现；errata 清零。
 
-本文件是 v2 的唯一文法来源。v1.0 / v1.2 / v1.3 的 EBNF 在本文件生效后转为历史文档。
+本文件是 v2 的唯一文法来源。v1.0 / v1.2 的 EBNF（含 1.3 里程碑的增量）
+在本文件生效后转为历史文档；语义层说明见 `2026-11-18-ssdl-semantic-ir.md`。
 
 块声明（`machine` / `feature` / `predicate select|sti|tii` / `set ... { ... }`）
 的 `}` 后允许一个可选的 `;`，前端忽略；推荐不写。块内成员不接受额外的 `;`。
@@ -347,7 +348,7 @@ bitmask_body
 - `plain` 必须写 `mattr`（命令行特性名）；缺省时报
   `kind = plain requires field 'mattr'`。`bool/int/string <Field> = <value>`
   直接 lowering 到 `SubtargetFeatureKV` 的 `Field/Value`。
-- `extension` 的 `version`/`bitmask`/`experimental` 走 v1.3 的三层 emit。
+- `extension` 的 `version`/`bitmask`/`experimental` 走语义层的三层 emit。
 - `tune` 的 `positive_directive`/`negative_directive` 进入命令行映射。
 - `host [{ ... }]` 保留给无法类型化的 host-only 字段。
 
@@ -406,7 +407,7 @@ arg
 - `machine cpu X { model = M; features = [...]; tune_features = [...];
   default_march = "..."; }`：只发射 `ProcessorModel`，`SchedModel = M`。
 - `machine family F(params) { ... }`：参数化的 model+cpu 模板，本身不发射。
-- `machine instance X : F(args) { ... }`：实例，发射 model+cpu（沿用 v1.3 的
+- `machine instance X : F(args) { ... }`：实例，发射 model+cpu（沿用语义层的
   实例前缀拼写规则）。
 - `machine alias X = Y;`：`ProcessorAlias`，不复制记录。
 - `family`/`instance` 是 `model`+`cpu` 的语法糖；需要显式拆分时用 `model`/`cpu`。
@@ -819,7 +820,7 @@ call
 
 - `/` 必须整除；`//` 是地板除。
 - 比较/布尔返回 0/1，只用于条件位置。
-- 表达式节点数有上限（v1.3 的 `NODE_BUDGET = 64`）；超出报错。
+- 表达式节点数有上限（语义层的 `NODE_BUDGET = 64`）；超出报错。
 - 阶段规则不变：ELAB 全折叠；RUNTIME 只允许进入 `bind` 的
   `latency`/`uops`/`cycles` 标量字段。
 
@@ -1157,9 +1158,9 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 
 ---
 
-## 13. 迁移示例（同一模型，v1 → v2）
+## 13. 迁移示例（同一模型，IR → v2）
 
-v1.3：
+IR：
 
 ```text
 set D = [A] : kind = dimension;
@@ -1201,7 +1202,7 @@ machine instance m512 : fam(512) { }
 
 ## 15. 实现边界（诚实清单）
 
-Phase 2 的 v2 前端是 `tools/ssdl/syntax_v2.py` 的 `to_v1`：先把 v2 表面转写成
+Phase 2 的 v2 前端是 `tools/ssdl/syntax_v2.py` 的 `to_ir`：先把 v2 表面转写成
 v1 族源码，再走既有 elaborator。因此语义内核、拼写规则、runtime 降级和
 records 契约完全未动；v2 能表达的构造在 v1 里必然已经存在。
 
@@ -1219,7 +1220,7 @@ v2 前端后，与手写 `sifive7-mini.expected.td` 的 records 逐字段一致
 Phase 6 补齐了迁移管线：`tools/ssdl/to_v2.py` 把 IR 文本转成 v2 表面，
 `family_sweep.py --syntax v2` 让 14 个模型从 v2 源走完
 validate → emit_td → 两条 equiv 对拍。结果是 **14/14 `records match`**；
-`to_v2` → `to_v1` → 展开后的文本与 IR 源逐字节相同。迁移表、
+`to_v2` → `to_ir` → 展开后的文本与 IR 源逐字节相同。迁移表、
 工具边界和复现命令见 `docs/dsl/2026-11-18-ssdl-ir-to-v2-migration.md`。
 
 迁移器不是第二个语义实现：它只重排语法，遇到没有 v2 写法的构造
@@ -1295,6 +1296,8 @@ IR 的文本格式说明，移入 `docs/dsl/history/`；它们描述的是
   写法的 IR 构造。
 - records 契约、`SemProgram`、golden 字节哈希全部不变——被撤销的是
   "v1 作为可写语法"的地位，不是它的字节。
+- 命名随语义走：`syntax_v2.to_v1` → `to_ir`，`v1_to_v2` 行映射 → `ir_to_v2`；
+  语义层文档不再带版本号（`2026-11-18-ssdl-semantic-ir.md`）。
 
 判据：表达力不变（表面仍是 v2），心智负担减少一层（不必先学 v1 才能读
 测试与生成器输出），领域命名更准（`machine family` / `feature extension`

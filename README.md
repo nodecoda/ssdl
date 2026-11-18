@@ -1,6 +1,6 @@
 # SSDL — 调度与子目标描述语言
 
-**Scheduling and Subtarget Description Language** · v2.0（语义基线 v1.3，已验证）
+**Scheduling and Subtarget Description Language** · 表面 v2（语义 IR 已验证）
 
 SSDL 是 LLVM 后端调度模型的领域专用语言：它不描述指令本身，只描述
 **指令与微架构之间的运行时契约**——资源、延迟、读写推进、变体、特性、行程。
@@ -56,7 +56,7 @@ SSDL 的取舍是：**语义完整的替代品，不是更可读的替代品**�
 和 `records.json` 同级，不是可以并行选用的第二套写法。决定记录见
 `docs/dsl/2026-11-18-ssdl-one-surface.md`。
 
-语义模型仍是 v1.3 —— 表面到 IR 只是一次文本转写，`SemProgram`、records
+语义模型仍是同一份 —— 表面到 IR 只是一次文本转写，`SemProgram`、records
 契约完全未动：
 
 | v2 顶层关键字 | 覆盖的 IR 关键字 |
@@ -101,7 +101,7 @@ IR 文本的 9 个关键字（内部表示，仍然有效）：
 IR 文本的 EBNF 见 `docs/dsl/history/2026-11-16-ssdl-v1.0-final.md`
 （历史文档，已撤销表面地位）；维度的 IR 拼写见
 `docs/dsl/history/2026-11-17-ssdl-v1.2-draft.md`；
-身份/阶段/lowering 见 `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md`。
+身份/阶段/lowering 见 `docs/dsl/2026-11-18-ssdl-semantic-ir.md`。
 
 一个最小模型（表面 v2）：
 
@@ -139,7 +139,7 @@ machine instance m : f(512) { }
 
 ```text
 model.ssdl ──parser──► IR text ──validate──► Program
-   (v2 表面，先 to_v1 转写)                │
+   (v2 表面，先 to_ir 转写)                │
                                             ▼
                                              record_ir.RecordSet ◄── 一等产物
                                                        │
@@ -193,7 +193,7 @@ tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具�
   family_tables.py  从源码抽取 RISC-V 族与词表
   family_mine.py    记录 → 规范基 + 公式（只报告，不发明）
   family_sweep.py   14 个模型的全链路 sweep（--syntax v2|ir）
-  to_v2.py          IR → v2 表面迁移（to_v1 的逆）
+  to_v2.py          IR → v2 表面迁移（to_ir 的逆）
   check.py          151 项自检
 tests/ssdl/         IR 对拍孪生；surface/ 是表面源；ir-only/ 是无表面写法的构造
 data/               小基线：普查表、诊断表、profiles、族表、公式表
@@ -277,10 +277,10 @@ schema 类型检查、关键字引用同步、14 模型对拍、31 模型 AArch6
 
 ---
 
-## 7. 已知边界（v1.3）
+## 7. 已知边界（语义层）
 
 v1.2 的五条边界已逐条消除或契约化，完整说明见
-`docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md` §4。仍然存在的限制：
+`docs/dsl/2026-11-18-ssdl-semantic-ir.md` §4。仍然存在的限制：
 
 1. **非 resource 的 model-scoped def 不自动加前缀**：`write_seq` 等仍共享
    TableGen def；两个 machine 用同一 local 名、不同成员时是硬错误。
@@ -307,8 +307,8 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
 | `docs/dsl/2026-11-17-ssdl-v2-grammar.md` | **唯一表面规范**：EBNF、6 个顶层关键字、errata 处置、决策记录 |
 | `docs/dsl/2026-11-18-ssdl-one-surface.md` | **v1 撤出表面的决定**：分层、CLI、夹具布局、保留项与代价 |
 | `docs/dsl/2026-11-18-ssdl-ir-to-v2-migration.md` | IR → v2 迁移表、`to_v2`、14/14 门禁与工具边界 |
-| `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md` | **语义层**：身份/拼写、阶段、lowering、五条边界处置 |
-| `docs/dsl/2026-11-17-ssdl-v1.2-verification.md` | 历史基线证据：14/14、直读路径、诊断基线 |
+| `docs/dsl/2026-11-18-ssdl-semantic-ir.md` | **语义层**：身份/拼写、阶段、lowering、五条边界处置 |
+| `docs/dsl/history/2026-11-17-ssdl-v1.2-verification.md` | 历史基线证据：14/14、直读路径、诊断基线 |
 | `docs/dsl/history/2026-11-16-ssdl-v1.0-final.md` | 历史：IR 文本的 9 关键字 EBNF（已撤销表面地位） |
 | `docs/dsl/history/2026-11-17-ssdl-v1.2-draft.md` | 历史：维度、机器参数、族与实例的 IR 拼写 |
 | `docs/dsl/2026-11-16-ssdl-domain-model.md` | 语义层 / 策略层 / ABI 层 |

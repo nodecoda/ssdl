@@ -74,7 +74,7 @@ RESERVED = ATOM_PREDICATES | COMBINERS | {
 
 
 def _python_error(expected: str, value) -> str | None:
-    """Check a v1 AST value against the shared v2 field table."""
+    """Check an IR AST value against the shared v2 field table."""
     if expected.startswith("enum:"):
         enum = tuple(expected[len("enum:") :].split("|"))
         if value not in enum:
@@ -362,7 +362,7 @@ class SortChecker:
         return self.errors
 
     def check_item_fields(self, items: list[dict], where: str) -> None:
-        """Apply the shared field table to v1 machine items."""
+        """Apply the shared field table to IR machine items."""
         for item in items:
             self.current_line = item.get("line")
             kind, values = _typed_item_values(item)
@@ -481,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         raw = Path(args.input).read_text(encoding="utf-8")
-        marker = syntax_v2.to_v1(raw) if args.syntax == "v2" else raw
+        marker = syntax_v2.to_ir(raw) if args.syntax == "v2" else raw
         flat, source_map = expand_source_mapped(raw, syntax=args.syntax)
         program = parse(flat, source_map=source_map)
     except Exception as exc:

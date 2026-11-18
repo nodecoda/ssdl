@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Migrate IR text to the v2 surface syntax.
 
-``to_v2`` is the inverse of :func:`syntax_v2.to_v1`: it reads IR text (flat, or
+``to_v2`` is the inverse of :func:`syntax_v2.to_ir`: it reads IR text (flat, or
 a family/dimension template as emitted by ``family_mine.py``) and prints the
 equivalent surface source.  IR is an internal layer, not a second grammar; see
 ``docs/dsl/2026-11-18-ssdl-one-surface.md``.  Round tripping is checked by
-``tools/ssdl/check.py``: ``to_v1(to_v2(text))`` must expand to the same
+``tools/ssdl/check.py``: ``to_ir(to_v2(text))`` must expand to the same
 family text and lower to the same records.
 
 The migrator reuses ``family_expand``'s logical-statement scanner, so it is
@@ -183,10 +183,10 @@ def _fields(text: str) -> list[tuple[str, str]]:
 
 
 def _prop_fields(text: str) -> list[tuple[str, str]]:
-    """Split v1 colon-separated properties, each of which may use commas.
+    """Split IR colon-separated properties, each of which may use commas.
 
     ``resource P : super = Q : units = 1`` and
-    ``resource P : units = 1, buffer = 4`` are both v1 spellings; v2 has one
+    ``resource P : units = 1, buffer = 4`` are both IR spellings; v2 has one
     field body, so the migrator has to normalise both.
     """
     out: list[tuple[str, str]] = []
@@ -417,7 +417,7 @@ def _map(text: str) -> list[str]:
     rw = mapping[arrow + 2 :].strip()
     items = _list_items(rw)
     if unsupported is None:
-        # Dense positions: the v2 list form reads like the v1 surface and like
+        # Dense positions: the v2 list form reads like IR and like
         # InstRW.  The block form is kept for ``unsupported``.
         return [f"map {insts} -> [{', '.join(items)}];"]
     fields = [f"{index} = {item};" for index, item in enumerate(items)]
@@ -550,7 +550,7 @@ def _machine_item(text: str) -> list[str]:
         raise ToV2Error(f"{word} must be a block, got {text!r}")
     if word == "itineraries":
         raise ToV2Error("itineraries must be a block")
-    # A machine property.  Everything the v1 parser knows is also a v2 field.
+    # A machine property.  Everything the IR parser knows is also a v2 field.
     return [text]
 
 

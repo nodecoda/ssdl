@@ -12,7 +12,7 @@
 三个来源逐项对照：
 
 1. **规范**：`history/2026-11-16-ssdl-v1.0-final.md`（9 关键字）、
-   `history/2026-11-17-ssdl-v1.2-draft.md`（族/维度）、`2026-11-17-ssdl-v1.3-semantic-ir.md`
+   `history/2026-11-17-ssdl-v1.2-draft.md`（族/维度）、`2026-11-18-ssdl-semantic-ir.md`
    （relation/extern）。
 2. **实现**：`parser.py` 的分派（`parse_machine_item:793`、`parse_feature:635`、
    `parse_predicate:587`、`parse_itineraries:998`）与 `family_expand.py` 的扫描器

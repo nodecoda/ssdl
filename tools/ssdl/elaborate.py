@@ -256,7 +256,7 @@ def elaborate(
             from ssdl import syntax_v2  # type: ignore
         else:
             from . import syntax_v2
-        text = syntax_v2.to_v1(text)
+        text = syntax_v2.to_ir(text)
     dimensions, relations, externs, machines, globals_ = fe.split_blocks(text)
     lookups = fe._build_lookups(relations, externs) if (relations or externs) else {}
     if add_axis:

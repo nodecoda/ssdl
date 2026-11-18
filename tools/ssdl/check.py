@@ -396,8 +396,8 @@ def negative_controls():
 
 
 @test
-def v1_1_predicate_sorts():
-    program = parser.parse_file(str(ROOT / "tests/ssdl/v1.1.ssdl"))
+def ir_v11_predicate_sorts():
+    program = parser.parse_file(str(ROOT / "tests/ssdl/ir-v11-errata.ssdl"))
     checker = validate_mod.SortChecker(program)
     errors = checker.run()
     assert_true(errors == [], f"unexpected sort errors: {errors}")
@@ -413,7 +413,7 @@ def v1_1_predicate_sorts():
 
 
 @test
-def v1_1_sort_negative_controls():
+def ir_v11_sort_negative_controls():
     cases = [
         (
             "predicate P = feature(F);\ntii_predicate T = return P;",
@@ -487,8 +487,8 @@ def v1_1_sort_negative_controls():
 
 
 @test
-def v1_1_itineraries_binding_parses():
-    program = parser.parse_file(str(ROOT / "tests/ssdl/v1.1.ssdl"))
+def ir_v11_itineraries_binding_parses():
+    program = parser.parse_file(str(ROOT / "tests/ssdl/ir-v11-errata.ssdl"))
     blocks = [d for d in program.decls if isinstance(d, parser.ItinerariesDecl)]
     assert_true(len(blocks) == 1, f"expected one itinerary block, got {len(blocks)}")
     itin = blocks[0]
@@ -498,11 +498,11 @@ def v1_1_itineraries_binding_parses():
     assert_true(
         first["kind"] == "func_units" and first["value"] == ["FU_ALU"], itin.items
     )
-    assert_true(first["line"] == 43, f"the item must keep its v1 line: {first}")
+    assert_true(first["line"] == 43, f"the item must keep its IR line: {first}")
 
 
 @test
-def v1_1_mixed_map_is_split():
+def ir_v11_mixed_map_is_split():
     source = """
 machine M {
     write W;
@@ -519,7 +519,7 @@ machine M {
 
 
 @test
-def v1_1_tii_return_semicolon_forms():
+def ir_v11_tii_return_semicolon_forms():
     program = parser.parse(
         "tii_predicate A = return true;\n"
         "tii_predicate B = return false;;\n"
@@ -635,7 +635,7 @@ def unknown_attribute_is_not_false():
 
 @test
 def predicate_and_hook_lowering_shapes():
-    source = (ROOT / "tests/ssdl/v1.1.ssdl").read_text(encoding="utf-8")
+    source = (ROOT / "tests/ssdl/ir-v11-errata.ssdl").read_text(encoding="utf-8")
     text, skips = emit_source(source, strict=True, attrs=attrs_schema())
     assert_true(skips == [], skips)
     # MC / SCHED / SEL forms from 1.1 §4.
@@ -826,7 +826,7 @@ def tii_predicate_rejects_unknown_fields():
 }
 """
     try:
-        syntax_v2.to_v1(source)
+        syntax_v2.to_ir(source)
     except syntax_v2.V2Error as exc:
         assert_in("unknown tii field 'hook'", str(exc))
         return
@@ -2256,8 +2256,8 @@ machine f(v: INT)
 
 
 @test
-def mined_family_sources_expand_to_reparsable_v1_0():
-    """Expanding an authored family source leaves plain, parseable v1.0 text.
+def mined_family_sources_expand_to_reparsable_flat_ir():
+    """Expanding an authored family source leaves flat, parseable IR text.
 
     Older sweep directories also carry the expanded source; when it is there,
     the two must be identical.
@@ -2756,7 +2756,7 @@ def family_expansions_match_the_golden_manifest():
 
 
 @test
-def v1_2_parameter_expressions_reproduce_upstream_latencies():
+def ir_v12_parameter_expressions_reproduce_upstream_latencies():
     """A machine parameter and an axis projection evaluate during norm.
 
     The fixture encodes SiFive7's VCompress formula from the in-tree TD:
@@ -3518,7 +3518,7 @@ V2_FIXTURES = [
 
 def v2_error(source: str) -> str:
     try:
-        syntax_v2.to_v1(source)
+        syntax_v2.to_ir(source)
     except syntax_v2.V2Error as exc:
         return str(exc)
     raise Failure(f"expected a V2Error for:\n{source}")
@@ -3527,15 +3527,15 @@ def v2_error(source: str) -> str:
 @test
 def surface_and_ir_build_the_same_program():
     """AC4: the surface changes, the semantic program does not."""
-    for label, v1_path, v2_path in V2_FIXTURES:
-        v1_text = (ROOT / v1_path).read_text(encoding="utf-8")
+    for label, ir_path, v2_path in V2_FIXTURES:
+        ir_text = (ROOT / ir_path).read_text(encoding="utf-8")
         v2_text = (ROOT / v2_path).read_text(encoding="utf-8")
-        v1 = elaborate_mod.elaborate(v1_text)
+        ir = elaborate_mod.elaborate(ir_text)
         v2 = elaborate_mod.elaborate(v2_text, syntax="v2")
-        assert_true(v1.dimensions == v2.dimensions, f"{label}: dimensions differ")
-        symbols = v1.symbols()
+        assert_true(ir.dimensions == v2.dimensions, f"{label}: dimensions differ")
+        symbols = ir.symbols()
         assert_true(symbols == v2.symbols(), f"{label}: symbol lists differ")
-        by1, by2 = v1.by_symbol(), v2.by_symbol()
+        by1, by2 = ir.by_symbol(), v2.by_symbol()
         for symbol in symbols:
             assert_true(
                 by1[symbol].spelling == by2[symbol].spelling,
@@ -3549,7 +3549,7 @@ def surface_and_ir_build_the_same_program():
         # so their source spacing is not part of the contract.  Machine
         # statements are, and must be byte-identical.
         assert_true(
-            [decl.text for machine in v1.machines for decl in machine.decls]
+            [decl.text for machine in ir.machines for decl in machine.decls]
             == [decl.text for machine in v2.machines for decl in machine.decls],
             f"{label}: rendered machine statements differ",
         )
@@ -3557,7 +3557,7 @@ def surface_and_ir_build_the_same_program():
 
 def _migrated_ir_view(program):
     """IR view used by the migrator tests: ``role = both`` is the default."""
-    # A plain v1 machine becomes ``machine both`` in v2, whose v1 rendering is
+    # A plain IR machine becomes ``machine both`` in v2, whose ir rendering is
     # the explicit default ``role = both``.  It is not a semantic difference.
     symbols = [s for s in program.symbols() if s.kind != "role"]
     by_symbol = program.by_symbol()
@@ -3577,7 +3577,7 @@ def _migrated_ir_view(program):
 
 @test
 def to_v2_round_trips_every_family_fixture():
-    """Phase 6: v1 -> v2 -> v1 expands to the same family text."""
+    """Phase 6: IR -> v2 -> IR expands to the same family text."""
     checked = 0
     for path in sorted((ROOT / "tests/ssdl").glob("*.ssdl")):
         text = path.read_text(encoding="utf-8")
@@ -3604,47 +3604,47 @@ def _normalise_family(text: str) -> str:
 
 @test
 def to_v2_migrates_every_v2_fixture():
-    """Phase 6: the v1 twin of each v2 fixture migrates to the same IR."""
-    for label, v1_path, v2_path in V2_FIXTURES:
-        v1_text = (ROOT / v1_path).read_text(encoding="utf-8")
-        migrated = to_v2_mod.to_v2(v1_text)
-        expected = elaborate_mod.elaborate(v1_text)
+    """Phase 6: the IR twin of each v2 fixture migrates to the same IR."""
+    for label, ir_path, v2_path in V2_FIXTURES:
+        ir_text = (ROOT / ir_path).read_text(encoding="utf-8")
+        migrated = to_v2_mod.to_v2(ir_text)
+        expected = elaborate_mod.elaborate(ir_text)
         actual = elaborate_mod.elaborate(migrated, syntax="v2")
         assert_true(
             _migrated_ir_view(expected) == _migrated_ir_view(actual),
-            f"{label}: migrated v1 source builds a different IR",
+            f"{label}: migrated IR source builds a different IR",
         )
 
 
 @test
 def to_v2_migrates_the_sifive7_family_example():
     """The checked-in v2 example is generated, not hand-maintained."""
-    v1 = (ROOT / "docs/examples/sifive7-family.ssdl").read_text(encoding="utf-8")
+    ir = (ROOT / "docs/examples/sifive7-family.ssdl").read_text(encoding="utf-8")
     v2_path = ROOT / "docs/examples/sifive7-family-v2.ssdl"
     assert_true(v2_path.is_file(), "missing docs/examples/sifive7-family-v2.ssdl")
     v2 = v2_path.read_text(encoding="utf-8")
     assert_true(
-        v2 == to_v2_mod.to_v2(v1),
+        v2 == to_v2_mod.to_v2(ir),
         "docs/examples/sifive7-family-v2.ssdl is stale; regenerate with "
         "python3 tools/ssdl/to_v2.py docs/examples/sifive7-family.ssdl -o ...",
     )
     assert_true(
-        parser.expand_source(v1) == parser.expand_source(v2, syntax="v2"),
+        parser.expand_source(ir) == parser.expand_source(v2, syntax="v2"),
         "the v2 example expands to different family text",
     )
 
 
 @test
-def v2_rejects_v1_field_separators_and_kind_tails():
-    """AC5/AC3: every v1 separator gets a v2 error, not a silent accept."""
+def v2_rejects_ir_field_separators_and_kind_tails():
+    """AC5/AC3: every IR separator gets a v2 error, not a silent accept."""
     cases = [
         (
             "machine family f { resource P : units = 2; }",
-            "v1 field separator",
+            "IR field separator",
         ),
         (
             "machine family f { advance R : cycles = 1; }",
-            "v1 field separator",
+            "IR field separator",
         ),
         (
             "machine family f { bind W -> [P], latency = 1; }",
@@ -3656,7 +3656,7 @@ def v2_rejects_v1_field_separators_and_kind_tails():
         ),
         (
             "set dimension D = [A] : kind = dimension;",
-            "v1 set property separator",
+            "IR set property separator",
         ),
     ]
     for source, needle in cases:
@@ -3667,12 +3667,12 @@ def v2_rejects_v1_field_separators_and_kind_tails():
 @test
 def v2_map_operand_positions_are_explicit():
     """AC7: the operand position is written, not implied by list order."""
-    flat = syntax_v2.to_v1(
+    flat = syntax_v2.to_ir(
         "machine family f { write W; read R; map [ADD] { 1 = R; 0 = W; } }"
     )
     assert_in("map [ADD] -> [W, R];", flat)
 
-    v1_source = """
+    ir_source = """
 machine m {
     write W;
     read R;
@@ -3688,10 +3688,10 @@ machine family m {
     map [MUL] { 0 = W; unsupported = true; }
 }
 """
-    v1 = elaborate_mod.elaborate(v1_source)
+    ir = elaborate_mod.elaborate(ir_source)
     v2 = elaborate_mod.elaborate(v2_source, syntax="v2")
-    assert_true(v1.symbols() == v2.symbols(), "map: symbol lists differ")
-    assert_true(elaborate_mod.render(v1) == elaborate_mod.render(v2), "map: render differs")
+    assert_true(ir.symbols() == v2.symbols(), "map: symbol lists differ")
+    assert_true(elaborate_mod.render(ir) == elaborate_mod.render(v2), "map: render differs")
 
     for source, needle in [
         ("machine family f { map [ADD] { 0 = W; 0 = R; } }", "duplicate operand index 0"),
@@ -3705,7 +3705,7 @@ machine family m {
 def v2_instance_override_replaces_one_statement():
     """``override`` drops the inherited statement; fields are never merged."""
     source = (ROOT / "tests/ssdl/surface/instance-override.ssdl").read_text(encoding="utf-8")
-    flat = family_mod.expand(syntax_v2.to_v1(source))
+    flat = family_mod.expand(syntax_v2.to_ir(source))
     text, skips = emit_source(flat, strict=True)
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
     assert_true("let Latency = 1;" in text, "the plain instance lost the family latency")
@@ -3743,7 +3743,7 @@ def v2_instance_override_replaces_one_statement():
 def v2_list_fields_take_parameters_and_conditionals():
     """A list field may be a parameter or choose between lists."""
     source = (ROOT / "tests/ssdl/surface/list-cond.ssdl").read_text(encoding="utf-8")
-    text, skips = emit_source(family_mod.expand(syntax_v2.to_v1(source)), strict=True)
+    text, skips = emit_source(family_mod.expand(syntax_v2.to_ir(source)), strict=True)
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
     assert_in("WriteRes<W, [narrow_Narrow]>", text)
     assert_in("let Latency = 4;", text)
@@ -3756,7 +3756,7 @@ def v2_list_fields_take_parameters_and_conditionals():
 
     def expand_error(source: str) -> str:
         try:
-            family_mod.expand(syntax_v2.to_v1(source))
+            family_mod.expand(syntax_v2.to_ir(source))
         except family_mod.ExpandError as exc:
             return str(exc)
         raise Failure(f"expected an ExpandError for:\n{source}")
@@ -3790,7 +3790,7 @@ machine family f(n: INT) {
 }
 machine instance a : f(8) { }
 """
-    text, skips = emit_source(family_mod.expand(syntax_v2.to_v1(source)), strict=True)
+    text, skips = emit_source(family_mod.expand(syntax_v2.to_ir(source)), strict=True)
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
     assert_in("let IssueWidth = 8;", text)
     assert_in("let LoadLatency = 4;", text)
@@ -3814,7 +3814,7 @@ machine family f(n: INT) {
 machine instance wide : f(8) { }
 machine instance tiny : f(2) { }
 """
-    text, _skips = emit_source(family_mod.expand(syntax_v2.to_v1(source)), strict=True)
+    text, _skips = emit_source(family_mod.expand(syntax_v2.to_ir(source)), strict=True)
     wide, tiny = text.split("def tinyModel : SchedMachineModel")
     assert_in("let PostRAScheduler = true;", wide)
     assert_in("let EnableIntervals = true;", wide)
@@ -3823,7 +3823,7 @@ machine instance tiny : f(2) { }
 
     def expand_error(source: str) -> str:
         try:
-            family_mod.expand(syntax_v2.to_v1(source))
+            family_mod.expand(syntax_v2.to_ir(source))
         except family_mod.ExpandError as exc:
             return str(exc)
         raise Failure(f"expected an ExpandError for:\n{source}")
@@ -3845,7 +3845,7 @@ machine instance tiny : f(2) { }
 @test
 def v2_map_takes_a_dense_operand_list():
     """``map [A, B] -> [W, R]`` is the block form without the indices."""
-    dense = syntax_v2.to_v1(
+    dense = syntax_v2.to_ir(
         """
 machine m {
   write W;
@@ -3854,7 +3854,7 @@ machine m {
 }
 """
     )
-    block = syntax_v2.to_v1(
+    block = syntax_v2.to_ir(
         """
 machine m {
   write W;
@@ -3883,7 +3883,7 @@ predicate sched P = opcode(ADD);
 machine m { write W; resource P2 { units = 1; } bind W { resources = [P2]; latency = 1; } }
 """
     try:
-        emit_source(syntax_v2.to_v1(source), attrs=attrs_schema())
+        emit_source(syntax_v2.to_ir(source), attrs=attrs_schema())
     except SSDLEmitError as exc:
         text = "\n".join(d.render() for d in exc.diagnostics)
         assert_in("is both a target inst name and a set", text)
@@ -3933,7 +3933,7 @@ def v2_machine_roles_split_model_and_processor():
     ]
     for src, needle in negatives:
         try:
-            emit_source(syntax_v2.to_v1(src), strict=True)
+            emit_source(syntax_v2.to_ir(src), strict=True)
         except SSDLEmitError as exc:
             assert_in(needle, str(exc))
         else:
@@ -3943,8 +3943,8 @@ def v2_machine_roles_split_model_and_processor():
 @test
 def to_v2_migrates_the_sifive7_mini_model():
     """The migrator covers the whole v2 surface, not just the small fixtures."""
-    v1 = (ROOT / "tests/ssdl/sifive7-mini.ssdl").read_text(encoding="utf-8")
-    migrated = to_v2_mod.to_v2(v1)
+    ir = (ROOT / "tests/ssdl/sifive7-mini.ssdl").read_text(encoding="utf-8")
+    migrated = to_v2_mod.to_v2(ir)
     program = parser.parse(migrated, syntax="v2")
     text, skips = emit_td.emit(program, strict=True, attrs=attrs_schema())
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
@@ -3961,8 +3961,8 @@ def to_v2_migrates_the_sifive7_mini_model():
 
 
 @test
-def to_v2_splits_v1_colon_properties():
-    """A v1 colon property list becomes one field body, one field per colon."""
+def to_v2_splits_ir_colon_properties():
+    """An IR colon property list becomes one field body, one field per colon."""
     migrated = to_v2_mod.to_v2(
         "machine m { resource P : super = Q : units = 1; "
         "resource R : units = 2, buffer = 4; }"
@@ -3971,16 +3971,16 @@ def to_v2_splits_v1_colon_properties():
     assert_in("resource R { units = 2; buffer = 4; }", migrated)
     assert_true(": super" not in migrated, "colon property leaked into v2")
 
-    flat = syntax_v2.to_v1(migrated)
+    flat = syntax_v2.to_ir(migrated)
     assert_in("resource P : super = Q, units = 1;", flat)
     assert_in("resource R : units = 2, buffer = 4;", flat)
 
 
 @test
 def v2_sifive7_mini_matches_the_handwritten_records():
-    """The whole v2 surface lowers to the same records as the v1 fixture."""
+    """The whole v2 surface lowers to the same records as the IR fixture."""
     source = (ROOT / "tests/ssdl/surface/sifive7-mini.ssdl").read_text(encoding="utf-8")
-    flat = syntax_v2.to_v1(source)
+    flat = syntax_v2.to_ir(source)
     text, skips = emit_source(flat, strict=True, attrs=attrs_schema())
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
     text_again, _ = emit_source(flat, strict=True, attrs=attrs_schema())
@@ -4061,13 +4061,13 @@ def v2_declaration_kind_leads_the_declaration():
         "feature extension X { version = \"1.0\"; bitmask = { group = 0; bit = 1; }; }\n"
         "predicate sched P(i) = is_reg(i);\n"
     )
-    v1_image = syntax_v2.to_v1(round_trip)
-    migrated = to_v2_mod.to_v2(v1_image)
+    ir_image = syntax_v2.to_ir(round_trip)
+    migrated = to_v2_mod.to_v2(ir_image)
     assert_in("feature extension X {", migrated)
     assert_in("predicate sched P(i) =", migrated)
     assert_true(
-        syntax_v2.to_v1(migrated) == v1_image,
-        "the v1 image must be stable across a migration round trip",
+        syntax_v2.to_ir(migrated) == ir_image,
+        "the IR image must be stable across a migration round trip",
     )
 
 
@@ -4181,7 +4181,7 @@ def v2_entity_field_types_are_checked():
 
     # A family parameter is an integer expression; it must not be mistaken for
     # a malformed literal.
-    text = syntax_v2.to_v1("machine family m(n: INT) { resource P { units = n; } }")
+    text = syntax_v2.to_ir("machine family m(n: INT) { resource P { units = n; } }")
     assert_in("resource P : units = n;", text)
 
 
@@ -4239,8 +4239,8 @@ def feature_kind_table_is_internally_consistent():
 
 
 @test
-def validate_v1_fields_use_the_shared_table():
-    """The v2 field table also guards v1/records input."""
+def validate_ir_fields_use_the_shared_table():
+    """The v2 field table also guards IR/records input."""
     program = parser.Program(
         [
             parser.MachineDecl(
@@ -4316,7 +4316,7 @@ def predicate_signatures_are_checked_before_lowering():
 
 @test
 def v2_source_map_reports_surface_lines():
-    """A v1 parse error after transpiling points at the v2 declaration."""
+    """An IR parse error after transpiling points at the v2 declaration."""
     source = """feature plain A {
     bool x = true;
 }
@@ -4336,19 +4336,19 @@ machine both m {
         assert_true(exc.line == 7, f"expected v2 line 7, got {exc.line}")
         assert_true(
             exc.original_line == 3,
-            f"the v1 line must stay available, got {exc.original_line}",
+            f"the ir line must stay available, got {exc.original_line}",
         )
     else:
-        raise Failure("expected a v1 parse error after transpiling")
+        raise Failure("expected an IR parse error after transpiling")
 
-    flat, line_map = syntax_v2.to_v1_mapped(
+    flat, line_map = syntax_v2.to_ir_mapped(
         "machine family m {\n write W;\n}\n\nfeature plain F {\n"
         " bool x = true;\n}\n\nmachine both n { write V; }\n"
     )
-    assert_true(len(flat.splitlines()) == 3, f"unexpected v1 text: {flat!r}")
+    assert_true(len(flat.splitlines()) == 3, f"unexpected IR text: {flat!r}")
     assert_true(
         [line_map.map_line(i) for i in (1, 2, 3)] == [1, 5, 9],
-        f"line map: {line_map.v1_to_v2}",
+        f"line map: {line_map.ir_to_v2}",
     )
 
 
@@ -4396,12 +4396,12 @@ machine both m {
     assert_in("line 10: machine m: error: bind W: unknown resource 'PipeB'", text)
     assert_in("line 14: machine m: error: map: unknown SchedReadWrite 'Nope'", text)
 
-    v1 = """machine m {
+    ir = """machine m {
     write W;
     bind W -> [Nope], latency = 1;
 }
 """
-    text = emit_error_text(v1)
+    text = emit_error_text(ir)
     assert_in("line 3: machine m: error: bind W: unknown resource 'Nope'", text)
 
 
@@ -4565,9 +4565,9 @@ predicate sti P {
 
 @test
 def validate_diagnostics_name_the_surface_line():
-    """Sort errors carry the declaration line, v1 or v2 alike."""
-    v1 = "predicate S1 = feature(A);\nsti_decl P { default = S1; }\n"
-    errors = validate_mod.validate(parser.parse(v1))
+    """Sort errors carry the declaration line, ir or v2 alike."""
+    ir = "predicate S1 = feature(A);\nsti_decl P { default = S1; }\n"
+    errors = validate_mod.validate(parser.parse(ir))
     assert_true(
         any(error.startswith("line 2: sti_decl P.default:") for error in errors),
         errors,
@@ -4607,7 +4607,7 @@ machine instance i : m(2) {
     assert_true("machine i {" in flat, flat)
     assert_true(
         {line_map.map_line(i) for i in range(1, len(flat.splitlines()) + 1)} == {1},
-        f"expanded lines must map to the template: {line_map.v1_to_v2}",
+        f"expanded lines must map to the template: {line_map.ir_to_v2}",
     )
 
 
@@ -4618,7 +4618,7 @@ def v2_bitmask_has_one_block_spelling():
         'feature extension X { version = "1.0"; '
         "bitmask = { group = 0; bit = 1; }; }"
     )
-    assert_in("bitmask = { group = 0, bit = 1 }", syntax_v2.to_v1(source))
+    assert_in("bitmask = { group = 0, bit = 1 }", syntax_v2.to_ir(source))
     assert_in(
         "bitmask needs '='",
         v2_error(
@@ -4681,13 +4681,13 @@ machine instance i : f(4) {
     assert_in("bind W -> [], latency = 4;", text)
     assert_true("machine f(" not in text, "the family template must not be emitted")
 
-    v1 = parser.expand_source(
+    ir = parser.expand_source(
         "machine f(n: INT) { write W; bind W { resources = []; latency = n; } }\n"
         "machine i : f(4) { }",
         syntax="ir",
     )
-    assert_in("machine i {", v1)
-    assert_in("latency = 4", v1)
+    assert_in("machine i {", ir)
+    assert_in("latency = 4", ir)
 
 
 @test
@@ -4710,7 +4710,7 @@ def hyphen_is_an_identifier_character_not_a_lexical_operator():
     assert_in("a-b", idents)
     assert_true("a" in idents and "b" in idents, f"spaced '-' must split: {idents}")
 
-    flat = syntax_v2.to_v1("machine both ssdl-sifive-7 { write W; }")
+    flat = syntax_v2.to_ir("machine both ssdl-sifive-7 { write W; }")
     assert_in("machine ssdl-sifive-7 {", flat)
 
     for expr in ("n-1", "n - 1"):

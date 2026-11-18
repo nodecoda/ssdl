@@ -1,5 +1,9 @@
 # SSDL 2.0 文法评审（编译器视角）
 
+> 本文写于 2026-11-17，是 v2 文法的评审记录。文中的 `to_v1` 现名
+> `to_ir`（2026-11-18 命名收口），内容保留当时的判断。
+
+
 - date: 2026-11-17
 - reviewer: compiler-engineering review
 - base: `0e961fb` + 本轮修复

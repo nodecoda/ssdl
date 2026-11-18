@@ -1,10 +1,10 @@
 # IR → v2 迁移表与工具
 
-**状态**：Phase 6 完成。v2 是唯一表面语法，v1.3 是语义基线。
+**状态**：Phase 6 完成。v2 是唯一表面语法，语义层是 `semir.py`。
 自 2026-11-18 起，下表左列（原 v1）不再是可写语法，只作为 IR 文本存在；
 `--syntax ir` 读它，`to_v2.py` 把它翻成表面源。见
 `2026-11-18-ssdl-one-surface.md`。
-**工具**：`tools/ssdl/to_v2.py`（v1 → v2），`syntax_v2.to_v1`（v2 → v1）。
+**工具**：`tools/ssdl/to_v2.py`（v1 → v2），`syntax_v2.to_ir`（v2 → IR）。
 **证据**：14/14 模型 `family_sweep.py --syntax v2` records match；
 `tests/ssdl/surface/sifive7-mini.ssdl` 与手写 `.td` 逐字段一致；
 11 对 v1/v2 fixture 的 `SemProgram` 相同。
@@ -70,7 +70,7 @@ python3 tools/ssdl/family_sweep.py --syntax v2 --out /tmp/ssdl-sweep-v2
 3. **TII 裸 `return` 没有 v2 写法**。`tii_predicate X = return P;` 无法迁移；
    `tests/ssdl/ir-only/errata.ssdl` 因此保留为 IR 套件。
 4. **只搬语法，不做语义解析**。`to_v2` 不解析谓词、不求值表达式、不展开
-   维度；它是 `to_v1` 的逆变换。任何需要“理解”的构造都应先扩 v2 文法。
+   维度；它是 `to_ir` 的逆变换。任何需要“理解”的构造都应先扩 v2 文法。
 5. **行号不保留**。迁移后的错误定位指向 v2 文件，不是原 v1 行。
 
 ---
@@ -80,7 +80,7 @@ python3 tools/ssdl/family_sweep.py --syntax v2 --out /tmp/ssdl-sweep-v2
 | 门禁 | 结果 |
 |---|---|
 | `family_sweep.py --syntax v2`（14 模型 × 两条对拍路径） | 14/14 `records match` |
-| `to_v2` → `to_v1` → 展开，14 个 sweep 源逐字节相同 | 14/14 |
+| `to_v2` → `to_ir` → 展开，14 个 sweep 源逐字节相同 | 14/14 |
 | 8 个 family fixture 往返展开相同 | 8/8 |
 | 11 对 v1/v2 fixture 的 `SemProgram` | 全部相同 |
 | `docs/examples/sifive7-family-v2.ssdl` 与 v1 展开逐字节相同 | 一致 |

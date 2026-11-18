@@ -265,7 +265,7 @@ tests/ssdl/spec-example.ssdl          # 文档第 5 节逐字副本
 tests/ssdl/sifive7-mini.ssdl          # 可展开的 SiFive7 子集
 tests/ssdl/sifive7-mini.expected.td   # 手写等价物（真实 LLVM 类）
 tests/ssdl/errata.ssdl                # S1–S7 语法用例
-tests/ssdl/v1.1.ssdl                  # MC/SCHED 排序与 sched_model 绑定用例
+tests/ssdl/ir-v11-errata.ssdl                  # MC/SCHED 排序与 sched_model 绑定用例
 tests/ssdl/attrs.json                 # set 求值用的 inst/reg 属性 schema
 ```
 
@@ -281,9 +281,9 @@ v1.1 的规范文本在 `history/2026-11-16-ssdl-v1.1-draft.md`。本轮只实�
 | S3–S7 | 解析器 | 同上；S7 的 `return`/`switch` 两种形式都有用例 |
 | 谓词 MC/SCHED/SEL | `validate.py` 推断、提升、上下文检查 | `v1_1_predicate_sorts`、`v1_1_sort_negative_controls` |
 | 命名谓词 | 未知引用、参数个数、循环、保留名 | 同上 |
-| `variant` 的 MC 自动提升 | 校验通过；lowering 仍未实现 | `v1.1.ssdl` |
+| `variant` 的 MC 自动提升 | 校验通过；lowering 仍未实现 | `ir-v11-errata.ssdl` |
 | `tii_predicate`/STI 的 MC 约束 | 校验 | 负控 `requires an MC predicate` |
-| `mc(...)` / `sched(...)` / `sched_code(...)` | 解析 + sort | `v1.1.ssdl` 的 `SchedPred` |
+| `mc(...)` / `sched(...)` / `sched_code(...)` | 解析 + sort | `ir-v11-errata.ssdl` 的 `SchedPred` |
 | 顶层 `itineraries.sched_model` | 解析 + 绑定校验（必须是 machine 定义，别名不行） | `v1_1_itineraries_binding_parses`、负控 |
 | machine 内禁止 `sched_model` | 校验 | 负控 `must not set sched_model` |
 | `itin` / `itin_class` 重名 | 校验 | 负控 `duplicate itin`、`duplicate itinerary class` |
@@ -385,7 +385,7 @@ python3 tools/ssdl/emit_td.py tests/ssdl/sifive7-mini.ssdl \
 python3 tools/ssdl/compare.py /tmp/gen.td tests/ssdl/sifive7-mini.expected.td
 ```
 
-fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`predicate_prolog`、`sti_decl` + 两条 `sti_function`（`SchedModel` 绑定、`DepBreakingClass`）、`tii_predicate` 的 switch、`variant`/`read_variant`、`RegisterFile`、`RetireControlUnit`、`LoadQueue`/`StoreQueue`、机器内与顶层两套 itineraries。`v1.1.ssdl` 还验证 MC→SCHED 提升与顶层 itinerary 绑定。
+fixture 现在覆盖：`set` 求值与展开去重、MC/SCHED/SEL 谓词、`predicate_prolog`、`sti_decl` + 两条 `sti_function`（`SchedModel` 绑定、`DepBreakingClass`）、`tii_predicate` 的 switch、`variant`/`read_variant`、`RegisterFile`、`RetireControlUnit`、`LoadQueue`/`StoreQueue`、机器内与顶层两套 itineraries。`ir-v11-errata.ssdl` 还验证 MC→SCHED 提升与顶层 itinerary 绑定。
 
 ### 11.6 仍然开放
 

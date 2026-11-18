@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Surface v2 syntax front end (Phase 2 skeleton).
+"""Surface v2 syntax front end.
 
 The semantic IR is unchanged.  This module parses the v2 surface and renders
-the equivalent v1 statement text, so the existing elaborator, spelling rules,
+the equivalent IR statement text, so the existing elaborator, spelling rules,
 runtime lowering and emitter are reused verbatim.  Keeping the transpiler
 small is deliberate: the v2 parser is a *front end*, not a second semantic
 implementation.
@@ -17,7 +17,7 @@ Implemented in this slice:
 - machine items with one record-body rule: resource/res_group/write/read/
   write_seq/combo_func/queues/reg_file/retire_unit/bind/advance/map/
   map_itin/alias/variant/read_variant/itineraries
-- v1 field separators are rejected with a v2 hint, never accepted
+- IR field separators (`name : value`, `kind = ...`) are rejected with a v2 hint
 - record bodies are shape-checked against ``field_types.ENTITY_FIELDS``
 
 ``predicate sched|select|sti|tii`` and ``predicate prolog`` are implemented.
@@ -116,7 +116,7 @@ def _normalise(text: str) -> str:
 
 
 def _render_tokens(tokens: list[parser.Token]) -> str:
-    # ``host [{ ... }]`` is the v2 spelling; the v1 flat text keeps ``[{...}]``.
+    # ``host [{ ... }]`` is the v2 spelling; IR text keeps ``[{...}]``.
     kept: list[parser.Token] = []
     index = 0
     while index < len(tokens):
@@ -234,7 +234,7 @@ class _Cursor:
         if self.at(":") or self.at(","):
             token = self.peek()
             raise V2Error(
-                f"line {token.line}:{token.col}: {token.value!r} is a v1 field "
+                f"line {token.line}:{token.col}: {token.value!r} is an IR field "
                 "separator; v2 has one field-body form: name { field = value; }"
             )
         if not self.at("{"):
@@ -304,7 +304,7 @@ def _set(cursor: _Cursor, out: list[str]) -> None:
     kind = cursor.ident()
     name = cursor.ident()
     cursor.expect("=")
-    # ':' must stop the value list: it is a v1 property separator, not v2.
+    # ':' must stop the value list: it is an IR property separator, not v2.
     value = cursor.list_tokens({";", "{", ":"})
     if kind == "instructions":
         cursor.accept(";")
@@ -314,7 +314,7 @@ def _set(cursor: _Cursor, out: list[str]) -> None:
         if cursor.at(":") or cursor.at(","):
             token = cursor.peek()
             raise V2Error(
-                f"line {token.line}:{token.col}: {token.value!r} is a v1 set "
+                f"line {token.line}:{token.col}: {token.value!r} is an IR set "
                 "property separator; v2 writes a body: "
                 "set dimension X = [...] { name_format = \"...\"; }"
             )
@@ -802,7 +802,7 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
         insts = cursor.list_tokens({"{", "->"})
         if cursor.accept("->"):
             # Dense shorthand: the operand position is the list position, which
-            # is how the v1 surface and ``InstRW`` read.  The block form stays
+            # is how IR and ``InstRW`` read.  The block form stays
             # for sparse positions and for ``unsupported``.
             values: list[str] = []
             cursor.expect("[")
@@ -1099,22 +1099,22 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
 
 
 class LineMap:
-    """Map a generated v1 line back to the v2 source line that produced it."""
+    """Map a generated IR line back to the v2 source line that produced it."""
 
     def __init__(
         self,
-        v1_to_v2: tuple[int, ...],
+        ir_to_v2: tuple[int, ...],
         item_lines: dict[int, list[int | None]] | None = None,
     ):
-        self.v1_to_v2 = v1_to_v2
+        self.ir_to_v2 = ir_to_v2
         self.item_lines = item_lines or {}
 
     def map_line(self, line: int) -> int:
-        if not self.v1_to_v2:
+        if not self.ir_to_v2:
             return line
-        if 1 <= line <= len(self.v1_to_v2):
-            return self.v1_to_v2[line - 1]
-        return self.v1_to_v2[-1]
+        if 1 <= line <= len(self.ir_to_v2):
+            return self.ir_to_v2[line - 1]
+        return self.ir_to_v2[-1]
 
 
 class _Out(list):
@@ -1124,8 +1124,8 @@ class _Out(list):
         super().__init__()
         self.cursor = cursor
         self.lines: list[int] = []
-        # v1 declaration line -> v2 line of each machine item, in order.  A
-        # machine collapses to one v1 line, so the line map alone cannot point
+        # IR declaration line -> v2 line of each machine item, in order.  A
+        # machine collapses to one IR line, so the line map alone cannot point
         # at the item that produced a diagnostic.
         self.item_lines: dict[int, list[int | None]] = {}
 
@@ -1195,7 +1195,7 @@ def _transpile(text: str) -> _Out:
                 if cursor.at(":") or cursor.at(","):
                     token = cursor.peek()
                     raise V2Error(
-                        f"line {token.line}:{token.col}: {token.value!r} is a v1 "
+                        f"line {token.line}:{token.col}: {token.value!r} is an IR "
                         "field separator; v2 writes a field body: "
                         "name { field = value; }"
                     )
@@ -1216,13 +1216,13 @@ def _transpile(text: str) -> _Out:
     return out
 
 
-def to_v1(text: str) -> str:
-    """Transpile v2 surface text to v1 family source."""
+def to_ir(text: str) -> str:
+    """Transpile v2 surface text to IR text (family template form)."""
     return "\n".join(_transpile(text)) + "\n"
 
 
-def to_v1_mapped(text: str) -> tuple[str, LineMap]:
-    """Like :func:`to_v1`, but also return the v1-to-v2 line map."""
+def to_ir_mapped(text: str) -> tuple[str, LineMap]:
+    """Like :func:`to_ir`, but also return the IR-to-v2 line map."""
     out = _transpile(text)
     return "\n".join(out) + "\n", LineMap(tuple(out.lines), out.item_lines)
 

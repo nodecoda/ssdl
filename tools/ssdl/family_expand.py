@@ -4,7 +4,7 @@
 The compressed IR adds exactly two domain constructs; everything else is the
 flat IR vocabulary, so the output still goes through ``emit_td.py`` and the
 record table unchanged.  This is IR, not a surface: humans write v2, and
-``syntax_v2.to_v1`` is what turns it into the input this module expects.
+``syntax_v2.to_ir`` is what turns it into the input this module expects.
 
     set LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] :
         kind = dimension, name_format = "_{value}";
@@ -431,7 +431,7 @@ def _field_shape(kind: str | None, name: str) -> str | None:
     shape = table.get(name)
     if shape is None and kind == "itin" and name == "cycles":
         # ``cycles`` is the flat spelling of v2 ``operand_cycles``; the table
-        # keeps the v2 name, the flat text keeps the v1 one.
+        # keeps the v2 name, the flat text keeps the IR one.
         return field_types.INT_LIST
     return shape
 
@@ -1781,7 +1781,7 @@ def expand(
     add_axis: tuple[str, str] | None = None,
     origins: list[tuple[str, str, int]] | None = None,
 ) -> str:
-    """Render flat v1.0 text through the semantic IR (``elaborate.py``).
+    """Render IR text through the semantic IR (``elaborate.py``).
 
     ``expand_legacy`` keeps the v1.2 text path for debugging and parity checks.
     """
