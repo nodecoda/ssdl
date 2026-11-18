@@ -1,0 +1,24 @@
+# TII predicate: the def name and the TII method may differ.
+# Mirrors AArch64SchedPredicates.td:
+#   def RegShiftedFn : TIIPredicate<"hasShiftedReg", ...>;
+#   def RegShiftedPred : MCSchedPredicate<RegShiftedFn>;
+# The opcodes are stub names because SSDL does not own the target vocabulary;
+# only the predicate shape is under test here.
+predicate tii RegShiftedFn {
+    method = "hasShiftedReg";
+    switch opcode {
+        case [ADD, SUB]: return not(is_zero(3));
+        default: return false;
+    }
+}
+
+# The canonical scheduling wrapper, and a predicate that composes the TII hook.
+predicate sched RegShiftedPred = mc(RegShiftedFn);
+predicate sched ShiftedImmediate = all_of(opcode([ADD]), RegShiftedFn);
+
+machine both tsv110 {
+    complete_model = false;
+    resource P0 { units = 1; }
+    write WArith;
+    bind WArith { resources = [P0]; latency = 1; }
+}

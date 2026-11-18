@@ -128,6 +128,11 @@ class SortChecker:
     def __init__(self, program: Program):
         self.program = program
         self.predicates: dict[str, PredicateDecl] = {}
+        # A TII predicate is an MCInstPredicate too, but the canonical way to
+        # use one in a scheduling model is ``mc(Name)`` -> MCSchedPredicate.
+        self.tii_names: set[str] = {
+            d.name for d in program.decls if isinstance(d, TIIPredicate)
+        }
         self.machines = {
             d.name: d for d in program.decls if isinstance(d, MachineDecl) and d.alias is None
         }
@@ -135,6 +140,14 @@ class SortChecker:
         self.sorts: dict[str, str] = {}
         self.stack: list[str] = []
         self.current_line: int | None = None
+
+        for name in sorted(self.tii_names & set(
+            d.name for d in program.decls if isinstance(d, PredicateDecl)
+        )):
+            self.error(
+                f"predicate {name}",
+                f"{name!r} is declared both as a predicate and as a tii predicate",
+            )
 
         for decl in program.decls:
             if not isinstance(decl, PredicateDecl):
@@ -185,6 +198,8 @@ class SortChecker:
             )
 
     def named_sort(self, where: str, name: str, args: list | None) -> str:
+        if name in self.tii_names:
+            return MC
         if name not in self.predicates:
             self.error(where, f"unknown predicate {name!r}; declare it or use an atom predicate")
             return MC
@@ -224,6 +239,9 @@ class SortChecker:
             if len(args) != 1:
                 self.error(where, "mc(...) takes exactly one predicate expression")
                 return MC
+            # ``mc(TII)`` is the MCSchedPredicate wrapper, not an MC predicate.
+            if args[0][0] == "ident" and args[0][1] in self.tii_names:
+                return SCHED
             inner = self.infer(args[0], where)
             if inner == SCHED:
                 self.error(where, "mc(...) requires an MC predicate, got a SCHED predicate")

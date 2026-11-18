@@ -145,6 +145,17 @@ class PredicateLowerer:
             for name in self.sti_decls
         }
         self.named_defs: dict[str, str] = {}
+        # TII predicates are top-level defs like named predicates.  A record
+        # referenced as a class argument must already be defined, so they are
+        # emitted on first use (and any leftovers at the end), exactly like
+        # named predicates.
+        self.tii_decls: dict[str, TIIPredicate] = {
+            d.name: d for d in self.program.decls if isinstance(d, TIIPredicate)
+        }
+        self.tii_names: dict[str, str] = {
+            name: td_def_name(name) for name in self.tii_decls
+        }
+        self.emitted_tii: set[str] = set()
         # A DepBreakingClass/InstructionEquivalenceClass is a TableGen def: two
         # STIPredicate functions can share it (the section 5 example declares
         # OrrXzrXzr in both isZeroIdiom and isDependencyBreaking), but the same
@@ -156,7 +167,9 @@ class PredicateLowerer:
         # a field, so it cannot ride on an inline expression.  One helper per
         # (class, arguments, mapper) so two variants can share it.
         self.mapped_defs: dict[str, str] = {}
-        self.def_names: set[str] = set(self.reserved_names)
+        self.def_names: set[str] = set(self.reserved_names) | set(
+            self.tii_names.values()
+        )
         self.errors: list[str] = []
         self.stack: list[str] = []
         # Declaration line per diagnostic prefix, so a predicate error can
@@ -272,6 +285,8 @@ class PredicateLowerer:
     def ensure_named(self, name: str) -> str:
         if name in self.named_defs:
             return self.named_defs[name]
+        if name in self.tii_names:
+            return self.ensure_tii(name, f"predicate {name}")
         if name not in self.predicates:
             self.error(f"predicate {name}", "unknown predicate")
             return td_def_name(name)
@@ -595,6 +610,9 @@ class PredicateLowerer:
         if name in ("feature", "sched_code", "sched"):
             return SCHED
         if name == "mc":
+            # mc(TII) is the canonical MCSchedPredicate<TII> wrapper.
+            if args and args[0][0] == "ident" and args[0][1] in self.tii_names:
+                return SCHED
             return MC
         if name in COMBINERS:
             if not args:
@@ -644,7 +662,12 @@ class PredicateLowerer:
             code = self.code_arg(args[0], where, name)
             return f"SchedPredicate<{td_code(code)}>"
         if name == "mc":
-            return f"MCSchedPredicate<{self.lower_mc(args[0], env, where)}>"
+            inner = args[0]
+            if inner[0] == "ident" and inner[1] in self.tii_names:
+                # ``MCSchedPredicate<RegShiftedFn>``: the wrapper selects the
+                # TII method expansion, so the def is referenced, not inlined.
+                return f"MCSchedPredicate<{self.ensure_tii(inner[1], where)}>"
+            return f"MCSchedPredicate<{self.lower_mc(inner, env, where)}>"
         if name == "sched":
             return self.to_sched(args[0], env, where)
         if name in COMBINERS:
@@ -939,16 +962,35 @@ class PredicateLowerer:
 
     # -- TII predicates --------------------------------------------------
     def lower_tii(self, decl: TIIPredicate) -> None:
-        where = f"tii_predicate {decl.name}"
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", decl.name):
-            self.error(where, f"{decl.name!r} is not a valid C++ predicate name")
-        body = self.lower_statement(decl.statement, where)
-        def_name = td_def_name(decl.name)
+        self.ensure_tii(decl.name, f"tii_predicate {decl.name}")
+
+    def ensure_tii(self, name: str, where: str) -> str:
+        """Emit the TII def before any record that names it as an argument.
+
+        TableGen rejects a class argument that refers to a later def, so a
+        scheduling predicate cannot simply forward-reference its TII hook.
+        """
+        def_name = self.tii_names[name]
+        if name in self.emitted_tii:
+            return def_name
+        if name in self.stack:
+            self.error(where, f"recursive tii predicate reference: {name!r}")
+            return def_name
+        decl = self.tii_decls[name]
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            self.error(where, f"{name!r} is not a valid C++ predicate name")
+        self.stack.append(name)
+        body = self.lower_statement(decl.statement, f"tii_predicate {name}")
+        self.stack.pop()
+        # The first argument is the TII hook name; the def name may differ
+        # (`def RegShiftedFn : TIIPredicate<"hasShiftedReg", ...>`).
+        method = decl.method if decl.method is not None else name
         text = self.define(
-            where, def_name, "TIIPredicate", [td_str(decl.name), body]
+            f"tii_predicate {name}", def_name, "TIIPredicate", [td_str(method), body]
         )
-        self.register_def(def_name, where)
+        self.emitted_tii.add(name)
         self.global_defs.append((def_name, text))
+        return def_name
 
     def lower_statement(self, stmt: dict, where: str) -> str:
         if stmt["kind"] == "return":

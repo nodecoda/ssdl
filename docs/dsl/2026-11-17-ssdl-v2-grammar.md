@@ -195,6 +195,7 @@ predicate_field
     | "delegates"   "=" ident_list ";"
     | "impl" IDENT ":" IDENT "{" { sti_impl_item } "}"
     (* tii *)
+    | "method" "=" STRING ";"
     | "switch" "opcode" "{" { switch_case } "default" ":" statement "}"
     ;
 
@@ -224,7 +225,11 @@ statement
   是 v1 `sti_function` 的名字，也是生成的 `STIPredicate` def 名；`<machine>`
   是 `SchedModel` 作用域。`sched_model` 字段可以省略，写了必须与 `<machine>`
   一致。lowering 到 v1 的 `STIPredicateDecl` + `STIPredicate`。
-- `tii` 的 `switch opcode` lowering 到 `TIIPredicate`。
+- `tii` 的 `switch opcode` lowering 到 `TIIPredicate`。`method` 是 TII 钩子名，
+  缺省等于谓词名：`predicate tii RegShiftedFn { method = "hasShiftedReg"; ... }`
+  发射 `def RegShiftedFn : TIIPredicate<"hasShiftedReg", ...>`。在调度谓词里用
+  `mc(RegShiftedFn)` 引用它，得到规范的 `MCSchedPredicate<RegShiftedFn>`；TII def
+  会自动排在引用它的记录之前（TableGen 的 class 实参不能前向引用）。
 - `predicate prolog = host [...];` 是全局共享代码，等价 v1 的 `PredicateProlog`。
 
 五个 kind 是同一个“谓词声明”概念的不同角色，不是五个独立概念：
@@ -1031,6 +1036,7 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 | `predicate : select` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
 | `predicate prolog` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
 | `predicate : sti` / `: tii` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
+| `predicate tii` + `method =` + `mc(TII)` | `aarch64/tii.ssdl` | ✓ AArch64 P2 |
 | `feature` plain/extension/tune | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `feature` typed field / host / bitmask | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `machine both` / `model` / `cpu` | `v2/machine-roles-v2.ssdl` | ✓ P3 |

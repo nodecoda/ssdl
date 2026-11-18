@@ -614,6 +614,18 @@ def _predicate_sti(cursor: _Cursor, out: list[str], name: str) -> None:
 
 def _predicate_tii(cursor: _Cursor, out: list[str], name: str) -> None:
     cursor.expect("{")
+    method: str | None = None
+    while not cursor.at("switch"):
+        key = cursor.peek()
+        field = cursor.ident()
+        if field != "method":
+            raise V2Error(
+                f"line {key.line}:{key.col}: predicate {name}: "
+                f"unknown tii field {field!r}"
+            )
+        cursor.expect("=")
+        method = cursor.string()
+        cursor.expect(";")
     cursor.expect("switch")
     cursor.expect("opcode")
     cursor.expect("{")
@@ -629,7 +641,14 @@ def _predicate_tii(cursor: _Cursor, out: list[str], name: str) -> None:
             depth -= 1
     body = _render_tokens(cursor.tokens[start:cursor.index])
     cursor.expect("}")  # predicate body
-    out.append(f"tii_predicate {name} = switch opcode {body};")
+    if method is None:
+        out.append(f"tii_predicate {name} = switch opcode {body};")
+    else:
+        method_text = json.dumps(method)
+        out.append(
+            f"tii_predicate {name} {{ method = {method_text}; "
+            f"switch opcode {body} }}"
+        )
 
 
 def _extern(cursor: _Cursor, out: list[str]) -> None:

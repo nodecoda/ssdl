@@ -93,6 +93,8 @@ class TIIPredicate:
     name: str
     statement: dict[str, Any]
     line: int
+    #: TII method the def calls; missing means "the def name is the method".
+    method: str | None = None
 
 
 @dataclass
@@ -763,6 +765,25 @@ class Parser:
     def parse_tii_predicate(self) -> TIIPredicate:
         line = self.expect("tii_predicate").line
         name = self.expect_ident()
+        method: str | None = None
+        if self.at("{"):
+            # Block form carries optional metadata; the statement stays the
+            # same.  v2's `predicate tii` lowers to this form.
+            self.expect("{")
+            while not self.at("switch"):
+                key = self.peek()
+                field = self.expect_ident()
+                if field != "method":
+                    raise SSDLParseError(
+                        f"tii_predicate: unknown field {field!r}", key.line, key.col
+                    )
+                self.expect("=")
+                method = self.expect_string()
+                self.expect(";")
+            stmt = self.parse_statement()
+            self.expect("}")
+            self.accept(";")
+            return TIIPredicate(name, stmt, line, method)
         self.expect("=")
         stmt = self.parse_statement()
         # Errata S7: the 1.0 grammar's trailing ";" is redundant for a return

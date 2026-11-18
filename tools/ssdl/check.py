@@ -770,6 +770,60 @@ predicate IsLSL = all_of(opcode([ADDWrs]),
 
 
 @test
+def tii_predicate_method_names_the_tii_hook():
+    """``method =`` separates the def name from the TII hook it calls.
+
+    AArch64SchedPredicates.td spells this
+    ``def RegShiftedFn : TIIPredicate<"hasShiftedReg", ...>`` and wraps it as
+    ``MCSchedPredicate<RegShiftedFn>``; both must survive lowering, and the
+    hook def must precede the record that names it (TableGen rejects forward
+    references in class arguments).
+    """
+    source = (ROOT / "tests/ssdl/aarch64/tii.ssdl").read_text(encoding="utf-8")
+    text, skips = emit_td.emit(
+        parser.parse(source, syntax="v2"),
+        strict=True,
+        target=targets_mod.profile("aarch64"),
+        target_include="SSDLStub.td",
+    )
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    assert_in('def RegShiftedFn : TIIPredicate<"hasShiftedReg", ', text)
+    assert_in("def RegShiftedPred : MCSchedPredicate<RegShiftedFn>;", text)
+    assert_true(
+        text.index("def RegShiftedFn") < text.index("def RegShiftedPred"),
+        "the TII def must be emitted before the predicate that references it",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "tii.td"
+        generated.write_text(text, encoding="utf-8")
+        compare_mod.run_tblgen(
+            compare_mod.default_tblgen(),
+            str(generated),
+            [
+                str(ROOT / "tests/ssdl/stub-target"),
+                str(paths_mod.require_llvm_src() / "include"),
+            ],
+        )
+
+
+@test
+def tii_predicate_rejects_unknown_fields():
+    source = """predicate tii P {
+    hook = "nope";
+    switch opcode {
+        default: return false;
+    }
+}
+"""
+    try:
+        syntax_v2.to_v1(source)
+    except syntax_v2.V2Error as exc:
+        assert_in("unknown tii field 'hook'", str(exc))
+        return
+    raise Failure("expected a tii field error")
+
+
+@test
 def scheduling_vocabulary_is_target_global():
     source = """
 machine A {
