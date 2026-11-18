@@ -1,0 +1,182 @@
+{
+  "format": "ssdl-predicate-surface-census-1",
+  "llvm": "700e551714cc",
+  "method": "grep -c '\\b<Class><' over llvm/lib/Target/**/*.td",
+  "atoms": {
+    "opcode": {
+      "class": "CheckOpcode",
+      "uses_all": 117,
+      "uses_riscv_aarch64": 106,
+      "decision": "keep",
+      "reason": "the only opcode test; CheckPseudo is an empty subclass"
+    },
+    "is_reg": {
+      "class": "CheckIsRegOperand",
+      "uses_all": 7,
+      "uses_riscv_aarch64": 5,
+      "decision": "keep",
+      "reason": "register-kind test"
+    },
+    "is_imm": {
+      "class": "CheckIsImmOperand",
+      "uses_all": 10,
+      "uses_riscv_aarch64": 2,
+      "decision": "keep",
+      "reason": "immediate-kind test"
+    },
+    "is_valid_reg": {
+      "class": "CheckValidRegOperand",
+      "uses_all": 1,
+      "uses_riscv_aarch64": 0,
+      "decision": "keep",
+      "reason": "lowered as not(CheckInvalidRegOperand)"
+    },
+    "is_invalid_reg": {
+      "class": "CheckInvalidRegOperand",
+      "uses_all": 5,
+      "uses_riscv_aarch64": 0,
+      "decision": "keep",
+      "reason": "base of is_valid_reg"
+    },
+    "is_zero": {
+      "class": "CheckZeroOperand",
+      "uses_all": 8,
+      "uses_riscv_aarch64": 7,
+      "decision": "keep",
+      "reason": "imm_is(i, 0) with a name"
+    },
+    "reg_is": {
+      "class": "CheckRegOperand",
+      "uses_all": 121,
+      "uses_riscv_aarch64": 115,
+      "decision": "keep",
+      "reason": "register identity"
+    },
+    "imm_is": {
+      "class": "CheckImmOperand",
+      "uses_all": 55,
+      "uses_riscv_aarch64": 45,
+      "decision": "keep",
+      "reason": "immediate equality"
+    },
+    "imm_is_enum": {
+      "class": "CheckImmOperand_s",
+      "uses_all": 36,
+      "uses_riscv_aarch64": 13,
+      "decision": "keep",
+      "reason": "enum-mapped immediate equality"
+    },
+    "imm_lt": {
+      "class": "CheckImmOperandLT",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "held",
+      "reason": "no in-tree use; the comparison family stays closed"
+    },
+    "imm_gt": {
+      "class": "CheckImmOperandGT",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "held",
+      "reason": "no in-tree use; the comparison family stays closed"
+    },
+    "imm_le": {
+      "class": "CheckImmOperandLE",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "held",
+      "reason": "no in-tree use; the comparison family stays closed"
+    },
+    "imm_ge": {
+      "class": "CheckImmOperandGE",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "held",
+      "reason": "no in-tree use; the comparison family stays closed"
+    },
+    "imm_range": {
+      "class": "CheckImmOperandRange",
+      "uses_all": 3,
+      "uses_riscv_aarch64": 3,
+      "decision": "keep",
+      "reason": "AArch64/RISC-V use it for vector widths"
+    },
+    "num_ops": {
+      "class": "CheckNumOperands",
+      "uses_all": 4,
+      "uses_riscv_aarch64": 0,
+      "decision": "keep",
+      "reason": "ARM uses it"
+    },
+    "same_reg": {
+      "class": "CheckSameRegOperand",
+      "uses_all": 26,
+      "uses_riscv_aarch64": 11,
+      "decision": "keep",
+      "reason": "two operands alias"
+    },
+    "func": {
+      "class": "CheckFunctionPredicate",
+      "uses_all": 4,
+      "uses_riscv_aarch64": 0,
+      "decision": "keep",
+      "reason": "AMDGPU/ARM/X86 use it"
+    },
+    "func_tii": {
+      "class": "CheckFunctionPredicateWithTII",
+      "uses_all": 5,
+      "uses_riscv_aarch64": 3,
+      "decision": "keep",
+      "reason": "AArch64/ARM use it"
+    },
+    "non_portable": {
+      "class": "CheckNonPortable",
+      "uses_all": 1,
+      "uses_riscv_aarch64": 0,
+      "decision": "keep",
+      "reason": "X86 use; the SSDL surface names the same class"
+    },
+    "sched_code": {
+      "class": "CheckNonPortable",
+      "uses_all": 1,
+      "uses_riscv_aarch64": 0,
+      "decision": "keep",
+      "reason": "SSDL spelling for a host-code predicate"
+    },
+    "pseudo": {
+      "class": "CheckPseudo",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "removed",
+      "reason": "zero in-tree uses; CheckPseudo is an empty subclass of CheckOpcode"
+    },
+    "reg_simple": {
+      "class": "CheckRegOperandSimple",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "removed",
+      "reason": "zero uses in llvm/lib/Target; lowers to is_valid_reg without a mapper"
+    },
+    "imm_simple": {
+      "class": "CheckImmOperandSimple",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "removed",
+      "reason": "zero uses in llvm/lib/Target; lowers to TruePred without a mapper"
+    },
+    "is_vreg": {
+      "class": "CheckIsVRegOperand",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "removed",
+      "reason": "zero in-tree uses"
+    },
+    "is_not_vreg": {
+      "class": "CheckIsNotVRegOperand",
+      "uses_all": 0,
+      "uses_riscv_aarch64": 0,
+      "decision": "removed",
+      "reason": "zero in-tree uses"
+    }
+  }
+}

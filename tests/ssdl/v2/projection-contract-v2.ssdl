@@ -1,7 +1,7 @@
 # v2 twin of tests/ssdl/projection-contract.ssdl.
 
 set relation DivFactor = [(8, 1), (16, 15), (32, 28), (64, 57)];
-extern fn cycles(lmul: INT, sew: INT) -> INT : cycles;
+extern fn cycles(lmul: INT, sew: INT) -> INT from "cycles";
 
 machine family fam(sew: INT) {
     resource P {

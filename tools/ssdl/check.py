@@ -164,8 +164,8 @@ def spec_example_is_not_lowerable_as_written():
         "machine siFive7: error: unknown feature 'StdExtM'",
         "machine siFive7.itineraries: error: itin IIC_iLoad: unknown bypass "
         "'Bypass_ALU_LD'",
-        "lowering: error: tii_predicate isDependencyBreaking.IsZeroReg: "
-        "set 'ZeroRegs' requires the attribute schema",
+        "tii_predicate isDependencyBreaking.IsZeroReg: error: set 'ZeroRegs' "
+        "requires the host attribute schema (--attrs)",
     ]:
         assert_in(expected, text)
     # `OrrXzrXzr` is declared in both STI functions; that is one shared def,
@@ -3655,6 +3655,44 @@ machine family m {
 
 
 @test
+def v2_instance_override_replaces_one_statement():
+    """``override`` drops the inherited statement; fields are never merged."""
+    source = (ROOT / "tests/ssdl/v2/instance-override-v2.ssdl").read_text(encoding="utf-8")
+    flat = family_mod.expand(syntax_v2.to_v1(source))
+    text, skips = emit_source(flat, strict=True)
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    assert_true("let Latency = 1;" in text, "the plain instance lost the family latency")
+    assert_true("let Latency = 5;" in text, "the overriding instance kept the family latency")
+    assert_true("let Latency = 3;" not in text, "the inherited bind survived the override")
+    assert_true(
+        text.count("WriteRes<W, [") == 2, "override emitted a second bind for one write"
+    )
+
+    def expand_error(source: str) -> str:
+        try:
+            elaborate_mod.elaborate(source, syntax="v2")
+        except family_mod.ExpandError as exc:
+            return str(exc)
+        raise Failure(f"expected an ExpandError for:\n{source}")
+
+    assert_in(
+        "family 'fam' does not declare it",
+        expand_error(
+            "machine family fam(n: INT) { write W; bind W { resources = [P]; latency = n; } }\n"
+            "machine instance x : fam(1) {\n"
+            "    override bind Q { resources = [P]; latency = 2; }\n"
+            "}\n"
+        ),
+    )
+    assert_in(
+        "override is only valid in a machine instance",
+        expand_error(
+            "machine m { write W; override bind W { resources = [P]; latency = 1; } }\n"
+        ),
+    )
+
+
+@test
 def v2_machine_roles_split_model_and_processor():
     """AC6: ``machine model`` and ``machine cpu`` emit one record each."""
     source = (ROOT / "tests/ssdl/v2/machine-roles-v2.ssdl").read_text(
@@ -3767,7 +3805,7 @@ def v2_predicate_forms_are_checked():
     for source, needle in [
         (
             "predicate select P { desc = \"x\"; }",
-            "select needs when and/or during",
+            "select needs when and/or assembler",
         ),
         (
             "predicate select P { when = [{ x }]; }",
@@ -4166,6 +4204,140 @@ machine both m {
 """
     text = emit_error_text(v1)
     assert_in("line 3: machine m: error: bind W: unknown resource 'Nope'", text)
+
+
+@test
+def map_targets_reject_dimension_indices():
+    """A map target is a value position; the family scanner cannot expand it.
+
+    The front end must say so.  Before this check the flat parser reported
+    ``expected ']', got '['`` at the machine's first line, which named neither
+    the construct nor the source position.
+    """
+    v2 = """set dimension L = [M1, M2] {
+    name_format = "_{value}";
+}
+machine both m {
+    resource P { units = 1; }
+    write W[L];
+    bind W[L] {
+        resources = [P];
+        latency = 1;
+    }
+    map [ADD, SUB] {
+        0 = W[L];
+    }
+}
+"""
+    text = v2_error(v2)
+    assert_in(
+        "line 12:13: map: operand 0 names 'W[L]', but a map target cannot "
+        "carry a dimension index; write one map per axis member",
+        text,
+    )
+
+    v2 = """set dimension L = [M1] {
+    name_format = "_{value}";
+}
+machine both m {
+    write W[L];
+    func_unit FU;
+    itin_class I;
+    map_itin [I] -> [W[L]];
+}
+"""
+    text = v2_error(v2)
+    assert_in(
+        "line 8:21: map_itin: a target cannot carry a dimension index; "
+        "write one map_itin per axis member",
+        text,
+    )
+
+
+@test
+def predicate_errors_name_the_item_line():
+    """An unsupported atom inside a variant case points at the variant."""
+    v2 = """machine both m {
+    write W;
+
+    bind W {
+        resources = [];
+        latency = 1;
+    }
+
+    variant W {
+        case all_of(opcode([ADD]), MISSING(1)): [W];
+        default: [W];
+    }
+}
+"""
+    text = emit_error_text(v2, syntax="v2")
+    assert_in("line 9: machine m.W: error: unsupported predicate 'MISSING'", text)
+
+
+@test
+def predicate_surface_matches_the_census():
+    """Every atom is either used in-tree or carries a written reason.
+
+    The census is the evidence side of the surface: adding an atom to the
+    parser without a use (or a ``held`` note) fails here instead of becoming
+    folklore.  Removed atoms must keep their migration message.
+    """
+    census = json.loads(
+        (ROOT / "data/predicate-surface-census.json").read_text(encoding="utf-8")
+    )
+    assert_true(census["format"] == "ssdl-predicate-surface-census-1", census["format"])
+    atoms = census["atoms"]
+    # ``sched_code`` is a SCHED-only predicate handled beside the MC atoms, so
+    # it is not in ``ATOM_PREDICATES``; the signature table is the full list.
+    live = set(predicate_types_mod.SIGNATURES) | {"sched_code"}
+    kept = {name for name, entry in atoms.items() if entry["decision"] != "removed"}
+    removed = {name for name, entry in atoms.items() if entry["decision"] == "removed"}
+
+    assert_true(
+        live == kept,
+        "parser and census disagree: "
+        f"missing from census {sorted(live - kept)}, "
+        f"stale census entries {sorted(kept - live)}",
+    )
+    assert_true(
+        removed == set(predicates_mod.REMOVED),
+        "removed atoms and their hints disagree: "
+        f"{sorted(removed ^ set(predicates_mod.REMOVED))}",
+    )
+    for name, entry in atoms.items():
+        assert_true(bool(entry["reason"]), f"{name}: census entry needs a reason")
+        if entry["decision"] == "keep":
+            assert_true(
+                entry["uses_all"] > 0,
+                f"{name}: kept but no in-tree use; mark it held or remove it",
+            )
+        if entry["decision"] == "held":
+            assert_true(
+                "no in-tree use" in entry["reason"] or entry["uses_all"] > 0,
+                f"{name}: held entries must say why",
+            )
+
+
+@test
+def missing_attr_schema_names_the_attributes():
+    """``--attrs`` is a host obligation; the skip says which names it needs."""
+    v2 = """set instructions L = [ADD, ...inst(category == logical && mayLoad)];
+machine both m {
+    write W;
+    bind W {
+        resources = [];
+        latency = 1;
+    }
+}
+"""
+    program = parser.parse(v2, syntax="v2")
+    _, skips = emit_td.emit(program, strict=False)
+    assert_true(len(skips) == 1, skips)
+    rendered = skips[0].render()
+    assert_in("requires the host attribute schema (--attrs)", rendered)
+    assert_in("category, mayLoad", rendered)
+    assert_true("ADD" not in rendered.split("attribute(s)")[1], rendered)
 
 
 @test

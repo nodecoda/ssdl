@@ -28,12 +28,22 @@ class Signature:
 
 
 #: name -> positional argument kinds (plus allowed ``name =`` extras)
+#: Atoms removed from the surface because no in-tree target uses them.  The
+#: census in ``data/predicate-surface-census.json`` is the evidence; the entry
+#: keeps the migration message next to the signature table so the two cannot
+#: drift.
+REMOVED: dict[str, str] = {
+    "pseudo": "write opcode(...); CheckPseudo is an empty subclass of CheckOpcode",
+    "reg_simple": "write is_valid_reg(i); the atom only existed to carry a mapper",
+    "imm_simple": "drop it; without a mapper it lowers to TruePred",
+    "is_vreg": "no in-tree target uses CheckIsVRegOperand",
+    "is_not_vreg": "no in-tree target uses CheckIsNotVRegOperand",
+}
+
+
 SIGNATURES: dict[str, Signature] = {
     "opcode": Signature((INST_SET,)),
-    "pseudo": Signature((INST_SET,)),
     "is_reg": Signature((OPERAND,)),
-    "is_vreg": Signature((OPERAND,)),
-    "is_not_vreg": Signature((OPERAND,)),
     "is_imm": Signature((OPERAND,)),
     "is_valid_reg": Signature((OPERAND,)),
     "is_invalid_reg": Signature((OPERAND,)),
@@ -46,8 +56,6 @@ SIGNATURES: dict[str, Signature] = {
     "imm_le": Signature((OPERAND, INT), ("map",)),
     "imm_ge": Signature((OPERAND, INT), ("map",)),
     "imm_range": Signature((OPERAND, INT, INT), ("map",)),
-    "reg_simple": Signature((OPERAND,), ("map",)),
-    "imm_simple": Signature((OPERAND,), ("map",)),
     "num_ops": Signature((INT,)),
     "same_reg": Signature((OPERAND, OPERAND)),
     "func": Signature((STRING, STRING)),

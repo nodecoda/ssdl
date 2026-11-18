@@ -31,6 +31,52 @@ class SetError(Exception):
         super().__init__("\n".join(errors))
 
 
+def attribute_names(expr) -> list[str]:
+    """Attribute names an ``inst(cond)`` / ``reg(cond)`` condition reads.
+
+    The parser keeps attribute reads in the left operand of a comparison
+    (``category == logical``) and in the operand of ``!``; a bare identifier on
+    the right is a value, not an attribute.  Walking with that context is what
+    lets the emitter say *which* host attribute the schema must provide.
+    """
+    names: set[str] = set()
+
+    def walk(node, attr_position: bool) -> None:
+        if not isinstance(node, tuple) or not node:
+            return
+        tag = node[0]
+        if tag in ("inst", "reg"):
+            walk(node[1], True)
+            return
+        if tag == "set_list":
+            for item in node[1]:
+                walk(item, False)
+            return
+        if tag == "spread":
+            walk(node[1], False)
+            return
+        if tag == "binop" and len(node) == 4:
+            operator = node[1]
+            if operator in ("&&", "||"):
+                walk(node[2], attr_position)
+                walk(node[3], attr_position)
+            else:
+                walk(node[2], True)
+                walk(node[3], False)
+            return
+        if tag == "unop" and len(node) == 3:
+            walk(node[2], attr_position)
+            return
+        if tag == "ident" and attr_position:
+            names.add(node[1])
+            return
+        if tag == "attr" and len(node) == 3:
+            names.add(node[2])
+
+    walk(expr, False)
+    return sorted(names)
+
+
 class AttributeSchema:
     def __init__(self, data: dict[str, Any]):
         self.data = data

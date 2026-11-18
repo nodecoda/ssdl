@@ -201,6 +201,12 @@ class SortChecker:
         if name in self.tii_names:
             return MC
         if name not in self.predicates:
+            removed = predicate_types_mod.REMOVED.get(name)
+            if removed is not None:
+                self.error(
+                    where, f"{name}() was removed from the surface: {removed}"
+                )
+                return MC
             self.error(where, f"unknown predicate {name!r}; declare it or use an atom predicate")
             return MC
         self.check_call_arity(where, name, args or [])

@@ -278,7 +278,7 @@ def _predicate(text: str) -> list[str]:
                     raise ToV2Error(f"selector must be cxx_expr([{{...}}]): {value!r}")
                 out.append(f"when = {_hostify(match.group(1))};")
             elif key == "assembler":
-                out.append(f"during = {value};")
+                out.append(f"assembler = {value};")
             elif key in ("desc", "recompute_per_function"):
                 out.append(f"{key} = {value};")
             else:
@@ -446,7 +446,22 @@ def _stages(text: str) -> str:
 
 
 def _convert_itin_fields(body: list[str]) -> list[str]:
-    return [_stages(text) if _first_word(text) == "stages" else text for text in body]
+    out: list[str] = []
+    for text in body:
+        word = _first_word(text)
+        if word == "stages":
+            out.append(_stages(text))
+        elif word == "cycles":
+            # InstrItinData's third argument is the operand cycles; v2 keeps
+            # it apart from a stage's own cycle count.
+            out.append(_rename_field(text, "operand_cycles"))
+        else:
+            out.append(text)
+    return out
+
+
+def _rename_field(text: str, name: str) -> str:
+    return re.sub(r"^\s*[A-Za-z_][\w-]*", name, text, count=1)
 
 
 def _convert_itin_body(body: list[str], indent: str = "    ") -> list[str]:
@@ -495,13 +510,26 @@ def _itineraries(head: str, body: list[str], indent: str = "") -> list[str]:
     return lines
 
 
+def _extern(text: str) -> str:
+    """``extern fn f(...) -> INT : key;`` becomes ``... from "key";``."""
+    match = re.match(r"^(.*?)\s*:\s*([A-Za-z_][\w-]*)\s*;$", text.strip(), re.S)
+    if match is None:
+        return text
+    signature, key = match.group(1), match.group(2)
+    return f'{signature} from "{key}";'
+
+
 def _machine_item(text: str) -> list[str]:
     word = _first_word(text)
     if word == "resource":
         return _resource(text)
     if word == "res_group":
         return _res_group(text)
-    if word in ("write", "read", "func_unit", "bypass", "itin_class", "combo_func", "alias", "map_itin"):
+    if word == "alias":
+        # The CPU alias is `machine alias X = Y;`; a SchedAlias relation inside
+        # a machine spells its own keyword.
+        return [_rename_field(text, "sched_alias")]
+    if word in ("write", "read", "func_unit", "bypass", "itin_class", "combo_func", "map_itin"):
         return [text]
     if word == "write_seq":
         return _write_seq(text)
@@ -732,7 +760,7 @@ def to_v2(text: str) -> str:
         elif word == "tii_predicate":
             out.extend(_tii_predicate(head))
         elif word == "extern":
-            out.append(head)
+            out.append(_extern(head))
         elif word == "machine":
             raise ToV2Error(f"machine without a body: {head!r}")
         else:

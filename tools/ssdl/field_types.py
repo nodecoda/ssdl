@@ -91,7 +91,14 @@ ENTITY_FIELDS: dict[str, dict[str, str]] = {
         "timeinc": INT_EXPR,
         "kind": "enum:required|reserved",
     },
-    "itin": {"cycles": INT_LIST, "bypasses": IDENT_LIST, "uops": INT_EXPR},
+    # ``operand_cycles`` is the v2 spelling of InstrItinData's third argument;
+    # ``emit_td`` renders it back as ``cycles``.  The bare ``cycles`` name is
+    # reserved for stage occupancy and rejected by the v2 front end.
+    "itin": {
+        "operand_cycles": INT_LIST,
+        "bypasses": IDENT_LIST,
+        "uops": INT_EXPR,
+    },
     "itineraries": {"func_units": IDENT_LIST, "bypasses": IDENT_LIST},
 }
 

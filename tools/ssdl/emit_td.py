@@ -22,10 +22,20 @@ existing TableGen records:
                TIIPredicate (see ``predicates.py``)
 
 ``set`` declarations are compile-time only and are evaluated against a host
-attribute schema (``sets.py``); they emit no records.  Constructs that still
-have no landing spot (``write_seq``, ``map_itin``, scheduling aliases,
-``sti_function.delegates``) are reported as "skipped"; with ``--strict`` every
-skip is an error, which is how the test suite proves which parts are open.
+attribute schema (``sets.py``); they emit no records.
+
+Exactly two constructs are reported as "skipped" (``--strict`` turns each into
+an error, which is how the test suite proves the remaining gap):
+
+  ``set`` without ``--attrs``   the host attribute schema is required to
+                                evaluate ``inst(cond)`` / ``reg(cond)``
+  ``combo_func``                ``ProcessorItineraries`` has no attachment
+                                point for it
+
+Everything else in the v2 surface lands on a record: ``write_seq`` ->
+``WriteSequence``, ``map_itin`` -> ``InstrItinData``, ``alias`` ->
+``SchedAlias``, ``sti`` ``delegates`` -> ``STIPredicate`` delegation list.
+Keep this list in sync with ``Emitter.skip`` call sites (two of them).
 
 Record names are deterministic so that ``llvm-tblgen -print-records`` output can
 be compared against a hand-written .td file.
@@ -43,6 +53,7 @@ if __package__ in (None, ""):
     import validate as validate_mod  # type: ignore
     from record_ir import Base, DuplicateRecord, Record, RecordSet  # type: ignore
     from predicates import PredicateError, PredicateLowerer  # type: ignore
+    from sets import attribute_names  # type: ignore
     from sets import AttributeSchema, SetEvaluator  # type: ignore
     from tdutil import join_list, td_def_name, td_str  # type: ignore
     from targets import TargetProfile, profile as target_profile  # type: ignore
@@ -50,7 +61,7 @@ else:
     from . import validate as validate_mod
     from .record_ir import Base, DuplicateRecord, Record, RecordSet
     from .predicates import PredicateError, PredicateLowerer
-    from .sets import AttributeSchema, SetEvaluator
+    from .sets import attribute_names, AttributeSchema, SetEvaluator
     from .tdutil import join_list, td_def_name, td_str
     from .targets import TargetProfile, profile as target_profile
 
@@ -231,6 +242,11 @@ class Emitter:
     def at(self, item) -> None:
         """Record the source line of the item about to be lowered."""
         self.current_line = item.get("line") if isinstance(item, dict) else None
+        # Predicate diagnostics raised while lowering this item must report the
+        # same line; they have no declaration of their own.
+        predicates = getattr(self, "predicates", None)
+        if predicates is not None:
+            predicates.current_line = self.current_line
 
     def error(self, where: str, message: str, *, line: int | None = None) -> None:
         self.errors.append(Diagnostic("error", where, message, line or self.current_line))
@@ -313,9 +329,16 @@ class Emitter:
         elif any(isinstance(d, SetDecl) for d in self.program.decls):
             for decl in self.program.decls:
                 if isinstance(decl, SetDecl):
+                    reads = attribute_names(decl.expr)
+                    detail = (
+                        "; it reads attribute(s) " + ", ".join(reads)
+                        if reads
+                        else ""
+                    )
                     self.skip(
                         f"set {decl.name}",
-                        "requires the host attribute schema (--attrs); sets emit no records",
+                        "requires the host attribute schema (--attrs)"
+                        f"{detail}; sets emit no records",
                     )
 
         self.predicates = PredicateLowerer(

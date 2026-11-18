@@ -184,7 +184,7 @@ predicate_body
 predicate_field
     (* select *)
     = "when"      "=" host_block ";"
-    | "during"    "=" feature_expr ";"
+    | "assembler" "=" feature_expr ";"
     | "desc"      "=" STRING ";"
     | "recompute_per_function" "=" BOOL ";"
     (* sti *)
@@ -219,8 +219,9 @@ statement
 
 - `kind` 一律写在 `predicate` 之后、名字之前。旧写法 `predicate P = ...`
   与 `predicate P : select` 会报错并提示新位置。
-- `sched` 的 `when` 是表达式；`select` 的 `when` 是 host 代码，`during` 是
-  feature 谓词；两者可只写其一。
+- `sched` 的 `when` 是表达式；`select` 的 `when` 是 host 代码，`assembler` 是
+  feature 谓词；两者可只写其一。`assembler` 命名的是「汇编器可用性」，与 v1
+  的 `assembler` 字段同名——v2.0 早期的 `during` 已废弃并报错。
 - `sti` 的声明与实现合并：`impl <名字> : <machine> { ... }` 中，`<名字>`
   是 v1 `sti_function` 的名字，也是生成的 `STIPredicate` def 名；`<machine>`
   是 `SchedModel` 作用域。`sched_model` 字段可以省略，写了必须与 `<machine>`
@@ -250,7 +251,7 @@ predicate sched IsZeroReg(i: INT) = reg_is(i, ZeroRegs);
 
 predicate select HasStdExtI {
     when   = host [{ Subtarget->hasStdExtI() }];
-    during = all_of([StdExtI]);
+    assembler = all_of([StdExtI]);
     desc   = "'I' (Base Integer Instruction Set)";
 }
 
@@ -364,7 +365,7 @@ feature tune TunePostRA {
 ```ebnf
 machine_decl
     = "machine" "alias" IDENT "=" IDENT ";"
-    | "machine" machine_role IDENT
+    | "machine" [ machine_role ] IDENT
       [ "(" [ param { "," param } [ "," ] ] ")" ]
       [ ":" IDENT [ "(" [ arg { "," arg } [ "," ] ] ")" ] ]
       "{" { machine_item } "}"
@@ -385,8 +386,9 @@ arg
 
 语义：
 
-- `machine both X { ... }`：一个名字同时发射 `SchedMachineModel` 与
-  `ProcessorModel`（v1 的默认行为）；迁移 v1 源时用它保持 records 不变。
+- `machine X { ... }`（role 省略）与 `machine both X { ... }` 等价：一个名字
+  同时发射 `SchedMachineModel` 与 `ProcessorModel`。这是最常见的情况，所以
+  role 有缺省值；`both` 仍可显式写出，用于强调对比。
 - `machine model X { ... }`：只发射 `SchedMachineModel` 与 model-scoped 实体。
 - `machine cpu X { model = M; features = [...]; tune_features = [...];
   default_march = "..."; }`：只发射 `ProcessorModel`，`SchedModel = M`。
@@ -420,10 +422,14 @@ machine alias sifive7-alias = siFive7;
 
 ```ebnf
 machine_item
-    = machine_prop
-    | entity_decl
-    | relation_decl
+    = [ "override" ] item_body
+    | machine_prop
     | itineraries_decl
+    ;
+
+item_body
+    = entity_decl
+    | relation_decl
     ;
 
 machine_prop
@@ -446,6 +452,13 @@ machine_prop
 ```
 
 `model` 只允许在 `machine cpu` 中；其他角色写 `model =` 是错误。
+
+`override` 只出现在 `machine instance` 的 body 里，前缀**一条完整的**实体或关系
+（`bind`/`resource`/`res_group`/`advance`/`variant`/`read_variant`/`reg_file`/
+`write`/`read`）。它按 `(关键字, 名字)` 丢弃从 family 继承的同名语句，然后整条
+替换——**不做字段合并**，所以替换体必须重复它需要的全部字段。理由是字段级合并
+会让一个旧值悄悄留下来（`override bind W { latency = 5; }` 忘了 `resources`
+就继承到错误的资源）；整条替换把「哪些字段仍然生效」变成源码里可见的事实。
 
 `unsupported_features` 的元素是 `list<Predicate>` 的**宿主谓词 def 名**，按字面发射：
 AArch64 写 `[HasSVE, HasMTE]`，RISC-V 写 `[HasStdExtZbkb]`。它们属于目标词表
@@ -626,7 +639,7 @@ map_itin_decl
     ;
 
 alias_decl
-    = "alias" IDENT "->" IDENT ";"
+    = "sched_alias" IDENT "->" IDENT ";"
     ;
 
 variant_decl
@@ -687,7 +700,7 @@ itin_body
 
 itin_field
     = "stages"   "=" "[" [ stage { "," stage } [ "," ] ] "]"
-    | "cycles"   "=" int_list
+    | "operand_cycles" "=" int_list
     | "bypasses" "=" ident_list
     | "uops"     "=" int_expr
     ;
@@ -712,10 +725,11 @@ stage_field
 stage 在列表中的序号；`timeinc` 是进入下一级前的 time increment（第三个
 参数）。这两个名字必须与语义一致，不要退回 TD 的位置化拼写。
 
-`itin.cycles` 是 **operand cycles**（`InstrItinData` 的第三个参数），
+`itin.operand_cycles` 是 **operand cycles**（`InstrItinData` 的第三个参数），
 不是每级 stage 的周期数：第 0 个元素是该指令结果的可用周期，其余元素是
 各操作数的读取周期；它可以省略，长度与 `stages` 无关。`stage` 的 `units`
-必须出现在 `itineraries.func_units` 中。
+必须出现在 `itineraries.func_units` 中。两个字段名字不同，就是为了让这个
+区别在源码里可见；`itin` 里的 `cycles` 会报错并指向 `operand_cycles`。
 
 ```text
 itineraries : packetizer_namespace = "SiFive7" {
@@ -902,10 +916,7 @@ predicate_expr
 
 atom_pred
     = "opcode" "(" ( IDENT | set_expr ) ")"
-    | "pseudo" "(" ( IDENT | set_expr ) ")"
     | "is_reg" "(" INT ")"
-    | "is_vreg" "(" INT ")"
-    | "is_not_vreg" "(" INT ")"
     | "is_imm" "(" INT ")"
     | "is_valid_reg" "(" INT ")"
     | "is_invalid_reg" "(" INT ")"
@@ -918,8 +929,6 @@ atom_pred
     | "imm_le" "(" INT "," INT [ "," "map" "=" IDENT ] ")"
     | "imm_ge" "(" INT "," INT [ "," "map" "=" IDENT ] ")"
     | "imm_range" "(" INT "," INT "," INT [ "," "map" "=" IDENT ] ")"
-    | "reg_simple" "(" INT [ "," "map" "=" IDENT ] ")"
-    | "imm_simple" "(" INT [ "," "map" "=" IDENT ] ")"
     | "num_ops" "(" INT ")"
     | "same_reg" "(" INT "," INT ")"
     | "func" "(" STRING "," STRING ")"
@@ -931,9 +940,21 @@ atom_pred
 
 命名谓词调用（吸收 S2）在 v2 中是正式产生式，并要求实参个数/类型在前端检查。
 
-`opcode` / `pseudo` / `reg_is` 等原子里的 `IDENT` 是**目标词汇**：`ADD`、`X0`、
+`opcode` / `reg_is` 等原子里的 `IDENT` 是**目标词汇**：`ADD`、`X0`、
 `GPR64` 由目标 `.td` 定义，SSDL 只检查语法与谓词签名，不检查这些名字是否存在。
 唯一例外是已声明的 `set`：同名标识符按 `set` 处理，展开需要 `--attrs`。
+
+**语法面 = 证据面。** 每个原子都必须在
+`data/predicate-surface-census.json` 里有 in-tree 使用点，或写明保持理由；
+`check.py` 的 `predicate_surface_matches_the_census` 双向核对 parser 与 census。
+据此删除了五个零使用的原子，并保留迁移提示：
+
+| 删除 | 原因 | 替代 |
+|---|---|---|
+| `pseudo(insts)` | 上游 `CheckPseudo` 是 `CheckOpcode` 的空子类，全树 0 使用 | `opcode(insts)` |
+| `reg_simple(i)` | `CheckRegOperandSimple` 全树 0 使用；无 mapper 时等价 `is_valid_reg(i)` | `is_valid_reg(i)` |
+| `imm_simple(i)` | `CheckImmOperandSimple` 全树 0 使用；无 mapper 时等价 `true` | 直接删掉 |
+| `is_vreg(i)` / `is_not_vreg(i)` | `CheckIsVRegOperand` 全家 0 使用 | 无（目标如需可再加回） |
 
 ```ebnf
 feature_expr
@@ -965,14 +986,23 @@ name_template
 ```
 
 - `dim_index` 出现在 `write`/`read` 的声明名、`bind`/`advance`/`variant`/
-  `read_variant` 的 subject、`map` 的 `sched_rw`，以及 `resource`/`res_group`/
-  `write_seq` 的实体名后。
-- v1.2 的支持面不对称（`map`/`write_seq` 等不能索引）在 v2 中必须消除：
+  `read_variant` 的 subject，以及 `resource`/`res_group`/`write_seq` 的实体名后。
+  `map`/`map_itin` 的目标不支持（见下一条）。
+- v1.2 的支持面不对称（`map`/`write_seq` 等不能索引）在 v2 中已消除：
   **所有接受标识符的调度名字位置都接受 `dim_index`**，语义由 elaborator 统一处理。
+  唯一例外是 `map`/`map_itin` 的**目标**（`sched_rw`）：它落在语句尾部，
+  family 扫描器只展开语句头部的 `name[axis]`。这两个位置当前在前端直接报错
+  （`a map target cannot carry a dimension index; write one map per axis member`），
+  而不是把 `[` 漏给 flat 解析器。
 - 拼写规则不变：`<machine>_<local>` 仅在同名被多个 machine 声明时使用；
   `name = "PipeA_{vlen}"` 必须在有限域上单射。
-- v2.0 只有 `resource` 接受 `name` 模板；被 `SchedRW` 引用的 write/read 接口名
-  仍默认显式（`name` 模板是 v2.1 候选）。
+- v2.0 只有 `resource`/`res_group` 接受 `name` 模板；被 `SchedRW` 引用的
+  write/read 接口名仍默认显式（`name` 模板是 v2.1 候选）。
+- **占位符有两套，各有明确位置**：`name_format` 只接受 `{value}`（维度的
+  成员），`name` 模板只接受 `{param}`（family 参数）。写错位置会报错，而不是
+  留下字面量花括号：
+  `name_format "_{vlen}"` → `has no {value} placeholder`；
+  `name = "{value}"` → `uses unknown parameter 'value'`。
 
 ---
 
@@ -981,7 +1011,7 @@ name_template
 ```ebnf
 extern_decl
     = "extern" "fn" IDENT "(" [ extern_param { "," extern_param } [ "," ] ] ")"
-      "->" ( "INT" | "BOOL" ) ":" IDENT ";"
+      "->" ( "INT" | "BOOL" ) "from" STRING ";"
     ;
 
 extern_param
@@ -1005,8 +1035,14 @@ extern_param
 | S6 | `feature F : extension` / `feature F { kind = ...; }` | `feature extension F { ... }` | `write the kind after the keyword, not 'NAME : kind'` / `kind moved to the header` |
 | S7 | `predicate P : tii` | `predicate tii P { ... }` | `predicate needs a kind right after the keyword` |
 | E1 | `feature` 隐式要求 `mattr` | `mattr = "..."` 正式字段 | `kind = plain requires field 'mattr'` |
+| S8 | 体内 `alias A -> B;` | `sched_alias A -> B;` | `'alias' inside a machine is the SchedAlias relation; write 'sched_alias'` |
+| S9 | `select` 的 `during = ...` | `assembler = ...` | `'during' was renamed to 'assembler'` |
+| S10 | `itin { cycles = [...] }` | `itin { operand_cycles = [...] }` | `itin 'cycles' was renamed to 'operand_cycles'` |
+| S11 | `extern fn f(...) -> INT : key;` | `... -> INT from "key";` | `write the profile key after 'from', not ':'` |
 
 块声明后的可选 `;` 不是 errata：`}` 后两种拼法都接受，推荐不写。
+S8–S11 是 v2.0 发布后的自我修正：它们不改变语义，只把一个词从「需要记」
+变成「读得出来」。`to_v2.py` 直接产出新拼写。
 
 ---
 
@@ -1045,7 +1081,7 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 | `predicate tii` + `method =` + `mc(TII)` | `aarch64/tii.ssdl` | ✓ AArch64 P2 |
 | `feature` plain/extension/tune | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `feature` typed field / host / bitmask | `v2/machine-roles-v2.ssdl` | ✓ P3 |
-| `machine both` / `model` / `cpu` | `v2/machine-roles-v2.ssdl` | ✓ P3 |
+| `machine` role 缺省（= `both`） | `v2/machine-roles-v2.ssdl` | ✓ P1 |
 | `machine family` / `instance` | `v2/family-mini-v2.ssdl` | ✓ P2 |
 | `machine alias` | `v2/machine-roles.ssdl` | P3（parser 路径） |
 | `unsupported_features`（宿主谓词名逐字） | `aarch64/features.ssdl` | ✓ AArch64 G4 |
@@ -1056,8 +1092,10 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 | `map` 显式下标 | `v2/map-v2.ssdl` | ✓ P2 |
 | `map=`（FunctionMapper helper def） | `aarch64/mapper.ssdl` | ✓ AArch64 G1 |
 | `variant` / `read_variant` | `v2/variants-v2.ssdl` | ✓ P2 |
+| `sched_alias` | `v2/sifive7-mini-v2.ssdl` | ✓ P1 |
 | `itineraries` + 命名 stage | `v2/itineraries-v2.ssdl` | ✓ P2 |
-| `extern` | `v2/projection-contract-v2.ssdl` | ✓ P2 |
+| `itineraries` + body 内 `packetizer_namespace` | `v2/itineraries-v2.ssdl` | ✓ P1 |
+| `extern` + `from "key"` | `v2/projection-contract-v2.ssdl` | ✓ P1 |
 | `host` block | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
 | `dim_index` | `v2/multiline-v2.ssdl` | ✓ P2 |
 | `worst` / `in []` 子集 | `v2/dim-uses.ssdl` | P3 |
@@ -1149,7 +1187,8 @@ validate → emit_td → 两条 equiv 对拍。结果是 **14/14 `records match`
   所以 AC4 的 IR parity 不覆盖它。
 - 全局 `itineraries` 在 IR 里是原样透传文本，源文件的对齐空格不属于契约；
   AC4 只比较 `Symbol`、`spelling`、`phase` 与机器内语句文本。
-- §8 要求“所有调度名字位置都接受 `dim_index`”，但 `map_itin` 与 `map` 的
-  `sched_rw` 带轴下标时，v1 族扫描器没有对应的展开路径；Phase 2 只保证
-  不带下标的写法，带下标的支持属于 Phase 3 的 elaborator 工作。
+- §8 的 `dim_index` 在 `map`/`map_itin` 的 `sched_rw` 目标位置尚未实现：
+  v1 族扫描器只展开语句头部的 `name[axis]`。前端现在**显式拒绝**这两个位置
+  （带行号与「每个成员写一条」的提示），不再产出错行错列的
+  `expected ']', got '['`。实现展开属于后续工作，不影响现有 45 个模型。
 

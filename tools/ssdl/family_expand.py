@@ -91,8 +91,28 @@ class Axis:
     extra: dict[str, list[int]] = field(default_factory=dict)
 
     def name(self, member: str) -> str:
+        """Compose a member name from ``name_format``.
+
+        ``name_format`` has exactly one placeholder vocabulary: ``{value}``
+        (the dimension member).  Family parameters use ``{param}`` in a
+        ``name`` template on an entity; mixing the two silently produced
+        literal braces before this check.
+        """
         if "{value}" not in self.name_format:
-            raise ExpandError(f"name_format {self.name_format!r} has no {{value}} placeholder")
+            raise ExpandError(
+                f"name_format {self.name_format!r} has no {{value}} placeholder"
+            )
+        if self.name_format.count("{value}") > 1:
+            raise ExpandError(
+                f"name_format {self.name_format!r} repeats {{value}}; "
+                "declare the suffix once"
+            )
+        leftover = self.name_format.replace("{value}", "")
+        if "{" in leftover or "}" in leftover:
+            raise ExpandError(
+                f"name_format {self.name_format!r} has a placeholder other than "
+                "{{value}}; family parameters belong to an entity `name` template"
+            )
         return self.name_format.replace("{value}", member)
 
     def unit_of(self, member: str | None) -> int:
@@ -935,6 +955,81 @@ def _parse_dim_uses(
     return uses
 
 
+OVERRIDE_RE = re.compile(
+    rf"^override\s+({IDENT})\s+({IDENT})\b"
+)
+ITEM_NAME_RE = re.compile(rf"^({IDENT})\s+({IDENT})\b")
+OVERRIDE_KINDS = (
+    "bind",
+    "resource",
+    "res_group",
+    "advance",
+    "variant",
+    "read_variant",
+    "reg_file",
+    "write",
+    "read",
+)
+
+
+def _split_overrides(
+    instance_body: list[Stmt], family_body: list[Stmt], machine: str
+) -> tuple[list[Stmt], list[Stmt]]:
+    """Apply ``override <kind> <name>`` to the inherited family statements.
+
+    An instance may replace a whole inherited statement.  Field-level merging
+    was rejected deliberately: a *partial* bind is how a model silently keeps a
+    stale latency.  The replacement must repeat every field it needs.
+    """
+    overrides: dict[tuple[str, str], int] = {}
+    stripped: list[Stmt] = []
+    for stmt in instance_body:
+        match = OVERRIDE_RE.match(stmt.text)
+        if match is None:
+            stripped.append(stmt)
+            continue
+        kind, name = match.group(1), match.group(2)
+        if kind not in OVERRIDE_KINDS:
+            raise ExpandError(
+                f"line {stmt.line}: override {kind} {name}: "
+                f"expected one of {', '.join(OVERRIDE_KINDS)}"
+            )
+        overrides[(kind, name)] = stmt.line
+        stripped.append(Stmt(stmt.line, stmt.text[match.start(1) :]))
+    if not overrides:
+        return instance_body, family_body
+
+    inherited: set[tuple[str, str]] = set()
+    kept: list[Stmt] = []
+    skip_depth = 0
+    for stmt in family_body:
+        if skip_depth:
+            skip_depth += _brace_delta(stmt.text)
+            continue
+        match = ITEM_NAME_RE.match(stmt.text)
+        if (
+            match is not None
+            and match.group(1) in OVERRIDE_KINDS
+            and (match.group(1), match.group(2)) in overrides
+        ):
+            key = (match.group(1), match.group(2))
+            inherited.add(key)
+            delta = _brace_delta(stmt.text)
+            if delta > 0:
+                skip_depth = delta
+            continue
+        kept.append(stmt)
+
+    missing = sorted(set(overrides) - inherited)
+    if missing:
+        kind, name = missing[0]
+        raise ExpandError(
+            f"line {overrides[(kind, name)]}: override {kind} {name}: "
+            f"family {machine!r} does not declare it"
+        )
+    return stripped, kept
+
+
 def _expand_variant(
     line: int,
     base: str,
@@ -1393,8 +1488,17 @@ def expand_legacy(
                     f"got {len(machine.args)}"
                 )
             env = dict(zip(base.params, machine.args))
-            body = list(machine.body) + list(base.body)
+            instance_body, inherited = _split_overrides(
+                list(machine.body), list(base.body), base.name
+            )
+            body = instance_body + inherited
         else:
+            for stmt in machine.body:
+                if OVERRIDE_RE.match(stmt.text) is not None:
+                    raise ExpandError(
+                        f"line {stmt.line}: override is only valid in a machine "
+                        "instance; a family or plain machine owns its statements"
+                    )
             env = {}
             body = list(machine.body)
         if machine.family is None and machine.params:

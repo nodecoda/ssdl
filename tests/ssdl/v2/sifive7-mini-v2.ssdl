@@ -65,7 +65,7 @@ predicate sched HasXssdl = feature(StdExtXssdl);
 
 predicate select SelNoXssdl {
     when   = host [{ !Subtarget->hasStdExtXssdl() }];
-    during = none_of([StdExtXssdl]);
+    assembler = none_of([StdExtXssdl]);
     desc   = "SSDL base extension is absent";
     recompute_per_function = true;
 }
@@ -143,7 +143,7 @@ machine both ssdl-sifive-7 {
     write_seq W_MULDIV_SEQ = [W_ALU, W_ALU] {
         repeat = 2;
     }
-    alias W_MULDIV -> W_MULDIV_SEQ;
+    sched_alias W_MULDIV -> W_MULDIV_SEQ;
 
     bind W_ALU {
         resources = [PipeA];
@@ -215,7 +215,7 @@ machine both ssdl-sifive-7 {
 
         itin IIC_iALU {
             stages = [stage { cycles = 1; units = [FU_ALU]; }];
-            cycles = [1, 1];
+            operand_cycles = [1, 1];
         }
     }
 
@@ -238,7 +238,7 @@ itineraries : packetizer_namespace = "SSDLTop" {
             stage { cycles = 1; units = [FU_TOP]; },
             stage { cycles = 2; units = [FU_TOP]; timeinc = 1; kind = reserved; },
         ];
-        cycles   = [1, 3];
+        operand_cycles = [1, 3];
         bypasses = [no_bypass_top];
         uops     = 2;
     }

@@ -1,0 +1,21 @@
+# `override` replaces one inherited statement wholesale; it never merges fields.
+machine family fam(n: INT) {
+    resource P {
+        units = 1;
+    }
+    write W;
+    bind W {
+        resources = [P];
+        latency   = n;
+    }
+}
+
+machine instance slow : fam(1) {
+}
+
+machine instance fast : fam(3) {
+    override bind W {
+        resources = [P];
+        latency   = 5;
+    }
+}

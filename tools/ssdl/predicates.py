@@ -34,6 +34,7 @@ if __package__ in (None, ""):
         STIFunction,
         TIIPredicate,
     )
+    from predicate_types import REMOVED  # type: ignore
     from record_ir import Base, DuplicateRecord, Record, RecordSet  # type: ignore
     from sets import SetError, SetEvaluator
     from tdutil import join_list, td_code, td_def_name, td_str
@@ -48,6 +49,7 @@ else:
         STIFunction,
         TIIPredicate,
     )
+    from .predicate_types import REMOVED
     from .record_ir import Base, DuplicateRecord, Record, RecordSet
     from .sets import SetError, SetEvaluator
     from .tdutil import join_list, td_code, td_def_name, td_str
@@ -65,10 +67,7 @@ SEL = "sel"
 
 ATOM_PREDICATES = {
     "opcode",
-    "pseudo",
     "is_reg",
-    "is_vreg",
-    "is_not_vreg",
     "is_imm",
     "is_valid_reg",
     "is_invalid_reg",
@@ -81,8 +80,6 @@ ATOM_PREDICATES = {
     "imm_le",
     "imm_ge",
     "imm_range",
-    "reg_simple",
-    "imm_simple",
     "num_ops",
     "same_reg",
 }
@@ -175,6 +172,10 @@ class PredicateLowerer:
         # Declaration line per diagnostic prefix, so a predicate error can
         # point at its declaration instead of only at the lowering stage.
         self.decl_lines: dict[str, int] = {}
+        # Line of the machine item currently being lowered.  Diagnostics raised
+        # from inside a variant case have no declaration of their own, so the
+        # emitter pushes the item line here through ``at()``.
+        self.current_line: int | None = None
         for decl in self.program.decls:
             if isinstance(decl, PredicateDecl):
                 self.decl_lines[f"predicate {decl.name}"] = decl.line
@@ -184,6 +185,8 @@ class PredicateLowerer:
                 self.decl_lines[f"sti_function {decl.name}"] = decl.line
             elif isinstance(decl, TIIPredicate):
                 self.decl_lines[f"tii_predicate {decl.name}"] = decl.line
+            elif isinstance(decl, MachineDecl):
+                self.decl_lines[f"machine {decl.name}"] = decl.line
 
     # -- record table ----------------------------------------------------
     def define(
@@ -233,7 +236,17 @@ class PredicateLowerer:
     def _with_line(self, message: str) -> str:
         if message.startswith("line "):
             return message
-        line = self.decl_lines.get(message.split(":", 1)[0])
+        prefix = message.split(":", 1)[0]
+        line = self.decl_lines.get(prefix)
+        if line is None:
+            # ``machine m.V`` belongs to ``machine m``; the item line, when the
+            # emitter pushed one, is more precise than the declaration.
+            for key, candidate in self.decl_lines.items():
+                if prefix.startswith(key + "."):
+                    line = self.current_line or candidate
+                    break
+        if line is None:
+            line = self.current_line
         return f"line {line}: {message}" if line else message
 
     def register_def(self, name: str, where: str) -> None:
@@ -446,29 +459,24 @@ class PredicateLowerer:
                 )
                 return "FalsePred"
             return self.named_call(name, args, env, where)
-        if name == "opcode" or name == "pseudo":
+        if name == "opcode":
             names = self.inst_list(args[0], where, env)
             if not names:
                 return "FalsePred"
-            cls = "CheckOpcode" if name == "opcode" else "CheckPseudo"
-            return f"{cls}<{join_list(names)}>"
-        if name in ("is_reg", "is_vreg", "is_not_vreg", "is_imm"):
+            return f"CheckOpcode<{join_list(names)}>"
+        if name in ("is_reg", "is_imm"):
             index = self.operand_index(args[0], env, where)
             cls = {
                 "is_reg": "CheckIsRegOperand",
-                "is_vreg": "CheckIsVRegOperand",
-                "is_not_vreg": "CheckIsNotVRegOperand",
                 "is_imm": "CheckIsImmOperand",
             }[name]
             return f"{cls}<{index}>"
-        if name in ("is_valid_reg", "is_invalid_reg", "is_zero", "reg_simple", "imm_simple"):
+        if name in ("is_valid_reg", "is_invalid_reg", "is_zero"):
             index = self.operand_index(args[0], env, where)
             cls = {
                 "is_valid_reg": "CheckValidRegOperand",
                 "is_invalid_reg": "CheckInvalidRegOperand",
                 "is_zero": "CheckZeroOperand",
-                "reg_simple": "CheckRegOperandSimple",
-                "imm_simple": "CheckImmOperandSimple",
             }[name]
             mapper = self.take_mapper(args[1:], where, name)
             if mapper is not None:
@@ -549,6 +557,9 @@ class PredicateLowerer:
         if name == "non_portable":
             code = self.code_arg(args[0], where, name)
             return f"CheckNonPortable<{td_str(code)}>"
+        if name in REMOVED:
+            self.error(where, f"{name}() was removed from the surface: {REMOVED[name]}")
+            return "FalsePred"
         self.error(where, f"unsupported predicate {name!r}")
         return "FalsePred"
 
@@ -764,7 +775,10 @@ class PredicateLowerer:
         if arg[0] == "ident":
             name = arg[1]
             if name in self.set_names:
-                self.error(where, f"set {name!r} requires the attribute schema (--attrs)")
+                self.error(
+                    where,
+                    f"set {name!r} requires the host attribute schema (--attrs)",
+                )
                 return []
             return [name]
         if arg[0] == "set_list":

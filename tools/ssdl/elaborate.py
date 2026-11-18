@@ -308,11 +308,20 @@ def elaborate(
                     f"{len(base.params)} args, got {len(machine.args)}"
                 )
             env = dict(zip(base.params, machine.args))
-            body = list(machine.body) + list(base.body)
+            instance_body, inherited = fe._split_overrides(
+                list(machine.body), list(base.body), base.name
+            )
+            body = instance_body + inherited
             params = tuple(base.params)
             family: str | None = base.name
             args = tuple(machine.args)
         else:
+            for stmt in machine.body:
+                if fe.OVERRIDE_RE.match(stmt.text) is not None:
+                    raise fe.ExpandError(
+                        f"line {stmt.line}: override is only valid in a machine "
+                        "instance; a family or plain machine owns its statements"
+                    )
             if machine.params:
                 continue  # a family declaration is not emitted by itself
             env = {}

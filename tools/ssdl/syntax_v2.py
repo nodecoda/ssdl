@@ -478,7 +478,7 @@ def _reject_none_of(tokens: list[parser.Token], where: str) -> None:
             and tokens[index + 1].value == "("
         ):
             raise V2Error(
-                f"{where}: none_of is only valid in a select `during` list; "
+                f"{where}: none_of is only valid in a select `assembler` list; "
                 "write all_of(not(P)) for a schedule predicate"
             )
 
@@ -548,9 +548,14 @@ def _predicate_select(cursor: _Cursor, out: list[str], head: str) -> None:
         if key == "when":
             fields["selector"] = f"cxx_expr({_host_block(cursor, f'{head}.when')})"
             cursor.expect(";")
-        elif key in ("during", "desc", "recompute_per_function"):
-            target = "assembler" if key == "during" else key
-            fields[target] = cursor.expr({";"})
+        elif key == "during":
+            raise V2Error(
+                f"line {cursor.peek().line}:{cursor.peek().col}: "
+                "'during' was renamed to 'assembler' (the assembler-availability "
+                "predicate)"
+            )
+        elif key in ("assembler", "desc", "recompute_per_function"):
+            fields[key] = cursor.expr({";"})
             cursor.expect(";")
         else:
             token = cursor.peek()
@@ -559,7 +564,7 @@ def _predicate_select(cursor: _Cursor, out: list[str], head: str) -> None:
             )
     cursor.expect("}")
     if "selector" not in fields and "assembler" not in fields:
-        raise V2Error(f"{head}: select needs when and/or during")
+        raise V2Error(f"{head}: select needs when and/or assembler")
     body = " ".join(f"{key} = {value};" for key, value in fields.items())
     out.append(f"{head} {{ {body} }}")
 
@@ -654,6 +659,24 @@ def _predicate_tii(cursor: _Cursor, out: list[str], name: str) -> None:
 def _extern(cursor: _Cursor, out: list[str]) -> None:
     tokens = cursor.collect({";"})
     cursor.expect(";")
+    values = [str(token.value) for token in tokens]
+    if "from" in values:
+        index = len(values) - 1 - values[::-1].index("from")
+        if index + 1 >= len(tokens) or tokens[index + 1].kind != "STRING":
+            raise V2Error(
+                "extern: 'from' takes the profile key as a string, e.g. "
+                'extern fn cycles(...) -> INT from "cycles";'
+            )
+        key = tokens[index + 1].value
+        out.append(f"{_render_tokens(tokens[:index])} : {key};")
+        return
+    if "->" in values:
+        after_type = values[values.index("->") + 2 :]
+        if ":" in after_type:
+            raise V2Error(
+                "extern: write the profile key after 'from', not ':' "
+                '(extern fn cycles(...) -> INT from "cycles";)'
+            )
     out.append(_render_tokens(tokens) + ";")
 
 
@@ -808,7 +831,18 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
                     f"line {token.line}:{token.col}: map values are sched_rw "
                     "names (a write or read), not expressions"
                 )
+            at = cursor.peek()
             value = cursor.ident() + _dim_index(cursor)
+            if "[" in value:
+                # The family scanner expands ``name[axis]`` only in statement
+                # heads; a map target is a value position, so a dimension index
+                # there would reach the flat parser as a stray bracket.  Refuse
+                # it here, where the line and column still mean something.
+                raise V2Error(
+                    f"line {at.line}:{at.col}: map: operand {index} names "
+                    f"{value!r}, but a map target cannot carry a dimension "
+                    "index; write one map per axis member"
+                )
             cursor.expect(";")
             if index in entries:
                 raise V2Error(f"map: duplicate operand index {index}")
@@ -824,11 +858,24 @@ def _machine_item(cursor: _Cursor, out: list[str]) -> None:
     if key == "map_itin":
         itins = cursor.list_tokens({";", "{", "->"})
         cursor.expect("->")
+        rw_token = cursor.peek()
         rw = cursor.list_tokens()
+        if "[" in rw[1:-1]:
+            raise V2Error(
+                f"line {rw_token.line}:{rw_token.col}: map_itin: a target "
+                "cannot carry a dimension index; write one map_itin per axis "
+                "member"
+            )
         cursor.expect(";")
         out.append(f"map_itin {itins} -> {rw};")
         return
     if key == "alias":
+        raise V2Error(
+            f"line {key_token.line}:{key_token.col}: 'alias' inside a machine "
+            "is the SchedAlias relation; write 'sched_alias' (the CPU alias is "
+            "'machine alias X = Y;')"
+        )
+    if key == "sched_alias":
         src = cursor.ident()
         cursor.expect("->")
         dst = cursor.ident()
@@ -961,6 +1008,13 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
                     cursor.expect("]")
                     itin_lines.append(f"stages = [{', '.join(stages)}];")
                 else:
+                    if itin_field == "cycles":
+                        raise V2Error(
+                            f"line {itin_token.line}:{itin_token.col}: "
+                            "itin 'cycles' was renamed to 'operand_cycles' "
+                            "(InstrItinData's operand cycles, not stage "
+                            "occupancy)"
+                        )
                     if itin_field not in field_types.ENTITY_FIELDS["itin"]:
                         raise V2Error(f"itin {name}: unknown field {itin_field!r}")
                     value = cursor.expr({";"})
@@ -972,7 +1026,8 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
                             f"line {itin_token.line}:{itin_token.col}: "
                             f"itin {name}.{itin_field}: {problem}"
                         )
-                    itin_lines.append(f"{itin_field} = {value};")
+                    emitted = "cycles" if itin_field == "operand_cycles" else itin_field
+                    itin_lines.append(f"{emitted} = {value};")
                 cursor.expect(";")
             cursor.expect("}")
             cursor.accept(";")
@@ -980,6 +1035,12 @@ def _itineraries(cursor: _Cursor, out: list[str]) -> None:
         else:
             field_token = cursor.peek()
             cursor.expect("=")
+            if field == "packetizer_namespace":
+                prefix.append(
+                    f"packetizer_namespace = {json.dumps(cursor.string())}"
+                )
+                cursor.expect(";")
+                continue
             value = cursor.expr({";"})
             cursor.expect(";")
             if field == "sched_model":
@@ -1058,7 +1119,7 @@ def _transpile(text: str) -> _Out:
             _extern(cursor, out)
         elif token.value == "machine":
             cursor.next()
-            role = cursor.ident()
+            role = _machine_role(cursor, token)
             if role == "alias":
                 name = cursor.ident()
                 cursor.expect("=")
@@ -1066,11 +1127,6 @@ def _transpile(text: str) -> _Out:
                 cursor.expect(";")
                 out.append(f"machine {name} = {target};")
                 continue
-            if role not in ("both", "family", "instance", "model", "cpu"):
-                raise V2Error(
-                    f"line {token.line}: unknown machine role {role!r}; "
-                    "use both|model|cpu|family|instance|alias"
-                )
             name = cursor.ident()
             params = ""
             if role == "family" and cursor.at("("):
@@ -1092,7 +1148,19 @@ def _transpile(text: str) -> _Out:
             while not cursor.at("}"):
                 item_token = cursor.peek()
                 before = len(body)
+                override = cursor.accept("override")
+                if override:
+                    item_token = cursor.peek()
                 _machine_item(cursor, body)
+                if override:
+                    if len(body) != before + 1:
+                        raise V2Error(
+                            f"line {item_token.line}:{item_token.col}: "
+                            "'override' prefixes one complete item "
+                            "(bind/resource/res_group/advance/variant/reg_file/"
+                            "write/read)"
+                        )
+                    body[before] = "override " + body[before]
                 body_lines.extend([item_token.line] * (len(body) - before))
                 if cursor.at(":") or cursor.at(","):
                     token = cursor.peek()
@@ -1127,6 +1195,28 @@ def to_v1_mapped(text: str) -> tuple[str, LineMap]:
     """Like :func:`to_v1`, but also return the v1-to-v2 line map."""
     out = _transpile(text)
     return "\n".join(out) + "\n", LineMap(tuple(out.lines), out.item_lines)
+
+
+MACHINE_ROLES = ("both", "alias", "family", "instance", "model", "cpu")
+
+
+def _machine_role(cursor: _Cursor, token: parser.Token) -> str:
+    """Read the optional role word; absent means ``both``.
+
+    A role word is only a role when a name follows it.  ``machine both { }``
+    therefore names a machine ``both`` instead of turning ``{`` into a name.
+    """
+    first = cursor.peek()
+    if first.kind != "IDENT" or str(first.value) not in MACHINE_ROLES:
+        return "both"
+    index = cursor.index + 1
+    if index >= len(cursor.tokens):
+        return "both"
+    after = cursor.tokens[index]
+    if after.kind != "IDENT":
+        return "both"
+    cursor.next()
+    return str(first.value)
 
 
 def _param_list(cursor: _Cursor) -> str:
