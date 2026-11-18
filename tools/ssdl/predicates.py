@@ -152,6 +152,10 @@ class PredicateLowerer:
         self.class_defs: dict[str, str] = {}
         self.sti_functions: dict[str, tuple[str | None, list[str]]] = {}
         self.global_defs: list[tuple[str, str]] = []
+        # ``map=`` predicates need a record of their own: ``FunctionMapper`` is
+        # a field, so it cannot ride on an inline expression.  One helper per
+        # (class, arguments, mapper) so two variants can share it.
+        self.mapped_defs: dict[str, str] = {}
         self.def_names: set[str] = set(self.reserved_names)
         self.errors: list[str] = []
         self.stack: list[str] = []
@@ -451,20 +455,27 @@ class PredicateLowerer:
                 "reg_simple": "CheckRegOperandSimple",
                 "imm_simple": "CheckImmOperandSimple",
             }[name]
-            self.reject_mapper(args[1:], where, name)
+            mapper = self.take_mapper(args[1:], where, name)
+            if mapper is not None:
+                return self.mapped(cls, [str(index)], mapper, where)
             return f"{cls}<{index}>"
         if name == "reg_is":
             index = self.operand_index(args[0], env, where)
-            self.reject_mapper(args[2:], where, name)
+            mapper = self.take_mapper(args[2:], where, name)
             regs = self.reg_list(args[1], where, env)
             if not regs:
                 return "FalsePred"
-            checks = [f"CheckRegOperand<{index}, {reg}>" for reg in regs]
+            checks = [
+                self.mapped("CheckRegOperand", [str(index), reg], mapper, where)
+                if mapper is not None
+                else f"CheckRegOperand<{index}, {reg}>"
+                for reg in regs
+            ]
             return checks[0] if len(checks) == 1 else f"CheckAny<{join_list(checks)}>"
         if name in ("imm_is", "imm_lt", "imm_gt", "imm_le", "imm_ge"):
             index = self.operand_index(args[0], env, where)
             value = self.int_arg(args[1], where, name)
-            self.reject_mapper(args[2:], where, name)
+            mapper = self.take_mapper(args[2:], where, name)
             cls = {
                 "imm_is": "CheckImmOperand",
                 "imm_lt": "CheckImmOperandLT",
@@ -472,17 +483,30 @@ class PredicateLowerer:
                 "imm_le": "CheckImmOperandLE",
                 "imm_ge": "CheckImmOperandGE",
             }[name]
+            if mapper is not None:
+                return self.mapped(cls, [str(index), str(value)], mapper, where)
             return f"{cls}<{index}, {value}>"
         if name == "imm_is_enum":
             index = self.operand_index(args[0], env, where)
             enum = self.string_arg(args[1], where, name)
-            self.reject_mapper(args[2:], where, name)
+            mapper = self.take_mapper(args[2:], where, name)
+            if mapper is not None:
+                return self.mapped(
+                    "CheckImmOperand_s", [str(index), td_str(enum)], mapper, where
+                )
             return f"CheckImmOperand_s<{index}, {td_str(enum)}>"
         if name == "imm_range":
             index = self.operand_index(args[0], env, where)
             start = self.int_arg(args[1], where, name)
             end = self.int_arg(args[2], where, name)
-            self.reject_mapper(args[3:], where, name)
+            mapper = self.take_mapper(args[3:], where, name)
+            if mapper is not None:
+                return self.mapped(
+                    "CheckImmOperandRange",
+                    [str(index), str(start), str(end)],
+                    mapper,
+                    where,
+                )
             return f"CheckImmOperandRange<{index}, {start}, {end}>"
         if name == "num_ops":
             return f"CheckNumOperands<{self.int_arg(args[0], where, name)}>"
@@ -513,12 +537,45 @@ class PredicateLowerer:
         self.error(where, f"unsupported predicate {name!r}")
         return "FalsePred"
 
-    def reject_mapper(self, extras: list, where: str, name: str) -> None:
+    def take_mapper(self, extras: list, where: str, name: str) -> str | None:
+        """Consume the optional ``map=`` argument, rejecting anything else."""
+        mapper: str | None = None
         for extra in extras:
             if extra[0] == "named" and extra[1] == "map":
-                self.error(where, f"{name}: map= is not lowered yet")
+                mapper = self.string_arg(extra[2], where, name)
             else:
                 self.error(where, f"{name}: unexpected argument {extra!r}")
+        return mapper
+
+    @staticmethod
+    def _mapped_stem(cls: str, args: list[str], mapper: str) -> str:
+        parts = [cls, *args, mapper]
+        stem = "_".join(re.sub(r"[^0-9A-Za-z]+", "_", part).strip("_") for part in parts)
+        return "Mapped_" + stem
+
+    def mapped(self, cls: str, args: list[str], mapper: str, where: str) -> str:
+        """Materialise ``cls<args>`` with ``FunctionMapper = mapper``.
+
+        ``CheckOperandBase`` carries the mapper as a record field, so the
+        predicate has to be a def.  Returns the def name to reference.
+        """
+        key = f"{cls}<{', '.join(args)}>|{mapper}"
+        name = self.mapped_defs.get(key)
+        if name is not None:
+            return name
+        name = td_def_name(self._mapped_stem(cls, args, mapper))
+        suffix = 2
+        base = name
+        while name in self.def_names:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        text = self.define(
+            where, name, cls, tuple(args), (("FunctionMapper", td_str(mapper)),)
+        )
+        self.register_def(name, where)
+        self.mapped_defs[key] = name
+        self.global_defs.append((name, text))
+        return name
 
     # -- SCHED predicates ------------------------------------------------
     def expr_sort(self, expr, env: dict[str, Any]) -> str:

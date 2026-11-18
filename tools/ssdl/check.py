@@ -738,12 +738,35 @@ def hook_lowering_negative_controls():
         ),
         (
             "machine M { write W; map [ADD] -> [W]; }\n"
-            "predicate P = reg_is(1, [X0], map = f);",
-            "map= is not lowered yet",
+            "predicate P = reg_is(1, [X0], map = f, bogus = g);",
+            "unexpected argument",
         ),
     ]
     for source, expected in cases:
         expect_emit_errors(source, [expected])
+
+
+@test
+def mapper_argument_becomes_a_record_field():
+    """``map=`` is a FunctionMapper field, so the atom needs its own def."""
+    source = """
+machine M {
+    resource P : units = 1;
+    write W;
+    bind W -> [P], latency = 1;
+    variant W {
+        case IsLSL: [W];
+        default: [W];
+    }
+}
+predicate IsLSL = all_of(opcode([ADDWrs]),
+                         imm_is_enum(3, "AArch64_AM::LSL",
+                                     map = "AArch64_AM::getShiftType"));
+"""
+    text, _ = emit_source(source)
+    assert_in("let FunctionMapper = \"AArch64_AM::getShiftType\";", text)
+    assert_in('CheckImmOperand_s<3, "AArch64_AM::LSL">', text)
+    assert_in("Mapped_CheckImmOperand_s_3_AArch64_AM_LSL", text)
 
 
 @test

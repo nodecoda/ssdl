@@ -117,9 +117,9 @@ def check_call(name: str, args: list) -> list[str]:
             continue
         value = arg[2]
         if extra == "map":
-            if value[0] not in ("ident", "call", "set_list"):
+            if value[0] not in ("ident", "call", "set_list", "string"):
                 problems.append(
-                    f"{name}: map= expects a set or predicate name, got {value!r}"
+                    f"{name}: map= expects a mapper name, got {value!r}"
                 )
         elif extra == "tii":
             if value[0] not in ("string", "ident"):
