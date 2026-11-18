@@ -34,10 +34,14 @@ Rules
   (``latency = 3 + 2 * LMUL``).  ``worst(AXIS)`` reuses the widest member's
   number.  A naming-only axis stays out of numeric fields, and using it there
   reports ``unknown parameter`` rather than inventing a value.
-* Numeric fields are ``latency``/``uops``/``cycles`` and the items of
-  ``release``/``acquire``.  The only kernels are ``cdiv`` (ceil), ``max`` and
-  ``min``; ``//`` is ``!div`` and ``/`` must divide exactly.  No recursion, no
-  user functions, no ``**``, no keyword arguments.
+* Every field typed by ``field_types.ENTITY_FIELDS`` is substitutable — the
+  same table the v2 front end and ``validate`` use.  That covers machine
+  properties (``issue_width = vlen / 128``), record bodies (``reg_file``,
+  ``retire_unit``, ``itin``), and both scalar and list fields.  A list field
+  may select between lists (``resources = wide ? [P] : [Q]``) and is folded to
+  a literal list during elaboration.  The only kernels are ``cdiv`` (ceil),
+  ``max``, ``min`` and ``log2``; ``//`` is ``!div`` and ``/`` must divide
+  exactly.  No recursion, no user functions, no ``**``, no keyword arguments.
 
 ``--check-coverage`` expands and then requires every declared dimensioned
 write to be bound and every bound name to be declared.  ``--add-axis-value``
@@ -53,6 +57,11 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:  # imported as ``ssdl.family_expand``
+    from . import field_types  # type: ignore
+except ImportError:  # imported as a top-level module by the CLI
+    import field_types  # type: ignore
 
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 SET_DECL_RE = re.compile(rf"^set\s+({IDENT})\s*=\s*(.+?)\s*:\s*(.+?)\s*;?\s*$")
@@ -370,8 +379,8 @@ def _eval_expr(
     return int(value)
 
 
-SCALAR_FIELD_RE = re.compile(r"^(latency|uops|cycles)\s*=\s*(.+)$")
-LIST_FIELD_RE = re.compile(r"^(release|acquire)\s*=\s*\[(.*)\]$")
+#: ``name = value`` at the start of a field, not part of ``==``/``!=``/``<=``.
+FIELD_RE = re.compile(rf"(?<![=!<>])\b({IDENT})\s*=(?!=)\s*")
 
 
 def _split_fields(text: str) -> list[str]:
@@ -393,38 +402,309 @@ def _split_fields(text: str) -> list[str]:
     return parts
 
 
-def _subst_fields(
-    text: str, env: dict[str, object], lookups: dict[str, object] | None = None
-) -> str:
-    """Evaluate the numeric fields of one statement.
+def _head_kind(text: str) -> str | None:
+    """The entity kind that owns the fields of one flat statement.
 
-    Fields are split before evaluation so a kernel argument may contain a
-    comma (``cdiv(a, b)``); a regex would cut the call in half.
+    ``machine`` bodies are a flat list of statements, so a statement that *is*
+    a field (``issue_width = 4``) belongs to the machine record itself.
     """
-    parts = _split_fields(text)
-    tail = ""
-    if parts and parts[-1].rstrip().endswith(";"):
-        parts[-1] = parts[-1].rstrip()[:-1]
-        tail = ";"
-    rendered: list[str] = []
-    for part in parts:
-        field = part.strip()
-        match = LIST_FIELD_RE.match(field)
-        if match:
-            items = [item.strip() for item in _split_fields(match.group(2)) if item.strip()]
-            values = ", ".join(
-                str(_eval_expr(item, env, lookups)) for item in items
-            )
-            rendered.append(f"{match.group(1)} = [{values}]")
+    if re.match(rf"\s*{IDENT}\s*=(?!=)", text):
+        return "machine"
+    match = re.match(rf"\s*({IDENT})\b", text)
+    return match.group(1) if match else None
+
+
+def _block_kind(head: str) -> str | None:
+    """The entity kind of a ``... {`` head: ``bind W -> [P]`` is a bind."""
+    match = re.match(rf"\s*({IDENT})\b", head)
+    return match.group(1) if match else None
+
+
+def _field_shape(kind: str | None, name: str) -> str | None:
+    """The shared shape of one field, or ``None`` when the field is opaque."""
+    if kind is None:
+        return None
+    table = field_types.ENTITY_FIELDS.get(kind)
+    if table is None:
+        return None
+    shape = table.get(name)
+    if shape is None and kind == "itin" and name == "cycles":
+        # ``cycles`` is the flat spelling of v2 ``operand_cycles``; the table
+        # keeps the v2 name, the flat text keeps the v1 one.
+        return field_types.INT_LIST
+    return shape
+
+
+def _skip_quoted(text: str, start: int, end: int) -> int:
+    index = start + 1
+    while index < end:
+        if text[index] == "\\":
+            index += 2
             continue
-        match = SCALAR_FIELD_RE.match(field)
-        if match:
-            rendered.append(
-                f"{match.group(1)} = {_eval_expr(match.group(2), env, lookups)}"
-            )
+        if text[index] == '"':
+            return index + 1
+        index += 1
+    return end
+
+
+def _skip_group(text: str, start: int, end: int, closer: str) -> int | None:
+    """The index just past a balanced group, or ``None`` when unbalanced."""
+    opener = text[start]
+    depth = 0
+    index = start
+    while index < end:
+        char = text[index]
+        if char == '"':
+            index = _skip_quoted(text, index, end)
             continue
-        rendered.append(field)
-    return ", ".join(rendered) + tail
+        if char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def _value_end(text: str, start: int) -> int:
+    """End of one field value: the next top-level separator.
+
+    ``,`` and ``;`` end a field, and so does a ``:`` that is *not* the ``:`` of
+    a ternary — ``advance R : cycles = 1 : writes = [W]`` uses ``:`` between
+    fields.
+    """
+    depth = 0
+    pending = 0
+    index = start
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            index = _skip_quoted(text, index, len(text))
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                return index
+            depth -= 1
+        elif depth == 0 and char == "?":
+            pending += 1
+        elif depth == 0 and char == ":":
+            if pending:
+                pending -= 1
+            else:
+                return index
+        elif depth == 0 and char in ",;":
+            return index
+        index += 1
+    return len(text)
+
+
+def _find_field(part: str, start: int = 0) -> tuple[str, int, int] | None:
+    """Locate ``name =`` outside strings and comparisons."""
+    index = start
+    while index < len(part):
+        char = part[index]
+        if char == '"':
+            index = _skip_quoted(part, index, len(part))
+            continue
+        match = FIELD_RE.match(part, index)
+        if match is not None:
+            return match.group(1), match.start(), match.end()
+        index += 1
+    return None
+
+
+def _select_branch(
+    value: str, env: dict[str, object], lookups: dict[str, object] | None
+) -> str | None:
+    """Choose a branch of a top-level ``cond ? a : b``, else ``None``."""
+    parts = _split_ternary(value)
+    if parts is None:
+        return None
+    condition, then, other = parts
+    return then if _eval_expr(condition, env, lookups) else other
+
+
+def is_list(text: str) -> bool:
+    """True for a bracketed list; ``[`` inside a string does not count."""
+    return text.strip().startswith("[") and text.strip().endswith("]")
+
+
+def _render_value(
+    shape: str,
+    value: str,
+    env: dict[str, object],
+    lookups: dict[str, object] | None,
+    where: str = "field",
+) -> str:
+    """Substitute one field value according to its shared shape."""
+    value = value.strip()
+    chosen = _select_branch(value, env, lookups)
+    if chosen is not None:
+        # The chosen branch may itself be a conditional.
+        return _render_value(shape, chosen, env, lookups, where)
+    if shape == field_types.STRING or shape.startswith("enum:"):
+        return value
+    if shape == field_types.IDENT:
+        return value
+    if shape in (field_types.IDENT_LIST, field_types.SCHED_RW_LIST):
+        if is_list(value):
+            return value
+        raise ExpandError(
+            f"{where}: expects a list, got {value!r} "
+            "(a conditional must choose between lists)"
+        )
+    if shape == field_types.INT_EXPR:
+        return str(_eval_expr(value, env, lookups))
+    if shape == field_types.BOOL:
+        folded = _eval_expr(value, env, lookups)
+        if folded not in (0, 1):
+            raise ExpandError(
+                f"{where}: expects true or false, got {value!r} = {folded}"
+            )
+        return "true" if folded else "false"
+    if shape in (field_types.INT_LIST, field_types.BOOL_LIST):
+        if not is_list(value):
+            raise ExpandError(
+                f"{where}: expects a list, got {value!r} "
+                "(a conditional must choose between lists)"
+            )
+        items = [item.strip() for item in _split_fields(value[1:-1]) if item.strip()]
+        if shape == field_types.BOOL_LIST:
+            rendered = []
+            for item in items:
+                folded = _eval_expr(item, env, lookups)
+                if folded not in (0, 1):
+                    raise ExpandError(
+                        f"{where}: expects true or false, got item {item!r} = {folded}"
+                    )
+                rendered.append("true" if folded else "false")
+        else:
+            rendered = [str(_eval_expr(item, env, lookups)) for item in items]
+        return "[" + ", ".join(rendered) + "]"
+    return value
+
+
+BIND_ARROW_RE = re.compile(r"^(\s*bind\s+\S+\s*->\s*)(.*)$", re.S)
+
+
+def _subst_part(
+    part: str,
+    env: dict[str, object],
+    lookups: dict[str, object] | None,
+    kind: str | None,
+) -> str:
+    """Substitute the single ``name = value`` carried by one field span."""
+    if kind == "bind":
+        # ``bind`` hoists its resource list out of the field list: the value
+        # sits after ``->`` and has no ``name =`` to find.
+        arrow = BIND_ARROW_RE.match(part)
+        if arrow is not None:
+            return arrow.group(1) + _render_value(
+                field_types.IDENT_LIST,
+                arrow.group(2),
+                env,
+                lookups,
+                "bind.resources",
+            )
+    pieces: list[str] = []
+    cursor = 0
+    while True:
+        found = _find_field(part, cursor)
+        if found is None:
+            break
+        name, _start, end = found
+        value_end = _value_end(part, end)
+        shape = _field_shape(kind, name)
+        if shape is None:
+            # Opaque field (``role``, ``packetizer_namespace``): keep it as is.
+            pieces.append(part[cursor:value_end])
+            cursor = value_end
+            continue
+        value_text = part[end:value_end]
+        stripped = value_text.rstrip()
+        pieces.append(part[cursor:end])
+        pieces.append(
+            _render_value(
+                shape, stripped, env, lookups,
+                f"{kind}.{name}" if kind else name,
+            )
+        )
+        # Keep the spacing before the separator (``cycles = 1 : writes``).
+        pieces.append(value_text[len(stripped):])
+        cursor = value_end
+    pieces.append(part[cursor:])
+    return "".join(pieces)
+
+
+def _subst_range(
+    text: str,
+    start: int,
+    end: int,
+    env: dict[str, object],
+    lookups: dict[str, object] | None,
+    kind: str | None,
+) -> str:
+    pieces: list[str] = []
+    segment = start
+    index = start
+    while index < end:
+        char = text[index]
+        if char == '"':
+            index = _skip_quoted(text, index, end)
+            continue
+        if char in "([":
+            after = _skip_group(text, index, end, ")" if char == "(" else "]")
+            index = after if after is not None else index + 1
+            continue
+        if char == "{":
+            after = _skip_group(text, index, end, "}")
+            head = text[segment:index]
+            pieces.append(_subst_part(head, env, lookups, kind))
+            pieces.append("{")
+            if after is None:
+                # An unbalanced ``{`` is a block head that the caller's
+                # statement splitter ended; the body is not ours to walk.
+                index += 1
+                segment = index
+                continue
+            pieces.append(
+                _subst_range(
+                    text, index + 1, after - 1, env, lookups, _block_kind(head) or kind
+                )
+            )
+            pieces.append("}")
+            index = after
+            segment = index
+            continue
+        if char in ",;":
+            pieces.append(_subst_part(text[segment:index], env, lookups, kind))
+            pieces.append(char)
+            index += 1
+            segment = index
+            continue
+        index += 1
+    pieces.append(_subst_part(text[segment:end], env, lookups, kind))
+    return "".join(pieces)
+
+
+def _subst_fields(
+    text: str,
+    env: dict[str, object],
+    lookups: dict[str, object] | None = None,
+    kind: str | None = None,
+) -> str:
+    """Substitute family parameters in every typed field of one statement.
+
+    The shape comes from ``field_types.ENTITY_FIELDS`` — the same table the v2
+    front end and ``validate`` use, so a field cannot be substitutable in one
+    place and opaque in another.  Nested record bodies (``reg_file``,
+    ``retire_unit``, ``itin``) keep their own kind, and a list field may be a
+    ``cond ? [..] : [..]`` conditional.
+    """
+    return _subst_range(text, 0, len(text), env, lookups, kind or _head_kind(text))
 
 
 def _scan_logical_lines(text: str) -> list[tuple[int, str]]:
@@ -649,12 +929,23 @@ def _profile_projections() -> dict[str, dict]:
     return _PROJECTIONS
 
 
+ROW_COLUMN_RE = re.compile(rf"^({IDENT})\s*=(?!=)\s*(.+)$")
+
+
 def _parse_relation(name: str, rhs: str, line_no: int) -> dict[tuple[int, ...], int]:
-    """``[(key, ..., value), ...]``; keys and values must be integers."""
+    """``[(key, ..., value), ...]``; keys and values must be integers.
+
+    Columns may be named: ``[(sew = 8, div = 1), (sew = 16, div = 15)]``.  A
+    name is documentation plus a consistency check — every row must name the
+    same columns in the same order, so a swapped pair or a typo is an error
+    instead of a silently transposed table.  Evaluation is unchanged.
+    """
     rhs = rhs.strip()
     if not (rhs.startswith("[") and rhs.endswith("]")):
         raise ExpandError(f"line {line_no}: relation {name} expects [(key, value), ...]")
     table: dict[tuple[int, ...], int] = {}
+    columns: tuple[str, ...] | None = None
+    named: bool | None = None
     for item in _split_fields(rhs[1:-1]):
         item = item.strip()
         if not item:
@@ -666,8 +957,42 @@ def _parse_relation(name: str, rhs: str, line_no: int) -> dict[tuple[int, ...], 
             raise ExpandError(
                 f"line {line_no}: relation {name} row {item!r} needs a key and a value"
             )
-        key = tuple(_eval_expr(part, {}) for part in parts[:-1])
-        value = _eval_expr(parts[-1], {})
+        row_columns: list[str] = []
+        values: list[str] = []
+        for part in parts:
+            match = ROW_COLUMN_RE.match(part)
+            if match is None:
+                values.append(part)
+            else:
+                row_columns.append(match.group(1))
+                values.append(match.group(2).strip())
+        row_named = bool(row_columns)
+        if named is None:
+            named = row_named
+        elif named != row_named:
+            raise ExpandError(
+                f"line {line_no}: relation {name} mixes named and positional "
+                "columns; name every column or none"
+            )
+        if named:
+            if len(row_columns) != len(values):
+                raise ExpandError(
+                    f"line {line_no}: relation {name} row {item!r} names only "
+                    f"{len(row_columns)} of {len(values)} columns"
+                )
+            if len(set(row_columns)) != len(row_columns):
+                raise ExpandError(
+                    f"line {line_no}: relation {name} row {item!r} repeats a column"
+                )
+            if columns is None:
+                columns = tuple(row_columns)
+            elif columns != tuple(row_columns):
+                raise ExpandError(
+                    f"line {line_no}: relation {name} row {item!r} has columns "
+                    f"{tuple(row_columns)}, expected {columns}"
+                )
+        key = tuple(_eval_expr(part, {}) for part in values[:-1])
+        value = _eval_expr(values[-1], {})
         if key in table:
             raise ExpandError(f"line {line_no}: relation {name} repeats key {key}")
         table[key] = value
@@ -1311,9 +1636,19 @@ def _expand_body(
 ) -> list[str]:
     out: list[str] = []
     emitted: dict[tuple[str, str], int] = {}
+    kinds: list[str] = []
     pos = 0
     while pos < len(body):
         stmt = body[pos]
+        if stmt.text in ("}", "};"):
+            if kinds:
+                kinds.pop()
+            out.append(stmt.text)
+            pos += 1
+            continue
+        kind = kinds[-1] if kinds else None
+        if stmt.text.endswith("{"):
+            kinds.append(_block_kind(stmt.text) or kind)
         variant = VARIANT_HEAD_RE.match(stmt.text)
         if variant:
             cases = []
@@ -1351,7 +1686,7 @@ def _expand_body(
                         f"(lines {emitted[key]} and {stmt.line})"
                     )
                 emitted[key] = stmt.line
-            out.append(_subst_fields(stmt.text, env, lookups))
+            out.append(_subst_fields(stmt.text, env, lookups, kind))
             continue
         keyword, base, index, rest = parsed
         try:
@@ -1386,7 +1721,7 @@ def _expand_body(
                 if lowered is not None:
                     out.extend(lowered)
                 else:
-                    out.append(_subst_fields(text, subst_env, lookups))
+                    out.append(_subst_fields(text, subst_env, lookups, kind))
         except ExpandError as exc:
             raise ExpandError(f"line {stmt.line}: {exc}") from exc
     return out

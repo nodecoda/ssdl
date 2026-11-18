@@ -2651,6 +2651,47 @@ def finite_relation_and_profile_projection_evaluate():
 
 
 @test
+def relation_columns_can_be_named():
+    """A named column is a documentation plus a consistency check."""
+    source = """
+set relation DivFactor = [(sew = 8, div = 1), (sew = 16, div = 15), (sew = 32, div = 28)];
+machine m {
+    resource P { units = 1; }
+    write W;
+    bind W { resources = [P]; latency = DivFactor(16); }
+}
+"""
+    flat = parser.expand_source(source, syntax="v2")
+    assert_in("latency = 15;", flat)
+
+    def expand_error(source: str) -> str:
+        try:
+            parser.expand_source(source, syntax="v2")
+        except family_mod.ExpandError as exc:
+            return str(exc)
+        raise Failure(f"expected an ExpandError for:\n{source}")
+
+    assert_in(
+        "names only 1 of 2 columns",
+        expand_error("set relation R = [(sew = 8, 1)];\nmachine m { write W; }\n"),
+    )
+    assert_in(
+        "mixes named and positional columns",
+        expand_error(
+            "set relation R = [(sew = 8, div = 1), (16, 15)];\n"
+            "machine m { write W; }\n"
+        ),
+    )
+    assert_in(
+        "has columns ('sew', 'div'), expected ('sew', 'factor')",
+        expand_error(
+            "set relation R = [(sew = 8, factor = 1), (sew = 16, div = 15)];\n"
+            "machine m { write W; }\n"
+        ),
+    )
+
+
+@test
 def relation_miss_lists_the_domain():
     source = """
 set F : kind = relation = [(8, 1), (16, 15)];
@@ -3688,6 +3729,120 @@ def v2_instance_override_replaces_one_statement():
         "override is only valid in a machine instance",
         expand_error(
             "machine m { write W; override bind W { resources = [P]; latency = 1; } }\n"
+        ),
+    )
+
+
+@test
+def v2_list_fields_take_parameters_and_conditionals():
+    """A list field may be a parameter or choose between lists."""
+    source = """
+machine family f(wide: BOOL) {
+  resource P { units = 1; }
+  resource Q { units = 2; }
+  write W;
+  bind W {
+    resources = wide ? [P] : [Q];
+    latency   = wide ? 4 : 7;
+    release   = [wide ? 1 : 2];
+  }
+}
+machine instance yes : f(true) { }
+machine instance no  : f(false) { }
+"""
+    text, skips = emit_source(family_mod.expand(syntax_v2.to_v1(source)), strict=True)
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    assert_in("WriteRes<W, [yes_P]>", text)
+    assert_in("let Latency = 4;", text)
+    assert_in("let ReleaseAtCycles = [1];", text)
+    assert_in("WriteRes<W, [no_Q]>", text)
+    assert_in("let Latency = 7;", text)
+    assert_in("let ReleaseAtCycles = [2];", text)
+
+    def expand_error(source: str) -> str:
+        try:
+            family_mod.expand(syntax_v2.to_v1(source))
+        except family_mod.ExpandError as exc:
+            return str(exc)
+        raise Failure(f"expected an ExpandError for:\n{source}")
+
+    assert_in(
+        "bind.resources: expects a list",
+        expand_error(
+            """
+machine family f(wide: BOOL) {
+  write W;
+  bind W { resources = wide ? P : [P]; latency = 1; }
+}
+machine instance a : f(true) { }
+"""
+        ),
+    )
+
+
+@test
+def v2_record_fields_take_family_parameters():
+    """Machine properties and record bodies substitute like any other field."""
+    source = """
+machine family f(n: INT) {
+  issue_width  = n;
+  load_latency = n / 2;
+  reg_file GPR { num_phys = n; classes = [GPR]; costs = [1]; allow_move_elim = [true]; }
+  retire_unit { buffer = n; max_per_cycle = 2; }
+  write W;
+  resource P { units = 1; }
+  bind W { resources = [P]; latency = n; }
+}
+machine instance a : f(8) { }
+"""
+    text, skips = emit_source(family_mod.expand(syntax_v2.to_v1(source)), strict=True)
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    assert_in("let IssueWidth = 8;", text)
+    assert_in("let LoadLatency = 4;", text)
+    assert_in("RegisterFile<8, [GPR], [1], [true]>", text)
+    assert_in("RetireControlUnit<8, 2>", text)
+    assert_in("let Latency = 8;", text)
+
+
+@test
+def v2_bool_fields_fold_to_true_and_false():
+    """Bool fields accept a parameter or a comparison and fold to a literal."""
+    source = """
+machine family f(n: INT) {
+  post_ra_scheduler = n > 1;
+  enable_intervals  = n > 4;
+  retire_unit { buffer = 8; max_per_cycle = 2; }
+  write W;
+  resource P { units = 1; }
+  bind W { resources = [P]; latency = 1; }
+}
+machine instance wide : f(8) { }
+machine instance tiny : f(2) { }
+"""
+    text, _skips = emit_source(family_mod.expand(syntax_v2.to_v1(source)), strict=True)
+    wide, tiny = text.split("def tinyModel : SchedMachineModel")
+    assert_in("let PostRAScheduler = true;", wide)
+    assert_in("let EnableIntervals = true;", wide)
+    assert_in("let PostRAScheduler = true;", tiny)
+    assert_in("let EnableIntervals = false;", tiny)
+
+    def expand_error(source: str) -> str:
+        try:
+            family_mod.expand(syntax_v2.to_v1(source))
+        except family_mod.ExpandError as exc:
+            return str(exc)
+        raise Failure(f"expected an ExpandError for:\n{source}")
+
+    assert_in(
+        "machine.post_ra_scheduler: expects true or false, got '3' = 3",
+        expand_error("machine m { post_ra_scheduler = 3; }\n"),
+    )
+    assert_in(
+        "reg_file.allow_move_elim: expects true or false, got item 'n % 5' = 3",
+        expand_error(
+            "machine family f(n: INT) { reg_file GPR { num_phys = 8; "
+            "classes = [GPR]; costs = [1]; allow_move_elim = [n % 5]; } }\n"
+            "machine instance m : f(8) { }\n"
         ),
     )
 

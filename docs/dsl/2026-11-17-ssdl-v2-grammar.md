@@ -146,6 +146,9 @@ projection
 - `set dimension X = [...] { name_format = "..."; units = [...]; }`：
   每个成员有一个显示后缀与可选整数投影；`projections` 增加 `X.key` 查表。
 - `set relation X = [(k1, k2, ...), ...];`：有限 n 元关系，键必须唯一，空表报错。
+  列可以命名：`[(sew = 8, div = 1), ...]`。名字是文档加一致性检查——每行必须
+  命名同样的列且顺序一致，写错或交换位置会报错，而不是悄悄转置一张表。
+  命名与位置两种写法不能混用；求值语义完全相同。
 
 `name_format` 只能包含一个 `{value}`；`units` 与成员一一对应；缺失 `units`
 的维度不能用于数值表达式。
@@ -160,6 +163,12 @@ set dimension SEW = [8, 16, 32, 64] {
 }
 
 set relation DivFactor = [(8, 1), (16, 15), (32, 28), (64, 57)];
+
+# 命名列：同样的表，列义写在行内
+set relation DivFactor2 = [
+    (sew = 8,  div = 1),
+    (sew = 16, div = 15),
+];
 ```
 
 ---
@@ -807,6 +816,35 @@ call
 - 阶段规则不变：ELAB 全折叠；RUNTIME 只允许进入 `bind` 的
   `latency`/`uops`/`cycles` 标量字段。
 
+### 7.0 字段代入：一处表，两种分派
+
+`field_types.ENTITY_FIELDS` 同时决定**形状检查**和**代入规则**：前端按形状
+判断「这个位置该放什么」，elaborator 按同一张表决定「这个位置怎么求值」。
+一个字段不可能在一处可代入、在另一处不透明。
+
+| 形状 | 代入方式 |
+|---|---|
+| `int_expr` | 求值，折叠成整数 |
+| `bool` | 求值，折叠成 `true`/`false`；结果必须是 0/1 |
+| `ident` / `string` / `enum` | 不代入（名字与字面量） |
+| `int_list` / `bool_list` | 逐项求值并折叠 |
+| `ident_list` / `sched_rw_list` | 不代入名字；**值整体可以是一个条件** |
+| `stage` 列表 | 不代入（`stage(...)` 的参数目前是字面量） |
+
+**列表位置的条件表达式**：列表字段可以写成
+`resources = wide ? [P] : [Q]`。条件在 ELAB 阶段求值，分支必须仍是列表
+（否则报 `expects a list`）。RUNTIME 阶段仍只认 `bind` 的
+`latency`/`uops`/`cycles` 标量，列表条件不允许留到运行时。
+
+**bool 字段**：`post_ra_scheduler = n > 1` 与
+`allow_move_elim = [n > 1]` 都成立；折叠结果必须是 0/1，字面量 `3` 在
+ELAB 阶段报 `expects true or false, got '3' = 3`，前端仍直接拒绝 `[3]`
+这类明显的形状错误。
+
+**实体归属**：flat 文本把块头（`reg_file GPR {`）与字段分成不同语句，
+所以 elaborator 维护一个块栈，`num_phys = n` 按 `reg_file` 的形状求值；
+语句级裸字段（`issue_width = n`）按 `machine` 的形状求值。
+
 ### 7.1 编译期属性条件
 
 `inst(attr_cond)` / `reg(attr_cond)` 使用独立的属性表达式：
@@ -1185,6 +1223,14 @@ validate → emit_td → 两条 equiv 对拍。结果是 **14/14 `records match`
   §1.1 对齐，拼写仍按原样进入 flat 文本，`emit_td` 负责把 `-` 转成 `_`。
 - `machine alias X = Y;` 只对 parser 路径有意义；`SemProgram` 没有 alias 节点，
   所以 AC4 的 IR parity 不覆盖它。
+- `reg_file` 的名字不做实例消歧：`resource` 会按 `<machine>_<local>` 重命名，
+  但 `reg_file` 保持作者写的名字。因此一个 family 有两个实例、又各自声明
+  `reg_file` 时，第二个实例会撞上第一个的 def（`emitted def 'GPR' collides`）。
+  上游 RISC-V/AArch64 调度模型目前都不声明 `RegisterFile`，所以这是记录模型的
+  边界而不是现实缺口；需要时把 `reg_file` 移出 family，或给每个实例单独命名。
+- `stage(...)` 的参数不参与代入：`stages` 是一个 `stage(...)` 调用列表，不在
+  `ENTITY_FIELDS` 的形状表里，所以 `stage(n, [FU])` 不折叠。`itin` 的
+  `operand_cycles`、`cycles` 与 `uops` 代入正常。
 - 全局 `itineraries` 在 IR 里是原样透传文本，源文件的对齐空格不属于契约；
   AC4 只比较 `Symbol`、`spelling`、`phase` 与机器内语句文本。
 - §8 的 `dim_index` 在 `map`/`map_itin` 的 `sched_rw` 目标位置尚未实现：

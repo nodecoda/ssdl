@@ -25,6 +25,7 @@ SCHED_RW_LIST = "sched_rw_list"
 STRING = "string"
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_INT_LITERAL_RE = re.compile(r"^[+-]?[0-9]+$")
 _SCHED_RW_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(\[[^\]]*\])?$")
 
 #: entity kind -> field -> expected shape
@@ -144,6 +145,33 @@ def split_list(text: str) -> list[str]:
     return [item for item in items if item]
 
 
+def is_conditional(text: str) -> bool:
+    """True when ``text`` has a top-level ``?`` (a deferred ``a ? b : c``).
+
+    The front end cannot evaluate a family parameter, so a list field spelled
+    as a conditional is accepted by shape and folded during elaboration.
+    """
+    body = text.strip()
+    depth = 0
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char == '"':
+            index += 1
+            while index < len(body) and body[index] != '"':
+                index += 2 if body[index] == "\\" else 1
+            index += 1
+            continue
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif char == "?" and depth == 0:
+            return True
+        index += 1
+    return False
+
+
 def classify(text: str) -> str:
     """Classify a rendered value as string / bool / list / expr / empty."""
     body = text.strip()
@@ -178,7 +206,9 @@ def value_error(expected: str, text: str) -> str | None:
             return f"expects a string, got {actual}"
         return None
     if expected == BOOL:
-        if actual != "bool":
+        # A family parameter or a conditional is folded during elaboration;
+        # the folded value must be 0/1, which ``family_expand`` enforces.
+        if actual not in ("bool", "expr"):
             return f"expects true or false, got {body or 'nothing'}"
         return None
     if expected == INT_EXPR:
@@ -190,6 +220,8 @@ def value_error(expected: str, text: str) -> str | None:
             return f"expects an identifier, got {body or 'nothing'}"
         return None
     if expected == INT_LIST:
+        if actual == "expr" and is_conditional(body):
+            return None
         if actual != "list":
             return f"expects an integer list, got {actual}"
         for item in split_list(body):
@@ -197,13 +229,23 @@ def value_error(expected: str, text: str) -> str | None:
                 return f"expects an integer list, got item {item!r}"
         return None
     if expected == BOOL_LIST:
+        if actual == "expr" and is_conditional(body):
+            return None
         if actual != "list":
             return f"expects a true/false list, got {actual}"
         for item in split_list(body):
-            if classify(item) != "bool":
-                return f"expects a true/false list, got item {item!r}"
+            # An item may be folded later (``n > 1`` becomes true/false), but
+            # a bare integer is never a bool, so reject it here.
+            item_kind = classify(item)
+            if item_kind == "bool":
+                continue
+            if item_kind == "expr" and not _INT_LITERAL_RE.match(item.strip()):
+                continue
+            return f"expects a true/false list, got item {item!r}"
         return None
     if expected == IDENT_LIST:
+        if actual == "expr" and is_conditional(body):
+            return None
         if actual != "list":
             return f"expects an identifier list, got {actual}"
         for item in split_list(body):
@@ -211,6 +253,8 @@ def value_error(expected: str, text: str) -> str | None:
                 return f"expects an identifier list, got item {item!r}"
         return None
     if expected == SCHED_RW_LIST:
+        if actual == "expr" and is_conditional(body):
+            return None
         if actual != "list":
             return f"expects a write/read list, got {actual}"
         for item in split_list(body):
