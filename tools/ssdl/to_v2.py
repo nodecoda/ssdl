@@ -414,9 +414,13 @@ def _map(text: str) -> list[str]:
         raise ToV2Error(f"map without '->': {text!r}")
     insts = mapping[:arrow].strip()
     rw = mapping[arrow + 2 :].strip()
-    fields = [f"{index} = {item};" for index, item in enumerate(_list_items(rw))]
-    if unsupported is not None:
-        fields.append(f"unsupported = {unsupported};")
+    items = _list_items(rw)
+    if unsupported is None:
+        # Dense positions: the v2 list form reads like the v1 surface and like
+        # InstRW.  The block form is kept for ``unsupported``.
+        return [f"map {insts} -> [{', '.join(items)}];"]
+    fields = [f"{index} = {item};" for index, item in enumerate(items)]
+    fields.append(f"unsupported = {unsupported};")
     return [f"map {insts} {{ {' '.join(fields)} }};"]
 
 

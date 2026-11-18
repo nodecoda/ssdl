@@ -3736,28 +3736,17 @@ def v2_instance_override_replaces_one_statement():
 @test
 def v2_list_fields_take_parameters_and_conditionals():
     """A list field may be a parameter or choose between lists."""
-    source = """
-machine family f(wide: BOOL) {
-  resource P { units = 1; }
-  resource Q { units = 2; }
-  write W;
-  bind W {
-    resources = wide ? [P] : [Q];
-    latency   = wide ? 4 : 7;
-    release   = [wide ? 1 : 2];
-  }
-}
-machine instance yes : f(true) { }
-machine instance no  : f(false) { }
-"""
+    source = (ROOT / "tests/ssdl/v2/list-cond-v2.ssdl").read_text(encoding="utf-8")
     text, skips = emit_source(family_mod.expand(syntax_v2.to_v1(source)), strict=True)
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
-    assert_in("WriteRes<W, [yes_P]>", text)
+    assert_in("WriteRes<W, [narrow_Narrow]>", text)
     assert_in("let Latency = 4;", text)
     assert_in("let ReleaseAtCycles = [1];", text)
-    assert_in("WriteRes<W, [no_Q]>", text)
+    assert_in("let PostRAScheduler = true;", text)
+    assert_in("WriteRes<W, [broad_Wide]>", text)
     assert_in("let Latency = 7;", text)
     assert_in("let ReleaseAtCycles = [2];", text)
+    assert_in("let EnableIntervals = false;", text)
 
     def expand_error(source: str) -> str:
         try:

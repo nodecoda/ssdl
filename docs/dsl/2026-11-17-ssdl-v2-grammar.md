@@ -1043,6 +1043,11 @@ name_template
   `name = "PipeA_{vlen}"` 必须在有限域上单射。
 - v2.0 只有 `resource`/`res_group` 接受 `name` 模板；被 `SchedRW` 引用的
   write/read 接口名仍默认显式（`name` 模板是 v2.1 候选）。
+- 名字构造有三条现成通道，不需要通用的「参数拼进标识符」：
+  ①多实例冲突由 elaborator 自动消歧（`<machine>_<local>`，只在冲突时）；
+  ②维度成员由 `name_format = "_{value}"` 生成；③需要显式命名时用
+  `resource`/`res_group` 的 `name = "Pipe{param}"`。通用拼接会引入命名注入面，
+  并与①的自动消歧互相打架，所以不做。
 - **占位符有两套，各有明确位置**：`name_format` 只接受 `{value}`（维度的
   成员），`name` 模板只接受 `{param}`（family 参数）。写错位置会报错，而不是
   留下字面量花括号：
@@ -1134,7 +1139,10 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 | `write` / `read` / `write_seq` | `v2/entities-v2.ssdl` | ✓ P2 |
 | `reg_file` / `retire_unit` / queues | `v2/entities-v2.ssdl` | ✓ P2 |
 | `bind` / `advance` | `v2/multiline-v2.ssdl` | ✓ P2 |
-| `map` 显式下标 | `v2/map-v2.ssdl` | ✓ P2 |
+| `map` 显式下标 / 密集列表 | `v2/map-v2.ssdl` | ✓ P2 |
+| `instance override`（整条替换） | `v2/instance-override-v2.ssdl` | ✓ P2b |
+| 列表条件 / bool 字段折叠 | `v2/list-cond-v2.ssdl` | ✓ P2b |
+| `set relation` 命名列 | `v2/projection-contract-v2.ssdl` | ✓ P2b |
 | `map=`（FunctionMapper helper def） | `aarch64/mapper.ssdl` | ✓ AArch64 G1 |
 | `variant` / `read_variant` | `v2/variants-v2.ssdl` | ✓ P2 |
 | `sched_alias` | `v2/sifive7-mini-v2.ssdl` | ✓ P1 |
@@ -1245,3 +1253,29 @@ validate → emit_td → 两条 equiv 对拍。结果是 **14/14 `records match`
   （带行号与「每个成员写一条」的提示），不再产出错行错列的
   `expected ']', got '['`。实现展开属于后续工作，不影响现有 45 个模型。
 
+---
+
+## 16. 设计决策记录（已拍板，不是待办）
+
+判据只有三条：**表达力、心智负担、领域命名**。不因「TD 有」而拒，也不因
+「TD 没有」而禁；每一条都按真实模型的证据裁决。
+
+### 16.1 参数不参与通用标识符拼接
+
+三条自动通道已经覆盖多实例、维度与显式命名（见 §8）。再加一条通用拼接规则
+只会增加一个必须记住的上下文，并与自动消歧争抢同一个名字。将来若出现真实
+模型需要按实例命名的 `write`/`read`，再开 v2.1；当前不做。
+
+### 16.2 CPU 名里的 `-` 保持裸名
+
+`ssdl-sifive-7` 原样书写。词法规则是上下文无关的（§1.1）：`-` 属于 IDENT，
+`->` 在词法阶段优先匹配，数值字段另按 §7 解析。改成 TD 那样的字符串只会让
+词法表短一点，却要迁移 31 个已逐一对拍的 AArch64 模型名，并牺牲
+`machine alias X = Y` 的裸名可读性。收益不抵成本。
+
+### 16.3 `feature kind = extension|tune` 是 RISC-V 的落点
+
+`version`/`bitmask`/`experimental` 与 `positive_directive`/`negative_directive`
+是 RISC-V ISA 策略与调优策略的挂点；其他目标只落 `plain`（`targets.py` 里
+AArch64 的 extension/tune class 为 `None`）。改名成 `isa_policy` 会丢掉领域词
+（RISC-V 就叫 extension），所以只做文档澄清，不改名。

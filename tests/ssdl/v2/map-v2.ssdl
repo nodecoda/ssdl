@@ -1,11 +1,10 @@
-# v2 twin of tests/ssdl/map.ssdl: the operand position is written.
+# v2 twin of tests/ssdl/map.ssdl: both spellings produce the same InstRW.
+# The list form is dense (position = operand index); the block form is kept
+# for sparse positions and for `unsupported`.
 machine family mapcpu {
     write W;
     read R;
-    map [ADD, SUB] {
-        0 = W;
-        1 = R;
-    }
+    map [ADD, SUB] -> [W, R];
     map [LD] {
         0 = W;
     }

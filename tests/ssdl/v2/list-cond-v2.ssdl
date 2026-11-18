@@ -1,0 +1,16 @@
+# List fields and bool fields take family parameters.
+machine family widish(wide: BOOL, n: INT) {
+    post_ra_scheduler = n > 1;
+    enable_intervals  = n > 4;
+    resource Narrow { units = 1; }
+    resource Wide   { units = 2; }
+    write W;
+    bind W {
+        resources = wide ? [Narrow] : [Wide];
+        latency   = wide ? 4 : 7;
+        release   = [wide ? 1 : 2];
+    }
+}
+
+machine instance narrow : widish(true, 2) { }
+machine instance broad  : widish(false, 8) { }

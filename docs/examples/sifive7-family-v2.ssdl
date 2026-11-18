@@ -3729,7 +3729,7 @@ machine family siFive7(vlen: INT) {
         case all_of(feature(TuneOptimizedZeroStrideLoad), reg_is(3, X0)): [WriteVLDS8_M8_Pred];
         default: [WriteVLDS8_M8_NoPred];
     }
-    map [COPY] { 0 = WriteIALU; };
+    map [COPY] -> [WriteIALU];
 }
 machine instance sifive_7_series : siFive7(512) {
     tune_features = [TuneSiFive7, TuneNoDefaultUnroll, TuneShortForwardBranchIALU, TunePostRAScheduler];
