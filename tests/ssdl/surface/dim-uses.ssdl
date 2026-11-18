@@ -1,0 +1,49 @@
+# Dimension use sites: one declaration per axis, subsets at the use.
+set dimension LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] {
+    name_format = "_{value}";
+    units = [1, 2, 4, 8, 16, 32, 64];
+}
+set dimension LMUL_MF4_M4 = [MF4, MF2, M1, M2, M4] {
+    name_format = "_{value}";
+    units = [2, 4, 8, 16, 32];
+}
+set dimension SEW = [8, 16, 32, 64] {
+    name_format = "_E{value}";
+    units = [8, 16, 32, 64];
+}
+set dimension SEW_Pred = [16, 32, 64] {
+    name_format = "_E{value}_Pred";
+    units = [16, 32, 64];
+}
+
+feature plain HasF {
+    mattr = "has-f";
+    field = "HasF";
+    value = "true";
+}
+
+machine both dims {
+    resource P {
+        units = 1;
+    }
+
+    write W[LMUL in [MF4, MF2, M1, M2, M4], SEW in [64]];
+    write W[LMUL, SEW_Pred];
+    bind W[LMUL in [MF4, MF2, M1, M2, M4], SEW in [64]] {
+        resources = [P];
+        latency = 4;
+        release = [1, LMUL // 4];
+    }
+
+    write W[worst(LMUL_MF4_M4), SEW in [64]];
+    bind W[worst(LMUL_MF4_M4), SEW in [64]] {
+        resources = [P];
+        latency = 4;
+        release = [1, LMUL_MF4_M4 // 4];
+    }
+
+    variant W[LMUL in [MF4, MF2, M1, M2, M4], SEW in [64]] {
+        case feature(HasF): [W[LMUL, SEW_Pred]];
+        default: [W[LMUL, SEW]];
+    }
+}

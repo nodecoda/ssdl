@@ -1,6 +1,7 @@
 # SSDL 解析器与最小展开器：实现记录
 
 - date: 2026-11-16
+- status: **历史**。记录 v1.1 解析器与最小展开器；现行表面与 IR 分层见 `2026-11-18-ssdl-one-surface.md`。
 - 上游文档：`history/2026-11-16-ssdl-v1.0-final.md`（未改动）
 - 上游评审：`2026-11-16-ssdl-review.md`（未改动）
 - 代码：`tools/ssdl/{parser,emit_td,compare,check}.py`

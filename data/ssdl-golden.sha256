@@ -1,5 +1,6 @@
 # SSDL family expansion golden; regenerate with tools/ssdl/golden.py --write
 e3c1e0992db942c58553fadab61dba87e749cc9579e9c44b5ea7729bf4e0cf49  fixture:docs/examples/sifive7-family.ssdl
+8823592af2f5a18bde63c39b223784c84885dc8be9003fe5525b3f6094559333  fixture:tests/ssdl/dim-uses.ssdl
 7675b2bb64b03b3e3e276870c98fdbcec2b681c9ac2c6274b12a0fe44fef2deb  fixture:tests/ssdl/family-mini.ssdl
 4d6612334c31686a0f931e957f4ada492b7d6597c92b6fb441f3bb835d7e2737  fixture:tests/ssdl/machine-roles.ssdl
 8351f24374c4ca06f257adbed3a2f747fb2d128b89e9f75b22b87e6ee71b52bd  fixture:tests/ssdl/multiline.ssdl

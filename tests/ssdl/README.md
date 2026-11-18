@@ -18,5 +18,11 @@ are split so the directory tells you which layer a file belongs to.
   `return` in a TII hook).  When the surface grows a spelling, the fixture
   moves to `surface/` and the row in `ir-only/README.md` is deleted.
 
+`surface/dim-uses.ssdl` pins the dimension rules that are easiest to regress:
+one declaration per axis, subsets at the use site (`SEW in [64]`), and
+`worst(<narrow view>)` for a base whose widest member is below the axis
+maximum.  A `variant` case selects a record through a view name, never
+through `in [...]` — TableGen has no per-case membership condition.
+
 Shared inputs (`attrs.json`, `stub-target/`, `*.expected.td`) live here because
 they serve both layers.

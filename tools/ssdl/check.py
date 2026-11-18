@@ -3044,6 +3044,30 @@ def sifive7_vlde_family_matches_upstream_values():
 
 
 @test
+def dimension_subsets_stay_at_the_use_site():
+    """`in [...]` narrows the use; `worst` reads the narrow view's widest.
+
+    SiFive7's ``_WorstCase`` copies the widest member the base covers, not the
+    axis maximum (MF8..M4 -> M4=32).  A variant selection keeps the selected
+    view's suffix; narrowing there would be a condition TableGen cannot encode.
+    """
+    source = (ROOT / "tests/ssdl/dim-uses.ssdl").read_text(encoding="utf-8")
+    flat = family_mod.expand(source)
+    assert_true(
+        "write W_MF4_E64;" in flat and "write W_MF8_E16_Pred;" in flat,
+        "use-site subsets did not expand to their concrete members",
+    )
+    assert_true(
+        "bind W_WorstCase_E64 -> [P], latency = 4, release = [1, 8];" in flat,
+        "worst() must use the narrow view's widest member (M4=32 -> 8)",
+    )
+    assert_true(
+        "case feature(HasF): [W_M4_E64_Pred];" in flat,
+        "a variant selection must keep the selected view's suffix",
+    )
+
+
+@test
 def family_name_format_makes_multi_axis_names_enumerable():
     """NF/EEW/LMUL must reproduce upstream names without free-form concatenation.
 
@@ -3513,6 +3537,7 @@ V2_FIXTURES = [
         "tests/ssdl/projection-contract.ssdl",
         "tests/ssdl/surface/projection-contract.ssdl",
     ),
+    ("dim-uses", "tests/ssdl/dim-uses.ssdl", "tests/ssdl/surface/dim-uses.ssdl"),
 ]
 
 

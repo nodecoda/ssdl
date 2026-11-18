@@ -1459,6 +1459,15 @@ def _subject_axis(
         for subject in mapping
         if subject in dimensions and dimensions[subject].values == dimensions[axis].values
     ]
+    if not candidates:
+        # The subject may narrow the axis at the use site (``SEW in [64]``),
+        # so its declared member set can be wider than the selection's view.
+        # The axis is still the same one if this site's member is available.
+        candidates = [
+            subject
+            for subject in mapping
+            if subject in dimensions and mapping[subject] in dimensions[axis].values
+        ]
     if len(candidates) != 1:
         raise ExpandError(
             f"line {line}: selection {base} uses {axis!r}, which does not name an axis "

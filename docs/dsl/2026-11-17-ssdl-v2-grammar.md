@@ -290,7 +290,7 @@ predicate tii IsDependencyBreaking {
 
 > 注：同一名字不能同时声明为 `sti` 与 `tii`；上例只展示两种形态。
 > Phase 5 决策门已通过：`select`/`sti`/`tii` 的 records 与 v1
-> 逐字段一致（`v2/sifive7-mini-v2.ssdl` 对拍 `sifive7-mini.expected.td`），
+> 逐字段一致（`tests/ssdl/surface/sifive7-mini.ssdl` 对拍 `sifive7-mini.expected.td`），
 > 因此 v2.0 删除 `predicate_prolog`/`sti_decl`/`sti_function`/`tii_predicate`
 > 四个顶层关键字，§11 的降级预案不启用。
 
@@ -1049,6 +1049,14 @@ name_template
   ②维度成员由 `name_format = "_{value}"` 生成；③需要显式命名时用
   `resource`/`res_group` 的 `name = "Pipe{param}"`。通用拼接会引入命名注入面，
   并与①的自动消歧互相打架，所以不做。
+- **一个轴只声明一次，子集留在使用点**：维度声明取该轴在本模型中的成员并集；
+  某个语句只需要子集时写 `SEW in [64]`，不得为每个子集另造 `SEW_17` 之类的
+  编号声明。只有 `worst(AXIS)` 需要「该 base 实际覆盖的最宽成员」时，才允许
+  声明成员表更窄的视图（例如 `LMUL_MF8_M4`），因为 `worst` 读的是视图自己的
+  `units` 末尾。
+- **`variant` 的 selected 列表不参与 `in [...]` 收窄**：case 选中的记录按
+  subject 当前成员取名，收窄在 TableGen 里没有对应条件。需要另一种
+  `name_format` 时，先声明该格式的视图，再在 selected 里直接引用视图名。
 - **占位符有两套，各有明确位置**：`name_format` 只接受 `{value}`（维度的
   成员），`name` 模板只接受 `{param}`（family 参数）。写错位置会报错，而不是
   留下字面量花括号：
@@ -1121,40 +1129,40 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 
 | 产生式 | fixture | 状态 |
 |---|---|---|
-| `set instructions` | `v2/sets.ssdl` | P3 |
-| `set dimension`（基本形式） | `v2/family-mini-v2.ssdl` | ✓ P2 |
-| `set dimension` + units/projections | `v2/machine-roles-v2.ssdl` | ✓ P3 |
-| `set relation` | `v2/projection-contract-v2.ssdl` | ✓ P2 |
-| `predicate` 表达式 | `v2/predicates-v2.ssdl` | ✓ P3 |
-| `predicate : select` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
-| `predicate prolog` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
-| `predicate : sti` / `: tii` | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
-| `predicate tii` + `method =` + `mc(TII)` | `aarch64/tii.ssdl` | ✓ AArch64 P2 |
-| `feature` plain/extension/tune | `v2/machine-roles-v2.ssdl` | ✓ P3 |
-| `feature` typed field / host / bitmask | `v2/machine-roles-v2.ssdl` | ✓ P3 |
-| `machine` role 缺省（= `both`） | `v2/machine-roles-v2.ssdl` | ✓ P1 |
-| `machine family` / `instance` | `v2/family-mini-v2.ssdl` | ✓ P2 |
-| `machine alias` | `v2/machine-roles.ssdl` | P3（parser 路径） |
-| `unsupported_features`（宿主谓词名逐字） | `aarch64/features.ssdl` | ✓ AArch64 G4 |
-| `resource` / `res_group` | `v2/entities-v2.ssdl` | ✓ P2 |
-| `write` / `read` / `write_seq` | `v2/entities-v2.ssdl` | ✓ P2 |
-| `reg_file` / `retire_unit` / queues | `v2/entities-v2.ssdl` | ✓ P2 |
-| `bind` / `advance` | `v2/multiline-v2.ssdl` | ✓ P2 |
-| `map` 显式下标 / 密集列表 | `v2/map-v2.ssdl` | ✓ P2 |
-| `instance override`（整条替换） | `v2/instance-override-v2.ssdl` | ✓ P2b |
-| 列表条件 / bool 字段折叠 | `v2/list-cond-v2.ssdl` | ✓ P2b |
-| `set relation` 命名列 | `v2/projection-contract-v2.ssdl` | ✓ P2b |
-| `map=`（FunctionMapper helper def） | `aarch64/mapper.ssdl` | ✓ AArch64 G1 |
-| `variant` / `read_variant` | `v2/variants-v2.ssdl` | ✓ P2 |
-| `sched_alias` | `v2/sifive7-mini-v2.ssdl` | ✓ P1 |
-| `itineraries` + 命名 stage | `v2/itineraries-v2.ssdl` | ✓ P2 |
-| `itineraries` + body 内 `packetizer_namespace` | `v2/itineraries-v2.ssdl` | ✓ P1 |
-| `extern` + `from "key"` | `v2/projection-contract-v2.ssdl` | ✓ P1 |
-| `host` block | `v2/sifive7-mini-v2.ssdl` | ✓ P3 |
-| `dim_index` | `v2/multiline-v2.ssdl` | ✓ P2 |
-| `worst` / `in []` 子集 | `v2/dim-uses.ssdl` | P3 |
-| `name_template` | `v2/two-instances-v2.ssdl` | ✓ P2 |
-| RUNTIME 降级 | `v2/two-instances-runtime-v2.ssdl` | ✓ P2 |
+| `set instructions` | `tests/ssdl/surface/sifive7-mini.ssdl` | P3 |
+| `set dimension`（基本形式） | `tests/ssdl/surface/family-mini.ssdl` | ✓ P2 |
+| `set dimension` + units/projections | `tests/ssdl/surface/machine-roles.ssdl` | ✓ P3 |
+| `set relation` | `tests/ssdl/surface/projection-contract.ssdl` | ✓ P2 |
+| `predicate` 表达式 | `tests/ssdl/surface/predicates.ssdl` | ✓ P3 |
+| `predicate : select` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P3 |
+| `predicate prolog` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P3 |
+| `predicate : sti` / `: tii` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P3 |
+| `predicate tii` + `method =` + `mc(TII)` | `tests/ssdl/aarch64/tii.ssdl` | ✓ AArch64 P2 |
+| `feature` plain/extension/tune | `tests/ssdl/surface/machine-roles.ssdl` | ✓ P3 |
+| `feature` typed field / host / bitmask | `tests/ssdl/surface/machine-roles.ssdl` | ✓ P3 |
+| `machine` role 缺省（= `both`） | `tests/ssdl/surface/machine-roles.ssdl` | ✓ P1 |
+| `machine family` / `instance` | `tests/ssdl/surface/family-mini.ssdl` | ✓ P2 |
+| `machine alias` | `tests/ssdl/surface/sifive7-mini.ssdl` | P3（parser 路径） |
+| `unsupported_features`（宿主谓词名逐字） | `tests/ssdl/aarch64/features.ssdl` | ✓ AArch64 G4 |
+| `resource` / `res_group` | `tests/ssdl/surface/entities.ssdl` | ✓ P2 |
+| `write` / `read` / `write_seq` | `tests/ssdl/surface/entities.ssdl` | ✓ P2 |
+| `reg_file` / `retire_unit` / queues | `tests/ssdl/surface/entities.ssdl` | ✓ P2 |
+| `bind` / `advance` | `tests/ssdl/surface/multiline.ssdl` | ✓ P2 |
+| `map` 显式下标 / 密集列表 | `tests/ssdl/surface/map.ssdl` | ✓ P2 |
+| `instance override`（整条替换） | `tests/ssdl/surface/instance-override.ssdl` | ✓ P2b |
+| 列表条件 / bool 字段折叠 | `tests/ssdl/surface/list-cond.ssdl` | ✓ P2b |
+| `set relation` 命名列 | `tests/ssdl/surface/projection-contract.ssdl` | ✓ P2b |
+| `map=`（FunctionMapper helper def） | `tests/ssdl/aarch64/mapper.ssdl` | ✓ AArch64 G1 |
+| `variant` / `read_variant` | `tests/ssdl/surface/variants.ssdl` | ✓ P2 |
+| `sched_alias` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P1 |
+| `itineraries` + 命名 stage | `tests/ssdl/surface/itineraries.ssdl` | ✓ P2 |
+| `itineraries` + body 内 `packetizer_namespace` | `tests/ssdl/surface/itineraries.ssdl` | ✓ P1 |
+| `extern` + `from "key"` | `tests/ssdl/surface/projection-contract.ssdl` | ✓ P1 |
+| `host` block | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P3 |
+| `dim_index` | `tests/ssdl/surface/multiline.ssdl` | ✓ P2 |
+| `worst` / `in []` 子集 | `tests/ssdl/surface/dim-uses.ssdl` | ✓ |
+| `name_template` | `tests/ssdl/surface/two-instances.ssdl` | ✓ P2 |
+| RUNTIME 降级 | `tests/ssdl/surface/two-instances-runtime.ssdl` | ✓ P2 |
 
 ---
 

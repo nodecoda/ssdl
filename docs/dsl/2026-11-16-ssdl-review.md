@@ -1,6 +1,7 @@
 # SSDL 1.0 Final 评审：可解析性与可展开性都还没闭合
 
 - date: 2026-11-16
+- status: **历史**。评审对象是 v1.0 Final；现行语法以 `2026-11-17-ssdl-v2-grammar.md` 为准，文中的 `set dimension` 与 9 关键字是当时的设计。
 - 评审对象：`history/2026-11-16-ssdl-v1.0-final.md`
 - 证据基线：`/home/ubuntu/llvm/trees/explore` @ `700e551714cc`
 - 方法：只做静态评审。逐条把文档的 EBNF 与示例对推，再把 `norm` 规则对照 LLVM 的 TableGen 类定义；没有运行 SSDL 解析器（目前也不存在），因此不声称示例“能解析”。相反，下面列出的是按文档自己的文法**推不出来**的位置。

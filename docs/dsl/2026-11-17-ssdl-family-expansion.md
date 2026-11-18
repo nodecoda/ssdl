@@ -3,7 +3,7 @@
 - date: 2026-11-17
 - status: **Implemented + 14/14 RISC-V models verified**
 - 工具：`tools/ssdl/family_expand.py`
-- 测试：`check.py` 66/66
+- 测试：`check.py` 153/153
 - 源：LLVM `700e551714cc`
 
 ## 1. 实现了什么
@@ -145,8 +145,8 @@ machine vlde {
 
 两条语义是这一步逼出来的，已写进 `family_expand.py`：
 
-1. `worst(AXIS)` 的数值 = **该 base 实际覆盖的最宽成员**，不是全局 M8。上游 `SiFive7IsWorstCaseMX<mx, SchedMxList>` 就是这样：覆盖 MF8..M4 的族，`_WorstCase` 复制 M4。表达方式是给窄族声明自己的轴视图（成员表不同，`name_format` 相同）。
-2. 轴可以有第二个数值投影：`set SEW = [...] : units = [...], div_factor = [15, 28, 57];`，表达式写 `SEW.div_factor`。上游 `SiFive7GetDivOrSqrtFactor` 就是 `!cond(sew)` 表，这是逐行转写而不是拟合。
+1. `worst(AXIS)` 的数值 = **该 base 实际覆盖的最宽成员**，不是全局 M8。上游 `SiFive7IsWorstCaseMX<mx, SchedMxList>` 就是这样：覆盖 MF8..M4 的族，`_WorstCase` 复制 M4。发射器为此只给需要 worst 的窄族声明一个成员表匹配的视图（`LMUL_MF8_M4`）；普通子集不另立视图，直接写 `LMUL in [MF8, ..., M4]`。
+2. 轴可以有第二个数值投影：`set SEW = [...] : units = [...], div_factor = [15, 28, 57];`（IR 拼写；表面 v2 写 `set dimension SEW = [...] { units = [...]; projections = { div_factor = [15, 28, 57]; } }`），表达式写 `SEW.div_factor`。上游 `SiFive7GetDivOrSqrtFactor` 就是 `!cond(sew)` 表，这是逐行转写而不是拟合。
 
 ## 4.2 从 base 还原压缩源：发射器与第一条等价性诊断
 
@@ -157,7 +157,7 @@ machine vlde {
 | 压缩源行数 | 1143 |
 | 展开后 bind 数 | 3772（等于显式 `WriteRes`） |
 | 相对展开源 | 12259 → 1143（10.7×，单模型） |
-| 轴视图 | 8 个 LMUL 视图 + SEW/EEW/NF（窄族需要自己的最宽成员） |
+| 轴视图 | 15 个（8 LMUL + 4 SEW + 2 EEW + 1 NF）；子集在使用点用 `in [...]` 收敛 |
 | 非笛卡尔成员集 | 按轴分解成矩形块（`[LMUL in [...], SEW in [...]]`） |
 
 `family_expand --check-coverage` 通过；`emit_td` 通过；`-print-records` 后 `equiv.py` 给出第一条真实差异：
@@ -173,7 +173,7 @@ machine vlde {
 
 ## 4.3 全模型压缩源与四组无损对拍（Step A–E）
 
-`family_mine.py --emit --profile sifive7-512` 现在发射完整模型：write/read 两半、variant、InstRW、资源、机器属性、processor features/tunes。压缩源 `docs/examples/sifive7-family.ssdl` 为 **3746 行**，展开为 **12375 行**。
+`family_mine.py --emit --profile sifive7-512` 现在发射完整模型：write/read 两半、variant、InstRW、资源、机器属性、processor features/tunes。压缩源 `docs/examples/sifive7-family.ssdl` 为 **3694 行**，展开为 **12375 行**。
 
 | 压缩站点 | 条数 | 展开后记录 |
 |---|---:|---:|
@@ -183,7 +183,7 @@ machine vlde {
 | `advance` | 538 | 1638 `ReadAdvance` |
 | `variant` | 26 | 92 `SchedWriteVariant` |
 | `map` | 1 | 1 `InstRW` |
-| `set`（轴视图） | 67 | 0（编译期） |
+| `set`（轴视图） | 15 | 0（编译期） |
 
 四组 `equiv.py` 全部 `records match`：
 
@@ -198,7 +198,7 @@ machine props、resource buffer、processor name/features/tunes/default_march �
 
 Andes45 的公式覆盖与 SiFive7 不同：共享目录（每条都引用 SiFive7 TD 行号）解释了 9 个 SEG 族（2016 条）等，但 **3360 条**记录的延迟/载荷不服从这些公式，矿工报告为 `unexplained`。发射器对它们按成员或载荷组写显式 `bind`，没有引入任何新内核——因此 Step E 的停止条件（“需要新内核而内核无上游行号”）没有触发。这也解释了 Andes45 的压缩比只有 7432 → 11834（1.6×，3166 `bind` → 4200 `WriteRes`）：机制可移植，公式目录仍带 SiFive7 的行号依据。
 
-**压缩比的口径**：整模型 3746 → 12375 是 **3.3×**，低于 §1.4 用「只发射 WriteRes 半边」估出的 6.4×。原因不是回退，而是当时的 1925 行并不是完整模型：它没有 variant 子写（474）、分支写（474）、unsupported 写（300）、variant 谓词，也没有把 read 的真实成员展开。完整模型里 1 条 `bind` 平均表达 3.4 条 `WriteRes`；真正的收益仍是「加一个维度值只改一处」，行数比只作为参考。
+**压缩比的口径**：整模型 3694 → 12375 是 **3.35×**，低于 §1.4 用「只发射 WriteRes 半边」估出的 6.4×。原因不是回退，而是当时的 1925 行并不是完整模型：它没有 variant 子写（474）、分支写（474）、unsupported 写（300）、variant 谓词，也没有把 read 的真实成员展开。完整模型里 1 条 `bind` 平均表达 3.4 条 `WriteRes`；真正的收益仍是「加一个维度值只改一处」，行数比只作为参考。
 
 注意：processor 名 `sifive-7-series` 含 `-`，不是 SSDL 标识符；生成侧写作 `sifive_7_series`，`equiv.py` 在比较时统一折叠 `-` → `_`（记录本身仍由 `--in-processor/--gen-processor` 指定）。
 
@@ -240,7 +240,7 @@ processor 名仍按 SSDL 标识符规则折叠 `-` → `_`；扫掠每个模型�
 
 ## 5. 剩余工作（Step 3 未完成项）
 
-1. ~~全模型压缩源~~ → 已完成：3746 行 → 12375 行，四类记录齐全（§4.3）。
+1. ~~全模型压缩源~~ → 已完成：3694 行 → 12375 行，四类记录齐全（§4.3）。
 2. ~~公式库~~ → 已收敛为 `units` + `cdiv/max/min`，不再是自由投影（上游 `!cond(mx)` 就是同一组整数运算）。
 3. ~~四组 `equiv.py`~~ → 已完成：SiFive7 ×3 + Andes45 全部 `records match`（§4.3）。
 4. ~~`WorstCase` 语义~~ → 已实现 `worst(D)`：伪成员、不参与计数、数值取最宽成员。
@@ -253,10 +253,17 @@ processor 名仍按 SSDL 标识符规则折叠 `-` → `_`；扫掠每个模型�
 cd /path/to/ssdl
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
-python3 tools/ssdl/check.py   # 66/66
+python3 tools/ssdl/check.py   # 153/153
 
 # 四个已对拍实例（profile 名见 data/riscv-sched-profiles.json）
 python3 tools/ssdl/family_mine.py --emit /tmp/sf.ssdl --profile sifive7-512
+
+# 重新生成仓内的整模型示例（IR + 表面），再钉住展开基线
+python3 tools/ssdl/family_mine.py --profile sifive7-512 \
+    --emit docs/examples/sifive7-family.ssdl
+python3 tools/ssdl/to_v2.py docs/examples/sifive7-family.ssdl \
+    -o docs/examples/sifive7-family-v2.ssdl
+python3 tools/ssdl/golden.py --write
 python3 tools/ssdl/family_expand.py /tmp/sf.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py /tmp/sf.ssdl -o /tmp/sf-flat.ssdl
 python3 tools/ssdl/emit_td.py /tmp/sf-flat.ssdl --target-include SSDLStub.td \
@@ -267,7 +274,7 @@ $SSDL_LLVM_BUILD/bin/llvm-tblgen -print-records \
 python3 tools/ssdl/equiv.py $SSDL_CACHE/riscv.rec /tmp/sf-gen.rec \
     --in-model SiFive7VLEN512Model --gen-model sifive_7_seriesModel \
     --in-processor SIFIVE_7 --gen-processor sifive_7_series \
-    --strip-prefix VLEN512SiFive7
+    --strip-prefix VLEN512SiFive7 --gen-strip-prefix VLEN512SiFive7
 
 # 另三组只需换 profile 与名字：
 #   sifive7-128x100  -> SiFive7VLEN128X100Model / sifive_x160Model / SIFIVE_X160 / VLEN128X100SiFive7

@@ -80,7 +80,7 @@ def parse(text: str, syntax: str = IR, source_map=None) -> Program:
 ```
 
 理由：这些是内部 API，上游调用者（golden、family_mine、from_records、
-151 项回归）处理的本来就是 IR。**表面默认只出现在用户入口（CLI）**。
+153 项回归）处理的本来就是 IR。**表面默认只出现在用户入口（CLI）**。
 库层传错层会在解析阶段报错，不会静默改写语义。
 
 ### 2.3 打印器就是 IR 定义

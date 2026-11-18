@@ -699,8 +699,11 @@ class AxisViews:
             if not wanted <= set(view["members"]):
                 continue
             # Prefer a view carrying projections: it serves expressions that
-            # name ``SEW.div_factor`` and costs nothing for the ones that do not.
-            rank = (view["proj"] == (), len(view["members"]))
+            # name ``SEW.div_factor`` and costs nothing for the ones that do
+            # not.  Among equals prefer the widest, so a subset stays visible
+            # at the use site (``SEW in [64]``) instead of hiding behind a
+            # narrow declaration.
+            rank = (view["proj"] == (), -len(view["members"]))
             if best is None or rank < best[0]:
                 best = (rank, view["name"])
         if best is not None:
@@ -708,11 +711,40 @@ class AxisViews:
         return self._name_one(self._create(axis, fmt, ordered, self._proj(axis, ordered)))
 
     def axis_name(self, axis: str, fmt: str) -> str:
-        """The view that covers the most members; ``worst(X)`` needs a plain name."""
+        """The view that covers the most members, for ``worst`` with no members."""
         candidates = [view for view in self.views if view["axis"] == axis and view["fmt"] == fmt]
         if not candidates:
             raise SystemExit(f"family_mine: no dimension declared for axis {axis!r}")
         return max(candidates, key=lambda view: len(view["members"]))["name"]
+
+    def worst_name(self, axis: str, members, fmt: str) -> str:
+        """The view whose widest member is *this base's* widest.
+
+        A family that covers ``MF8..M4`` emits a ``_WorstCase`` record equal to
+        ``M4``.  ``worst(LMUL)`` on the declared full axis would pick ``M8``, so
+        the narrow bases need a view whose last member is their own widest.
+        """
+        ordered = list(_order_members(axis, members))
+        if not ordered:
+            return self.axis_name(axis, fmt)
+        for view in self.views:
+            if view["axis"] == axis and view["fmt"] == fmt and view["members"] == ordered:
+                return view["name"]
+        view = self._create(axis, fmt, ordered, ())
+        base = (
+            f"{axis}_{ordered[0]}_{ordered[-1]}" if len(ordered) > 1
+            else f"{axis}_{ordered[0]}"
+        )
+        taken = {other["name"] for other in self.views}
+        name, number = base, 2
+        while name in taken:
+            name = f"{base}_{number}"
+            number += 1
+        view["name"] = name
+        return name
+
+    def worst(self, axis: str, members, fmt: str) -> str:
+        return f"worst({self.worst_name(axis, members, fmt)})"
 
     def render(self, axis: str, members: tuple[str, ...], fmt: str) -> str:
         name = self.get(axis, members, fmt)
@@ -867,7 +899,7 @@ def emit_reads(bases: dict[str, dict], views: "AxisViews") -> list[str]:
         if "WorstCase" in base["axes"].get("LMUL", ()):
             key = next(k for k in sorted(base["members"]) if "LMUL=WorstCase" in k)
             sub = ", ".join(
-                f"worst({views.axis_name(axis, shape.formats[axis])})"
+                views.worst(axis, members[axis], shape.formats[axis])
                 if axis == "LMUL"
                 else views.render(axis, members[axis], shape.formats[axis])
                 for axis in all_axes
@@ -1178,8 +1210,11 @@ def emit_variants(variants: list[dict], views: "AxisViews") -> list[str]:
                         f"family_mine: variant selection {shape.template} uses {axis!r} "
                         f"with no members on subject {subject.template}"
                     )
-                view = views.render(axis, members[axis], _fmt(shape, axis))
-                parts.append(view)
+                # A selection names the record chosen for the *current*
+                # subject member, so it takes the axis view by name; a
+                # use-site ``in [...]`` would be a condition TableGen cannot
+                # express (see family_expand: "cannot narrow an axis").
+                parts.append(views.get(axis, members[axis], _fmt(shape, axis)))
             return f"{shape.base}[{', '.join(parts)}]"
 
         if worst:
@@ -1476,8 +1511,11 @@ def emit_ssdl(
             for axis in all_axes:
                 chosen = [member for member in block[axis] if member != "WorstCase"]
                 if len(chosen) != len(block[axis]):
+                    # A worst-only block says nothing about how wide the base
+                    # is; the base's own members do (``_WorstCase`` equals the
+                    # widest one this family covers, not the axis maximum).
                     parts.append(
-                        f"worst({views.axis_name(axis, _fmt(shape, axis))})"
+                        views.worst(axis, chosen or members[axis], _fmt(shape, axis))
                     )
                 else:
                     parts.append(
@@ -1526,10 +1564,16 @@ def emit_ssdl(
                     mapping = {}
                     for axis in all_axes:
                         chosen = [member for member in block[axis] if member != "WorstCase"]
-                        view_members = (
-                            tuple(_order_members(axis, chosen)) if chosen else members[axis]
-                        )
-                        mapping[axis] = views.get(axis, view_members, _fmt(shape, axis))
+                        if len(chosen) != len(block[axis]):
+                            # The target says ``worst(view)``; the expression
+                            # must name that same view, or its units differ.
+                            mapping[axis] = views.worst_name(
+                                axis, chosen or members[axis], _fmt(shape, axis)
+                            )
+                        else:
+                            mapping[axis] = views.get(
+                                axis, tuple(_order_members(axis, chosen)), _fmt(shape, axis)
+                            )
                     body.append(
                         f"    bind {target} -> [{', '.join(prefix + r for r in entry['resources'])}], "
                         f"latency = {_rename(entry['latency'], mapping)}, uops = {entry.get('uops', 1)}, "

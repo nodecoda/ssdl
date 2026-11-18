@@ -18,7 +18,7 @@ SSDL 是 LLVM 后端调度模型的领域专用语言：它不描述指令本身
 export SSDL_LLVM_SRC=/path/to/llvm-project          # LLVM 源码树
 export SSDL_LLVM_BUILD=/path/to/llvm-build          # 含 bin/llvm-tblgen 的构建目录
 
-python3 tools/ssdl/check.py                         # 151/151 checks passed
+python3 tools/ssdl/check.py                         # 153/153 checks passed
 ```
 
 `check.py` 有两条硬性前置：`SSDL_LLVM_SRC` 指向一个 LLVM checkout，
@@ -133,6 +133,10 @@ machine family f(vlen: INT) {
 machine instance m : f(512) { }
 ```
 
+全量示例在 `docs/examples/`：`sifive7-family.ssdl` 是 IR 文本，
+`sifive7-family-v2.ssdl` 是同一份模型的表面源；两者由
+`family_mine.py` + `to_v2.py` 生成，`check.py` 断言它们展开一致。
+
 ---
 
 ## 3. 一条链路：从 SSDL 到可对拍的 records
@@ -194,11 +198,11 @@ tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具�
   family_mine.py    记录 → 规范基 + 公式（只报告，不发明）
   family_sweep.py   14 个模型的全链路 sweep（--syntax v2|ir）
   to_v2.py          IR → v2 表面迁移（to_ir 的逆）
-  check.py          151 项自检
+  check.py          153 项自检
 tests/ssdl/         IR 对拍孪生；surface/ 是表面源；ir-only/ 是无表面写法的构造
 data/               小基线：普查表、诊断表、profiles、族表、公式表
 docs/dsl/           规范、领域模型、验证报告
-docs/examples/      真实族源（sifive7-family.ssdl）
+docs/examples/      真实族源（sifive7-family.ssdl 是 IR，-v2.ssdl 是表面）
 scripts/            复现缓存产物的脚本
 ```
 
@@ -267,11 +271,11 @@ python3 tools/ssdl/sweep_aarch64.py --check             # 与 data/aarch64-sched
 ### 6.3 回归
 
 ```bash
-python3 tools/ssdl/check.py                   # 151/151
-python3 tools/ssdl/golden.py --check          # 23 expansions
+python3 tools/ssdl/check.py                   # 153/153
+python3 tools/ssdl/golden.py --check          # 24 expansions
 ```
 
-`check.py` 的 151 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
+`check.py` 的 153 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
 schema 类型检查、关键字引用同步、14 模型对拍、31 模型 AArch64 sweep 表、
 族展开、效果诊断。
 
@@ -302,8 +306,12 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
 
 ## 8. 文档索引
 
+完整索引、状态（规范 / 实现记录 / 证据 / 历史）与维护约定见
+`docs/dsl/README.md`；下表只列常用入口。
+
 | 文档 | 内容 |
 |---|---|
+| `docs/dsl/README.md` | **文档索引与生命周期**：规范 / 实现记录 / 证据 / 历史 |
 | `docs/dsl/2026-11-17-ssdl-v2-grammar.md` | **唯一表面规范**：EBNF、6 个顶层关键字、errata 处置、决策记录 |
 | `docs/dsl/2026-11-18-ssdl-one-surface.md` | **v1 撤出表面的决定**：分层、CLI、夹具布局、保留项与代价 |
 | `docs/dsl/2026-11-18-ssdl-ir-to-v2-migration.md` | IR → v2 迁移表、`to_v2`、14/14 门禁与工具边界 |
