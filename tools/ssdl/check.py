@@ -1158,9 +1158,16 @@ def riscv_fixture_records_reach_the_resource_gate():
     A *partial* model cannot pass ``-gen-subtarget`` against the full RISCV
     target: once any ``WriteRes`` exists, SubtargetEmitter demands one for every
     reachable ``SchedWrite``, and the target's own instructions supply thousands.
-    The layer that must accept our records is CodeGenSchedule; the run has to
-    stop at resource coverage, never at the invalid SchedWrite/SchedRead
-    assertion that an unindexed alias subject produces.
+    The layer that must accept our records is CodeGenSchedule; no input may
+    abort with the invalid SchedWrite/SchedRead assertion that an unindexed
+    alias subject produces.
+
+    Three inputs cover the three shapes: a hand-written mini model reaches the
+    resource gate, while the tour and the generated family model are
+    replacement-style sources that collide with RISCV.td's own feature defs
+    before coverage is even considered.  The assertion is therefore "never an
+    invalid SchedReadWrite"; only the mini model must also stop exactly at
+    ``does not define resources``.
     """
     try:
         tblgen = compare_mod.default_tblgen()
@@ -1172,29 +1179,38 @@ def riscv_fixture_records_reach_the_resource_gate():
     if not (riscv_dir / "RISCV.td").exists():
         return
 
-    text, skips = emit_td.emit(
-        parser.parse_file(str(ROOT / "tests/ssdl/surface/sifive7-mini.ssdl"), syntax="v2"),
-        strict=True,
-        attrs=attrs_schema(),
-        target_include="RISCV.td",
-    )
-    assert_true(skips == [], skips)
+    cases = [
+        ("tests/ssdl/surface/sifive7-mini.ssdl", True),
+        ("docs/examples/sifive7-family-tour-v2.ssdl", False),
+        ("docs/examples/sifive7-family-v2.ssdl", False),
+    ]
+    for rel, expects_coverage_gate in cases:
+        text, skips = emit_td.emit(
+            parser.parse_file(str(ROOT / rel), syntax="v2"),
+            strict=True,
+            attrs=attrs_schema(),
+            target_include="RISCV.td",
+        )
+        assert_true(skips == [], f"{rel}: {skips}")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "mini-riscv.td"
-        path.write_text(text, encoding="utf-8")
-        cmd = [tblgen, "-gen-subtarget"]
-        for inc in include_dirs:
-            cmd.extend(["-I", inc])
-        cmd.extend(["-o", str(Path(tmp) / "mini.inc"), str(path)])
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model-riscv.td"
+            path.write_text(text, encoding="utf-8")
+            cmd = [tblgen, "-gen-subtarget"]
+            for inc in include_dirs:
+                cmd.extend(["-I", inc])
+            cmd.extend(["-o", str(Path(tmp) / "model.inc"), str(path)])
+            proc = subprocess.run(cmd, capture_output=True, text=True)
 
-    assert_true(proc.returncode != 0, "a partial model is expected to fail coverage")
-    assert_in("does not define resources for", proc.stderr)
-    assert_true(
-        "invalid SchedWrite" not in proc.stderr and "invalid SchedRead" not in proc.stderr,
-        "CodeGenSchedule rejected an unindexed SchedReadWrite:\n" + proc.stderr,
-    )
+        assert_true(proc.returncode != 0, f"{rel}: a partial model was accepted")
+        assert_true(
+            "invalid SchedWrite" not in proc.stderr
+            and "invalid SchedRead" not in proc.stderr,
+            f"{rel}: CodeGenSchedule rejected an unindexed SchedReadWrite:\n"
+            + proc.stderr,
+        )
+        if expects_coverage_gate:
+            assert_in("does not define resources for", proc.stderr)
 
 
 @test
