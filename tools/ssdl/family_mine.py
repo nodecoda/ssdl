@@ -460,10 +460,17 @@ def main(argv: list[str] | None = None) -> int:
 LMUL_ORDER = {name: index for index, name in enumerate(LMUL_NAMES)}
 
 
+def _member_key(axis: str, member: str):
+    if axis == "LMUL" and member in LMUL_ORDER:
+        return (0, LMUL_ORDER[member], 0, member)
+    try:
+        return (1, 0, int(member), member)
+    except ValueError:
+        return (2, 0, 0, member)
+
+
 def _order_members(axis: str, members) -> tuple[str, ...]:
-    if axis == "LMUL":
-        return tuple(sorted(set(members), key=lambda m: LMUL_ORDER[m]))
-    return tuple(sorted(set(members), key=int))
+    return tuple(sorted(set(members), key=lambda m: _member_key(axis, m)))
 
 
 def resource_table(recs, model: str) -> dict[str, dict]:
@@ -547,43 +554,206 @@ def decompose(keys: list[tuple[str, ...]], axes: list[str]) -> list[dict[str, tu
     return blocks
 
 
+SEW_DIV_FACTORS = {"16": 15, "32": 28, "64": 57}
+
+
 class AxisViews:
+    """One dimension declaration per axis shape; subsets live at the use site.
+
+    A model restricts an axis per write/read group (``SEW`` 64 exists only for
+    ``M1..M8``), but that restriction belongs to the *use*, not to a new axis.
+    Emitting ``SEW_17 = [64]`` for every restriction buries the model in
+    numbered sets that all mean "SEW".  Views are therefore declared up front
+    from the union of members the model actually uses, and ``render`` emits
+    ``SEW in [64]`` when a site needs less than the declaration.
+
+    Declarations are immutable once emitted: a view that grew later would
+    invalidate the already-rendered statements that referred to it by name.
+    """
+
     def __init__(self):
-        self.views: dict[tuple, str] = {}
-        self.definitions: list[str] = []
+        self.views: list[dict] = []
+
+    @staticmethod
+    def _proj(axis: str, members: list[str]) -> tuple:
+        if axis == "SEW" and all(member in SEW_DIV_FACTORS for member in members):
+            return tuple((member, SEW_DIV_FACTORS[member]) for member in members)
+        return ()
+
+    @staticmethod
+    def _definition(axis: str, name: str, members: list[str], fmt: str, proj: tuple) -> str:
+        if axis == "LMUL":
+            units = [
+                LMUL_UNIT_LIST[LMUL_NAMES.index(member)]
+                if member in LMUL_NAMES else int(member)
+                for member in members
+            ]
+        else:
+            units = [int(member) for member in members]
+        extra = ""
+        if proj:
+            factors = dict(proj)
+            extra = ", div_factor = [" + ", ".join(str(factors[m]) for m in members) + "]"
+        return (
+            f"set {name} = [{', '.join(members)}] : kind = dimension, "
+            f'name_format = "{fmt}", units = [{", ".join(str(u) for u in units)}]{extra};'
+        )
+
+    @property
+    def definitions(self) -> list[str]:
+        """Declaration lines, regenerated from the named views on demand."""
+        return [
+            self._definition(view["axis"], view["name"], view["members"], view["fmt"], view["proj"])
+            for view in self.views
+        ]
+
+    @staticmethod
+    def _suffix(view: dict) -> str:
+        """Spell what makes this view differ: its projection or its literal."""
+        if view["proj"]:
+            return "_div"
+        literal = re.sub(r"[^A-Za-z0-9]+", "", view["fmt"].replace("{value}", ""))
+        return f"_{literal}" if literal else ""
+
+    def _name_views(self) -> None:
+        """Give each axis one bare name and spell the rest semantically.
+
+        Numbered fallbacks (``EEW_17``) say nothing about why a declaration
+        exists; ``EEW_e`` says the format emits ``e8`` and ``SEW_div`` says the
+        view carries ``div_factor``.
+        """
+        groups: dict[str, list[dict]] = {}
+        for view in self.views:
+            groups.setdefault(view["axis"], []).append(view)
+        for axis, group in groups.items():
+            # The bare name belongs to the view a reader would think of first:
+            # the plain format, no projection, the widest member set.
+            group.sort(key=lambda v: (-len(v["members"]), v["proj"] == (), v["fmt"] != "{value}"))
+            taken = {view["name"] for view in self.views if view["axis"] != axis and view["name"]}
+            for index, view in enumerate(group):
+                if view["name"]:
+                    continue
+                if index == 0 and axis not in taken:
+                    view["name"] = axis
+                    taken.add(axis)
+                    continue
+                base = axis + self._suffix(view)
+                name, number = base, 2
+                while name in taken:
+                    name = f"{base}_{number}"
+                    number += 1
+                view["name"] = name
+                taken.add(name)
+
+    def _create(self, axis: str, fmt: str, members: list[str], proj: tuple) -> dict:
+        view = {
+            "axis": axis,
+            "fmt": fmt,
+            "proj": proj,
+            "members": members,
+            "name": None,
+        }
+        self.views.append(view)
+        return view
+
+    def _name_one(self, view: dict) -> str:
+        """Name a view created after ``prime``; it is necessarily a subset."""
+        axis = view["axis"]
+        if not any(other["name"] == axis for other in self.views):
+            view["name"] = axis
+            return axis
+        base = axis + self._suffix(view)
+        taken = {other["name"] for other in self.views}
+        name, number = base, 2
+        while name in taken:
+            name = f"{base}_{number}"
+            number += 1
+        view["name"] = name
+        return name
+
+    def prime(self, domains: dict[tuple[str, str], list[str]]) -> None:
+        """Declare every view before anything renders against it."""
+        for (axis, fmt), values in sorted(domains.items()):
+            ordered = list(_order_members(axis, values))
+            if not ordered:
+                continue
+            if axis == "SEW":
+                projected = [member for member in ordered if member in SEW_DIV_FACTORS]
+                if projected and len(projected) != len(ordered):
+                    self._create(axis, fmt, ordered, ())
+                    self._create(axis, fmt, projected, self._proj(axis, projected))
+                    continue
+                if projected:
+                    self._create(axis, fmt, ordered, self._proj(axis, projected))
+                    continue
+            self._create(axis, fmt, ordered, ())
+        self._name_views()
 
     def get(self, axis: str, members: tuple[str, ...], fmt: str) -> str:
-        key = (axis, members, fmt)
-        if key not in self.views:
-            name = (
-                axis
-                if axis == "LMUL" and members == tuple(LMUL_NAMES) and fmt == "_{value}"
-                else f"{axis}_{len(self.views)}"
-            )
-            self.views[key] = name
-            units = (
-                [LMUL_UNIT_LIST[LMUL_NAMES.index(member)] for member in members]
-                if axis == "LMUL"
-                else [int(member) for member in members]
-            )
-            if axis in ("EEW", "NF", "SEW"):
-                units = [int(member) for member in members]
-            extra = ""
-            if axis == "SEW" and all(member in ("16", "32", "64") for member in members):
-                factors = {"16": 15, "32": 28, "64": 57}
-                extra = ", div_factor = [" + ", ".join(str(factors[m]) for m in members) + "]"
-            self.definitions.append(
-                f"set {name} = [{', '.join(members)}] : kind = dimension, "
-                f'name_format = "{fmt}", units = [{", ".join(str(u) for u in units)}]{extra};'
-            )
-        return self.views[key]
+        ordered = list(_order_members(axis, members))
+        wanted = set(ordered)
+        best = None
+        for view in self.views:
+            if view["axis"] != axis or view["fmt"] != fmt:
+                continue
+            if not wanted <= set(view["members"]):
+                continue
+            # Prefer a view carrying projections: it serves expressions that
+            # name ``SEW.div_factor`` and costs nothing for the ones that do not.
+            rank = (view["proj"] == (), len(view["members"]))
+            if best is None or rank < best[0]:
+                best = (rank, view["name"])
+        if best is not None:
+            return best[1]
+        return self._name_one(self._create(axis, fmt, ordered, self._proj(axis, ordered)))
+
+    def axis_name(self, axis: str, fmt: str) -> str:
+        """The view that covers the most members; ``worst(X)`` needs a plain name."""
+        candidates = [view for view in self.views if view["axis"] == axis and view["fmt"] == fmt]
+        if not candidates:
+            raise SystemExit(f"family_mine: no dimension declared for axis {axis!r}")
+        return max(candidates, key=lambda view: len(view["members"]))["name"]
 
     def render(self, axis: str, members: tuple[str, ...], fmt: str) -> str:
         name = self.get(axis, members, fmt)
-        declared = next(ms for (ax, ms, f), n in self.views.items() if n == name)
-        if tuple(members) == declared:
+        ordered = list(_order_members(axis, members))
+        declared = next(view["members"] for view in self.views if view["name"] == name)
+        if ordered == declared:
             return name
-        return f"{name} in [{', '.join(members)}]"
+        return f"{name} in [{', '.join(ordered)}]"
+
+
+def collect_axis_domains(bases, reads, branch_writes, variants) -> dict[tuple[str, str], list[str]]:
+    """Member union per ``(axis, name_format)`` across everything the model emits."""
+    domains: dict[tuple[str, str], list[str]] = {}
+
+    def add(shape, axes_members, fmt_of) -> None:
+        # ``Base.axes`` maps to a member list, but a bare ``Shape`` maps axis to
+        # its single member string; iterating the latter would split "M4".
+        def values(axis):
+            held = axes_members.get(axis)
+            if held is None:
+                return ()
+            return (held,) if isinstance(held, str) else held
+
+        for axis in shape.order:
+            fmt = fmt_of(shape, axis)
+            bucket = domains.setdefault((axis, fmt), [])
+            for member in values(axis):
+                if member != "WorstCase" and member not in bucket:
+                    bucket.append(member)
+
+    for base in bases.values():
+        add(base.shape, base.axes, _fmt)
+    for table in (reads, branch_writes):
+        for entry in table.values():
+            add(entry["shape"], entry["axes"], lambda shape, axis: shape.formats[axis])
+    for item in variants:
+        add(item["subject"], item["subject"].axes, _fmt)
+        for case in item["cases"]:
+            for shape in case["selected"]:
+                add(shape, shape.axes, _fmt)
+    return domains
 
 
 def _rename(expr: str, mapping: dict[str, str]) -> str:
@@ -697,7 +867,7 @@ def emit_reads(bases: dict[str, dict], views: "AxisViews") -> list[str]:
         if "WorstCase" in base["axes"].get("LMUL", ()):
             key = next(k for k in sorted(base["members"]) if "LMUL=WorstCase" in k)
             sub = ", ".join(
-                f"worst({views.render(axis, members[axis], shape.formats[axis])})"
+                f"worst({views.axis_name(axis, shape.formats[axis])})"
                 if axis == "LMUL"
                 else views.render(axis, members[axis], shape.formats[axis])
                 for axis in all_axes
@@ -1256,7 +1426,9 @@ def emit_ssdl(
     variants = collect_variants(recs, model, prefix, LMUL_NAMES, catalogue.get("glued"))
     entries = catalogue["formulas"]
     resources = resource_table(recs, model)
+    reads = collect_reads(recs, model, catalogue.get("glued"))
     views = AxisViews()
+    views.prime(collect_axis_domains(bases, reads, branch_writes, variants))
     lines: list[str] = [
         f"# Generated from {model} by tools/ssdl/family_mine.py --emit.",
         f"# Formula catalogue: data/riscv-sched-formulas.json (each entry cites TableGen).",
@@ -1305,7 +1477,7 @@ def emit_ssdl(
                 chosen = [member for member in block[axis] if member != "WorstCase"]
                 if len(chosen) != len(block[axis]):
                     parts.append(
-                        f"worst({views.render(axis, members[axis], _fmt(shape, axis))})"
+                        f"worst({views.axis_name(axis, _fmt(shape, axis))})"
                     )
                 else:
                     parts.append(
@@ -1369,9 +1541,6 @@ def emit_ssdl(
     unsupported_lines = emit_unsupported(unsupported, views)
     branch_lines = emit_branch_writes(branch_writes, prefix, views)
     inst_rw_lines = collect_inst_rw(recs, model, prefix)
-    reads = collect_reads(recs, model, catalogue.get("glued"))
-    # Reads may introduce new axis views, so they must run before the header is
-    # snapshotted from ``views.definitions``.
     body = (
         body
         + subject_lines
