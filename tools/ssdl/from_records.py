@@ -64,17 +64,25 @@ def quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+READ_KINDS = {"SchedRead", "SchedReadAdvance", "ReadAdvance", "SchedReadVariant"}
+WRITE_KINDS = {
+    "SchedWrite",
+    "SchedWriteRes",
+    "WriteRes",
+    "WriteSequence",
+    "SchedWriteVariant",
+}
+
+
 def is_read(recs: RecordFile, name: str) -> bool:
-    return "SchedRead" in recs.cls.get(name, "") or recs.has(name, "SchedRead ReadType")
+    return recs.kind(name, READ_KINDS) is not None or recs.has(
+        name, "SchedRead ReadType"
+    )
 
 
 def is_write(recs: RecordFile, name: str) -> bool:
-    cls = recs.cls.get(name, "")
-    return (
-        "SchedWrite" in cls
-        or "WriteRes" in cls
-        or "WriteSequence" in cls
-        or recs.has(name, "SchedWrite WriteType")
+    return recs.kind(name, WRITE_KINDS) is not None or recs.has(
+        name, "SchedWrite WriteType"
     )
 
 
@@ -85,6 +93,12 @@ class Predicates:
     def __init__(self, recs: RecordFile) -> None:
         self.recs = recs
         self.features: list[str] = []
+        # TII predicates are named defs, not inline expressions: a scheduling
+        # predicate refers to them as mc(Name).  Rendered text is emitted once.
+        self.tii_text: dict[str, str] = {}
+
+    def is_tii(self, name: str | None) -> bool:
+        return bool(name) and self.recs.kind(name, {"TIIPredicate"}) is not None
 
     def sched(self, name: str | None) -> str | None:
         if not name or name == "NoSchedPred":
@@ -107,12 +121,100 @@ class Predicates:
             return f"feature({feature})"
         mc = recs.value(name, "MCInstPredicate Pred")
         if mc:
+            if self.is_tii(mc):
+                self.want_tii(mc)
+                return f"mc({mc})"
             return self.mc(mc)
+        if recs.kind(name, {"SchedPredicate"}) is not None:
+            code = recs.block(name, "code Predicate")
+            if code is None:
+                raise GeneratorError(f"SchedPredicate {name} has no code block")
+            return f"sched_code({code})"
         raise GeneratorError(f"unsupported scheduling predicate {name} ({cls})")
+
+    # -- TII predicates --------------------------------------------------
+    def want_tii(self, name: str) -> None:
+        if name in self.tii_text:
+            return
+        recs = self.recs
+        method = unquote(recs.value(name, "string FunctionName")) or name
+        body = recs.value(name, "MCStatement Body")
+        if body is None:
+            raise GeneratorError(f"TIIPredicate {name} has no Body")
+        statement = self.statement(body)
+        if method == name:
+            text = f"tii_predicate {name} = {statement};"
+        else:
+            text = (
+                f"tii_predicate {name} {{ method = {quote(method)}; {statement} }}"
+            )
+        self.tii_text[name] = text
+
+    def statement(self, name: str) -> str:
+        recs = self.recs
+        kind = recs.kind(name, {"MCReturnStatement", "MCOpcodeSwitchStatement",
+                                "MCTrue", "MCFalse"})
+        cls = kind or recs.cls.get(name, "")
+        if cls == "MCReturnStatement":
+            pred = recs.value(name, "MCInstPredicate Pred")
+            if pred is None:
+                raise GeneratorError(f"MCReturnStatement {name} has no Pred")
+            return f"return {self.mc(pred)};"
+        if cls == "MCOpcodeSwitchStatement":
+            cases = []
+            for case in as_list(recs.value(name, "list<MCOpcodeSwitchCase> Cases")):
+                ops = as_list(recs.value(case, "list<Instruction> Opcodes"))
+                stmt = recs.value(case, "MCStatement CaseStmt")
+                if not ops or stmt is None:
+                    raise GeneratorError(f"MCOpcodeSwitchCase {case} is incomplete")
+                cases.append(f"case [{', '.join(ops)}]: {self.statement(stmt)}")
+            default = recs.value(name, "MCStatement DefaultCase")
+            if default is None:
+                raise GeneratorError(f"MCOpcodeSwitchStatement {name} has no default")
+            cases.append(f"default: {self.statement(default)}")
+            return "switch opcode { " + " ".join(cases) + " }"
+        if cls in ("MCTrue", "MCFalse"):
+            return f"return {'true' if cls == 'MCTrue' else 'false'};"
+        raise GeneratorError(f"unsupported MC statement {name} ({cls})")
+
+    MC_KINDS = {
+        "CheckRegOperand",
+        "CheckOpcode",
+        "CheckAll",
+        "AllOf",
+        "CheckAny",
+        "AnyOf",
+        "CheckNot",
+        "Not",
+        "MCTrue",
+        "MCFalse",
+        "CheckIsRegOperand",
+        "CheckIsImmOperand",
+        "CheckSameRegOperand",
+        "CheckNumOperands",
+        "CheckValidRegOperand",
+        "CheckInvalidRegOperand",
+        "CheckImmOperand",
+        "CheckImmOperand_s",
+        "CheckImmOperandRange",
+        "CheckImmOperandLT",
+        "CheckImmOperandGT",
+        "CheckImmOperandLE",
+        "CheckImmOperandGE",
+        "CheckZeroOperand",
+        "CheckFunctionPredicate",
+        "CheckFunctionPredicateWithTII",
+        "CheckNonPortable",
+    }
 
     def mc(self, name: str) -> str:
         recs = self.recs
-        cls = recs.cls.get(name, "")
+        # A TIIPredicate is a named MCInstPredicate: scheduling references it
+        # through ``mc(<name>)`` and the def is emitted once, by name.
+        if self.is_tii(name):
+            self.want_tii(name)
+            return f"mc({name})"
+        cls = recs.kind(name, self.MC_KINDS) or recs.cls.get(name, "")
         if cls == "CheckRegOperand":
             index = as_int(recs.value(name, "int OpIndex"))
             register = recs.value(name, "Register Reg")
@@ -138,6 +240,67 @@ class Predicates:
             return "true"
         if cls == "MCFalse":
             return "false"
+        if cls == "CheckIsRegOperand":
+            return f"is_reg({as_int(recs.value(name, 'int OpIndex'))})"
+        if cls == "CheckIsImmOperand":
+            return f"is_imm({as_int(recs.value(name, 'int OpIndex'))})"
+        if cls == "CheckSameRegOperand":
+            return (
+                f"same_reg({as_int(recs.value(name, 'int FirstIndex'))}, "
+                f"{as_int(recs.value(name, 'int SecondIndex'))})"
+            )
+        if cls == "CheckNumOperands":
+            return f"num_ops({as_int(recs.value(name, 'int NumOps'))})"
+        if cls == "CheckValidRegOperand":
+            return f"is_valid_reg({as_int(recs.value(name, 'int OpIndex'))})"
+        if cls == "CheckInvalidRegOperand":
+            return f"is_invalid_reg({as_int(recs.value(name, 'int OpIndex'))})"
+        if cls in (
+            "CheckImmOperand",
+            "CheckImmOperand_s",
+            "CheckImmOperandRange",
+            "CheckImmOperandLT",
+            "CheckImmOperandGT",
+            "CheckImmOperandLE",
+            "CheckImmOperandGE",
+            "CheckZeroOperand",
+        ):
+            index = as_int(recs.value(name, "int OpIndex"))
+            mapper = unquote(recs.value(name, "string FunctionMapper"))
+            tail = f", map = {quote(mapper)}" if mapper else ""
+            if cls == "CheckImmOperand_s":
+                value = recs.value(name, "string ImmVal") or '""'
+                return f"imm_is_enum({index}, {value}{tail})"
+            if cls == "CheckImmOperandRange":
+                start = as_int(recs.value(name, "int StartVal"))
+                end = as_int(recs.value(name, "int EndVal"))
+                return f"imm_range({index}, {start}, {end}{tail})"
+            if cls == "CheckZeroOperand" and not mapper:
+                return f"is_zero({index})"
+            value = as_int(recs.value(name, "int ImmVal"))
+            atom = {
+                "CheckImmOperandLT": "imm_lt",
+                "CheckImmOperandGT": "imm_gt",
+                "CheckImmOperandLE": "imm_le",
+                "CheckImmOperandGE": "imm_ge",
+            }.get(cls, "imm_is")
+            return f"{atom}({index}, {value}{tail})"
+        if cls == "CheckFunctionPredicate":
+            mc_fn = recs.value(name, "string MCInstFnName") or '""'
+            mi_fn = recs.value(name, "string MachineInstrFnName") or '""'
+            return f"func({mc_fn}, {mi_fn})"
+        if cls == "CheckFunctionPredicateWithTII":
+            mc_fn = recs.value(name, "string MCInstFnName") or '""'
+            mi_fn = recs.value(name, "string MachineInstrFnName") or '""'
+            ptr = unquote(recs.value(name, "string TIIPtrName"))
+            if ptr and ptr != "TII":
+                return f"func_tii({mc_fn}, {mi_fn}, tii = {quote(ptr)})"
+            return f"func_tii({mc_fn}, {mi_fn})"
+        if cls == "CheckNonPortable":
+            code = recs.block(name, "string CodeBlock")
+            if code is None:
+                raise GeneratorError(f"CheckNonPortable {name} has no CodeBlock")
+            return f"non_portable({code})"
         raise GeneratorError(f"unsupported MC predicate {name} ({cls})")
 
 
@@ -229,16 +392,36 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
     variants: dict[str, tuple[str, list[str]]] = {}
     for name in aliases:
         target = recs.value(name, "SchedReadWrite AliasRW")
-        cls = recs.cls.get(target, "")
-        if cls == "SchedWriteVariant":
+        kind = recs.kind(target, {"SchedWriteVariant", "SchedReadVariant"})
+        if kind == "SchedWriteVariant":
             variants[recs.value(name, "SchedReadWrite MatchRW")] = ("variant", target)
-        elif cls == "SchedReadVariant":
+        elif kind == "SchedReadVariant":
             variants[recs.value(name, "SchedReadWrite MatchRW")] = ("read_variant", target)
+
+    # Every SchedReadWrite an InstRW names.  Some upstream defs appear here
+    # directly instead of through an alias: a bare SchedWriteVariant is a
+    # SchedWrite, and a SchedReadAdvance is a SchedRead.
+    referenced: list[str] = []
+    for name in selected:
+        if recs.value(name, "dag Instrs") is not None:
+            referenced.extend(
+                as_list(recs.value(name, "list<SchedReadWrite> OperandReadWrites"))
+            )
+    alias_targets = {
+        recs.value(name, "SchedReadWrite AliasRW") for name in aliases
+    }
+    for name in list(selected) + referenced:
+        cls = recs.kind(name, {"SchedWriteVariant", "SchedReadVariant"})
+        if cls is not None:
+            if name in alias_targets or name in variants:
+                continue
+            kind = "variant" if cls == "SchedWriteVariant" else "read_variant"
+            variants[name] = (kind, name)
 
     read_advances = {
         name
-        for name in selected
-        if recs.cls.get(name) == "SchedReadAdvance"
+        for name in list(referenced) + selected
+        if recs.kind(name, {"SchedReadAdvance"}) is not None
         and not recs.has(name, "SchedRead ReadType")
     }
 
@@ -254,12 +437,22 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
         for sv in as_list(recs.value(variant, "list<SchedVar> Variants")):
             pred = preds.sched(recs.value(sv, "SchedPredicateBase Predicate"))
             picked = list(as_list(recs.value(sv, "list<SchedReadWrite> Selected")))
-            if kind == "read_variant":
-                for entry in picked:
-                    if entry in read_advances:
-                        rewritten[subject] = entry
-                        picked[picked.index(entry)] = subject
             cases.append((pred, picked))
+        if kind == "read_variant":
+            # A read variant normally picks one concrete read advance and the
+            # SSDL subject carries the ``advance``; that is what the emitter
+            # produces for ``read_variant X { ... X ... }``.  Fold only when
+            # *every* case agrees -- AArch64 A55 picks a different advance per
+            # case (1 cycle shifted, 2 otherwise) and must keep both.
+            picked_all = {entry for _, picked in cases for entry in picked}
+            if len(picked_all) == 1:
+                only = picked_all.pop()
+                if only in read_advances:
+                    rewritten[subject] = only
+                    cases = [
+                        (pred, [subject if entry == only else entry for entry in picked])
+                        for pred, picked in cases
+                    ]
         variant_cases[subject] = cases
 
     writes: list[str] = []
@@ -285,6 +478,12 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
                 if entry == subject:
                     continue
                 (want_write if is_write(recs, entry) else want_read)(entry)
+    # A rewritten concrete advance is expressed as ``advance <subject>``; it
+    # must not also appear as a read of its own (the emitter would name both
+    # records the same).
+    folded = set(rewritten.values())
+    for name in sorted(read_advances - folded):
+        want_read(name)
 
     bindings: list[tuple[str, str]] = []
     for name in selected:
@@ -292,7 +491,7 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
             key = recs.value(name, "SchedWrite WriteType")
             want_write(key)
             bindings.append((key, name))
-        elif recs.cls.get(name) == "SchedWriteRes":
+        elif recs.kind(name, {"SchedWriteRes"}) is not None:
             want_write(name)
             bindings.append((name, name))
 
@@ -305,6 +504,10 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
     for subject, concrete in rewritten.items():
         advances.append((subject, concrete))
         want_read(subject)
+    seen_advances = {read for read, _ in advances}
+    for name in sorted(read_advances - folded):
+        if name not in seen_advances:
+            advances.append((name, name))
 
     for name in selected:
         if recs.value(name, "dag Instrs") is not None:
@@ -322,6 +525,8 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
             continue
         plain_aliases.append((src, dst))
         (want_write if is_write(recs, dst) else want_read)(dst)
+        # The source is the alias subject; it needs its own declaration too.
+        (want_write if is_write(recs, src) else want_read)(src)
 
     # The processor record is what SSDL calls the machine.
     feature_props: list[str] = []
@@ -370,6 +575,12 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
     for name in ordered:
         out.append(features.render(name))
     out.append("")
+    # TII predicates are named records referenced from variant cases; they
+    # must precede the machine text that names them.
+    for text in preds.tii_text.values():
+        out.append(text)
+    if preds.tii_text:
+        out.append("")
     out.append(f"machine {machine} {{")
     out.extend(feature_props)
 
@@ -405,6 +616,31 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
 
     resources = [n for n in selected if recs.value(n, "int NumUnits") is not None]
     groups = [n for n in selected if recs.has(n, "list<ProcResource> Resources")]
+    # A57 (and friends) declare ProcResource outside `let SchedModel`; SSDL
+    # requires them inside the machine, so collect what this model binds.
+    wanted_res: set[str] = set()
+    for _, binding in bindings:
+        wanted_res.update(
+            as_list(recs.value(binding, "list<ProcResourceKind> ProcResources"))
+        )
+    pending = list(wanted_res)
+    while pending:
+        name = pending.pop()
+        super_name = recs.value(name, "ProcResourceKind Super")
+        if super_name and super_name != "?" and super_name not in wanted_res:
+            wanted_res.add(super_name)
+            pending.append(super_name)
+        for member in as_list(recs.value(name, "list<ProcResource> Resources")):
+            if member not in wanted_res:
+                wanted_res.add(member)
+                pending.append(member)
+    for name in sorted(wanted_res):
+        if name in resources or name in groups:
+            continue
+        if recs.value(name, "int NumUnits") is not None:
+            resources.append(name)
+        elif recs.has(name, "list<ProcResource> Resources"):
+            groups.append(name)
     for name in sorted(resources):
         parts = [f"units = {as_int(recs.value(name, 'int NumUnits'))}"]
         super_name = recs.value(name, "ProcResourceKind Super")
@@ -498,6 +734,7 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
                 out.append(f"        case {pred}: [{', '.join(names)}];")
         out.append("    }")
 
+    seen_maps: set[tuple] = set()
     for name in selected:
         if recs.value(name, "dag Instrs") is None:
             continue
@@ -516,6 +753,14 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
             insts = [f"regex({quote(p)})" for p in patterns]
         if not insts:
             raise GeneratorError(f"InstRW {name}: unsupported dag {dag}")
+        # AArch64 carries genuinely duplicated InstRW defs (A64FX and the
+        # ThunderX2/T3 models each repeat an identical regex mapping).  One
+        # map says the same thing; the language still rejects duplicates a
+        # human writes twice.
+        key = (tuple(insts), tuple(rw), as_bit(recs.value(name, "bit Unsupported")))
+        if key in seen_maps:
+            continue
+        seen_maps.add(key)
         text = f"    map [{', '.join(insts)}] -> [{', '.join(rw)}]"
         if as_bit(recs.value(name, "bit Unsupported")):
             text += " : unsupported = true"
@@ -531,21 +776,46 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", required=True, help="SchedMachineModel def name")
     ap.add_argument("--machine", help="SSDL machine name (default: --processor -mcpu name)")
     ap.add_argument("--processor", help="ProcessorModel def whose features are copied")
+    ap.add_argument(
+        "--mcpu",
+        help="ProcessorModel selected by its -mcpu name (AArch64 models are "
+        "anonymous, so --processor cannot name them)",
+    )
     ap.add_argument("--unsupported-features", action="store_true",
                     help="transcribe UnsupportedFeatures (needs the host predicate defs)")
     ap.add_argument("-o", "--out", help="write here instead of stdout")
     args = ap.parse_args(argv)
 
     recs = load(args.records)
+    processor = args.processor
+    if args.mcpu is not None:
+        if processor is not None:
+            ap.error("--processor and --mcpu are mutually exclusive")
+        matches = [
+            name
+            for name, cls in recs.cls.items()
+            if cls == "ProcessorModel"
+            and unquote(recs.value(name, "string Name")) == args.mcpu
+        ]
+        if not matches:
+            print(f"from_records: no ProcessorModel is named {args.mcpu!r}", file=sys.stderr)
+            return 1
+        if len(matches) > 1:
+            print(
+                f"from_records: {args.mcpu!r} names {len(matches)} processors",
+                file=sys.stderr,
+            )
+            return 1
+        processor = matches[0]
     processor_name = None
-    if args.processor:
-        processor_name = unquote(recs.value(args.processor, "string Name"))
+    if processor:
+        processor_name = unquote(recs.value(processor, "string Name"))
     machine = args.machine or processor_name
     if not machine:
         ap.error("--machine is required when --processor is not given")
     try:
         text = generate(
-            recs, args.model, machine, args.processor, args.unsupported_features
+            recs, args.model, machine, processor, args.unsupported_features
         )
     except GeneratorError as exc:
         print(f"from_records: {exc}", file=sys.stderr)

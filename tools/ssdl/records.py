@@ -18,8 +18,19 @@ RECORD_RE = re.compile(r"def (\S+) \{\t// (.*)$")
 class RecordFile:
     """Parsed records: ``cls[def]`` is the last class on the comment line."""
 
+    #: Last class on the comment line (the most derived one).
     cls: dict[str, str] = field(default_factory=dict)
+    #: Full class chain as printed, base first.  Custom subclasses (a target's
+    #: ``class Foo : SchedWriteRes<...>``) only reveal what they are here.
+    chain: dict[str, tuple[str, ...]] = field(default_factory=dict)
     body: dict[str, list[str]] = field(default_factory=dict)
+
+    def kind(self, name: str, known: "set[str] | tuple[str, ...]") -> str | None:
+        """The most derived class of ``name`` from ``known``, if any."""
+        for token in reversed(self.chain.get(name, ())):
+            if token in known:
+                return token
+        return None
 
     def value(self, name: str, prefix: str) -> str | None:
         for line in self.body.get(name, ()):
@@ -30,6 +41,28 @@ class RecordFile:
 
     def has(self, name: str, prefix: str) -> bool:
         return self.value(name, prefix) is not None
+
+    def block(self, name: str, prefix: str) -> str | None:
+        """Like :meth:`value`, but join a ``[{ ... }]`` block across lines.
+
+        ``-print-records`` wraps a ``code`` field when its text is long or
+        contains a newline, so the value is not on one line.  The block ends
+        when the delimiters balance.
+        """
+        body = self.body.get(name, ())
+        field = prefix.split()[-1]
+        for i, line in enumerate(body):
+            text = line.strip()
+            # ``-print-records`` writes ``code Predicate =``; the JSON table
+            # (and its expansion) has no types, only ``Predicate =``.
+            if not (text.startswith(prefix + " ") or text.startswith(field + " = ")):
+                continue
+            value = text.split("=", 1)[1].strip()
+            while value.count("[{") > value.count("}]") and i + 1 < len(body):
+                i += 1
+                value += "\n" + body[i]
+            return value.rstrip().rstrip(";")
+        return None
 
     def scoped_to(self, model: str) -> list[str]:
         """Defs that carry ``SchedModel = <model>``, in dump order."""
@@ -54,7 +87,9 @@ def load(path: str) -> RecordFile:
                 m = RECORD_RE.match(line.rstrip("\n"))
                 if m:
                     cur = m.group(1)
-                    recs.cls[cur] = m.group(2).split()[-1] if m.group(2) else ""
+                    tokens = tuple(m.group(2).split()) if m.group(2) else ()
+                    recs.chain[cur] = tokens
+                    recs.cls[cur] = tokens[-1] if tokens else ""
                     buf = []
                 else:
                     cur = None

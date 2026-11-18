@@ -1291,7 +1291,7 @@ class Emitter:
                     )
                 )
 
-        map_names: set[str] = set()
+        map_names: dict[str, tuple[str, tuple[str, ...]]] = {}
         for index, item in enumerate(items["map"]):
             self.at(item)
             _, inst_entries = item["insts"]
@@ -1347,10 +1347,19 @@ class Emitter:
                     def_name += "_" + group_kind
                 if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", def_name):
                     def_name = f"{prefix}IRW_map_{index}"
+                key = (dag, tuple(resolved))
                 if def_name in map_names:
-                    self.error(where, f"map: duplicate emitted record name {def_name!r}")
-                    continue
-                map_names.add(def_name)
+                    if map_names[def_name] == key:
+                        self.error(where, f"map: duplicate emitted record name {def_name!r}")
+                        continue
+                    # Two regexes can sanitize to the same stem; the records
+                    # differ, so disambiguate deterministically.
+                    base = def_name
+                    suffix = 2
+                    while def_name in map_names:
+                        def_name = f"{base}_{suffix}"
+                        suffix += 1
+                map_names[def_name] = key
                 fields = (
                     [("Unsupported", "true" if item["unsupported"] else "false")]
                     if item.get("unsupported") is not None

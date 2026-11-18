@@ -45,8 +45,42 @@ from ssdl.records import (  # noqa: E402
 
 
 # ---------------------------------------------------------------- predicates
+MC_KINDS = {
+    "CheckRegOperand",
+    "CheckOpcode",
+    "CheckAll",
+    "AllOf",
+    "CheckAny",
+    "AnyOf",
+    "CheckNot",
+    "Not",
+    "MCTrue",
+    "MCFalse",
+    "CheckIsRegOperand",
+    "CheckIsImmOperand",
+    "CheckSameRegOperand",
+    "CheckNumOperands",
+    "CheckValidRegOperand",
+    "CheckInvalidRegOperand",
+    "CheckImmOperand",
+    "CheckImmOperand_s",
+    "CheckImmOperandRange",
+    "CheckZeroOperand",
+    "CheckFunctionPredicate",
+    "CheckFunctionPredicateWithTII",
+    "CheckNonPortable",
+    "TIIPredicate",
+}
+
+
 def mc_canon(recs: RecordFile, name: str) -> Any:
-    c = recs.cls.get(name, "")
+    # ``TruePred``/``FalsePred`` live in TargetInstrPredicate.td; a generated
+    # records-json table names them but does not define them.
+    if name == "TruePred":
+        return ("true",)
+    if name == "FalsePred":
+        return ("false",)
+    c = recs.kind(name, MC_KINDS) or recs.cls.get(name, "")
     v = lambda p: recs.value(name, p)  # noqa: E731
     if c == "CheckRegOperand":
         return ("reg", as_int(v("int OpIndex")), v("Register Reg"))
@@ -65,7 +99,121 @@ def mc_canon(recs: RecordFile, name: str) -> Any:
         return ("true",)
     if c == "MCFalse":
         return ("false",)
+    mapper = unquote(v("string FunctionMapper")) or ""
+    if c == "CheckIsRegOperand":
+        return ("is_reg", as_int(v("int OpIndex")))
+    if c == "CheckIsImmOperand":
+        return ("is_imm", as_int(v("int OpIndex")))
+    if c == "CheckSameRegOperand":
+        return (
+            "same_reg",
+            as_int(v("int FirstIndex")),
+            as_int(v("int SecondIndex")),
+        )
+    if c == "CheckNumOperands":
+        return ("num_ops", as_int(v("int NumOps")))
+    if c == "CheckValidRegOperand":
+        return ("valid_reg", as_int(v("int OpIndex")))
+    if c == "CheckInvalidRegOperand":
+        return ("invalid_reg", as_int(v("int OpIndex")))
+    if c == "CheckZeroOperand":
+        return ("imm", as_int(v("int OpIndex")), 0, mapper)
+    if c == "CheckImmOperand":
+        return ("imm", as_int(v("int OpIndex")), as_int(v("int ImmVal")), mapper)
+    if c == "CheckImmOperand_s":
+        return ("imm_enum", as_int(v("int OpIndex")), v("string ImmVal"), mapper)
+    if c == "CheckImmOperandRange":
+        return (
+            "imm_range",
+            as_int(v("int OpIndex")),
+            as_int(v("int StartVal")),
+            as_int(v("int EndVal")),
+            mapper,
+        )
+    if c == "CheckFunctionPredicate":
+        return ("func", v("string MCInstFnName"), v("string MachineInstrFnName"))
+    if c == "CheckFunctionPredicateWithTII":
+        return (
+            "func_tii",
+            v("string MCInstFnName"),
+            v("string MachineInstrFnName"),
+            unquote(v("string TIIPtrName")),
+        )
+    if c == "CheckNonPortable":
+        code = recs.block(name, "string CodeBlock") or ""
+        return ("non_portable", " ".join(code.split()))
+    if c == "TIIPredicate":
+        return (
+            "tii",
+            unquote(v("string FunctionName")),
+            stmt_canon(recs, v("MCStatement Body")),
+        )
     return ("?" + c, tuple(sorted(recs.body.get(name, ()))))
+
+
+def stmt_canon(recs: RecordFile, name: str | None) -> Any:
+    """Canonical form of an ``MCStatement`` (TII predicate bodies)."""
+    if not name:
+        return None
+    c = recs.kind(name, {"MCReturnStatement", "MCOpcodeSwitchStatement",
+                         "MCTrue", "MCFalse"}) or recs.cls.get(name, "")
+    if c == "MCReturnStatement":
+        return ("return", mc_canon(recs, recs.value(name, "MCInstPredicate Pred")))
+    if c == "MCOpcodeSwitchStatement":
+        cases = []
+        for case in as_list(recs.value(name, "list<MCOpcodeSwitchCase> Cases")):
+            ops = as_list(recs.value(case, "list<Instruction> Opcodes"))
+            stmt = stmt_canon(recs, recs.value(case, "MCStatement CaseStmt"))
+            cases.append((ops, stmt))
+        default = stmt_canon(recs, recs.value(name, "MCStatement DefaultCase"))
+        return ("switch", tuple(cases), default)
+    if c in ("MCTrue", "MCFalse"):
+        return ("return", ("true",) if c == "MCTrue" else ("false",))
+    return ("?" + c, tuple(sorted(recs.body.get(name, ()))))
+
+
+# A SchedWriteRes and a WriteRes (or SchedReadAdvance and ReadAdvance) are the
+# same scheduling object; the SSDL lowering splits ``write W; bind W`` into two
+# records, so the class is compared at the binding level, not verbatim.
+_BINDING_CLASS = {
+    "SchedWriteRes": "WriteRes",
+    "WriteRes": "WriteRes",
+    "SchedReadAdvance": "ReadAdvance",
+    "ReadAdvance": "ReadAdvance",
+    # A target may subclass a variant to carry extra fields; it is still the
+    # same scheduling object (C1's ``C1NanoStreamingSchedWrite``).
+    "SchedWriteVariant": "SchedWriteVariant",
+    "SchedReadVariant": "SchedReadVariant",
+}
+
+
+def rw_kind(recs: RecordFile, name: str) -> str:
+    cls = recs.kind(name, set(_BINDING_CLASS)) or recs.cls.get(name, "")
+    return _BINDING_CLASS.get(cls, cls)
+
+
+def distribute_mc(node: Any) -> Any:
+    """Push an ``MCSchedPredicate`` wrapper into a predicate combinator.
+
+    ``MCSchedPredicate<AnyOf<A, B>>`` and
+    ``AnyOfSchedPreds<MCSchedPredicate<A>, MCSchedPredicate<B>>`` expand to the
+    same C++ expression; SSDL writes the latter because ``all_of``/``any_of``
+    are its scheduling combinators.
+    """
+    if not isinstance(node, tuple) or not node:
+        return node
+    if node[0] == "mc":
+        inner = node[1]
+        if isinstance(inner, tuple) and inner and inner[0] in ("any", "all"):
+            return (inner[0], tuple(distribute_mc(("mc", x)) for x in inner[1]))
+        if isinstance(inner, tuple) and inner and inner[0] == "not":
+            return ("not", distribute_mc(("mc", inner[1])))
+        return node
+    if node[0] in ("any", "all"):
+        return (node[0], tuple(distribute_mc(x) for x in node[1]))
+    if node[0] == "not":
+        return ("not", distribute_mc(node[1]))
+    return node
 
 
 def pred_canon(recs: RecordFile, name: str | None) -> Any:
@@ -87,11 +235,11 @@ def pred_canon(recs: RecordFile, name: str | None) -> Any:
     if feature:
         return ("feature", feature)
     if c == "SchedPredicate":
-        code = v("code Predicate") or ""
+        code = recs.block(name, "code Predicate") or ""
         return ("sched", " ".join(code.split()))
     mc = v("MCInstPredicate Pred")
     if mc:
-        return ("mc", mc_canon(recs, mc))
+        return distribute_mc(("mc", mc_canon(recs, mc)))
     return ("?" + c, tuple(sorted(recs.body.get(name, ()))))
 
 
@@ -168,6 +316,11 @@ class Model:
 
 ANON_RE = re.compile(r"^.*?anonymous_\d+")
 WRES_RE = re.compile(r"^.*?_WRes_")
+# The emitter splits a variant subject's own binding off the subject:
+# ``<machine>_WRes_<subject>`` / ``<machine>_RA_<read>`` /
+# ``<machine>_RAdv_<read>``.  Upstream keeps one record (a SchedWriteRes or a
+# SchedReadAdvance) whose name is the subject itself.
+RADV_RE = re.compile(r"^(?:.*?_)?(?:RAdv|RA)_")
 
 
 def _prefixes(prefix) -> tuple[str, ...]:
@@ -206,7 +359,7 @@ def canon_name(name: str, prefix=None) -> str:
     variant subject's own binding to ``<machine>_WRes_<write>`` because an
     aliased subject cannot carry a WriteRes.
     """
-    return WRES_RE.sub("", ANON_RE.sub("", strip_prefix(name, prefix)))
+    return RADV_RE.sub("", WRES_RE.sub("", ANON_RE.sub("", strip_prefix(name, prefix))))
 
 
 # (``-print-records`` field, SSDL property, TableGen default).  Defaults come
@@ -243,6 +396,18 @@ def build(recs: RecordFile, model: str, prefix=None) -> Model:
                 strip_prefix(item, prefix)
                 for item in as_list(recs.value(name, "list<ProcResourceKind> ProcResources"))
             )
+    # A bare SchedWrite that has a WriteRes binding somewhere in this model is
+    # a binding in every respect; upstream often writes it as one record of a
+    # SchedWriteRes subclass and then aliases the vocabulary write to it.
+    bound_writes: set[str] = set()
+    bound_reads: set[str] = set()
+    for name in scoped:
+        write_type = recs.value(name, "SchedWrite WriteType")
+        if write_type is not None and recs.value(name, "int Latency") is not None:
+            bound_writes.add(write_type)
+        read_type = recs.value(name, "SchedRead ReadType")
+        if read_type is not None and recs.value(name, "int Cycles") is not None:
+            bound_reads.add(read_type)
     for name in scoped:
         if recs.value(name, "SchedWrite WriteType") is not None:
             key = canon_name(recs.value(name, "SchedWrite WriteType"), prefix)
@@ -275,9 +440,19 @@ def build(recs: RecordFile, model: str, prefix=None) -> Model:
                 cases.append((pred, selected))
             # Include the target class so an alias to a variant cannot look
             # like an alias to a WriteSequence just because both have no
-            # SchedVars.
-            out.variants[canon_name(match, prefix)] = (recs.cls.get(variant, ""), tuple(cases))
-        elif recs.cls.get(name) in ("SchedWriteVariant", "SchedReadVariant") and name not in alias_targets:
+            # SchedVars.  An alias to a *binding* (upstream's one-record
+            # SchedWriteRes / SchedReadAdvance) is the same schedule as an
+            # alias to the bare write/read that this model binds separately.
+            alias_kind = rw_kind(recs, variant)
+            if alias_kind == "SchedWrite" and variant in bound_writes:
+                alias_kind = "WriteRes"
+            elif alias_kind == "SchedRead" and variant in bound_reads:
+                alias_kind = "ReadAdvance"
+            out.variants[canon_name(match, prefix)] = (alias_kind, tuple(cases))
+        elif (
+            recs.kind(name, {"SchedWriteVariant", "SchedReadVariant"}) is not None
+            and name not in alias_targets
+        ):
             cases = []
             for var in as_list(recs.value(name, "list<SchedVar> Variants")):
                 pred = pred_canon(recs, recs.value(var, "SchedPredicateBase Predicate"))
@@ -286,7 +461,10 @@ def build(recs: RecordFile, model: str, prefix=None) -> Model:
                     for sel in as_list(recs.value(var, "list<SchedReadWrite> Selected"))
                 )
                 cases.append((pred, selected))
-            out.variants[canon_name(name, prefix)] = (recs.cls.get(name, ""), tuple(cases))
+            out.variants[canon_name(name, prefix)] = (
+                recs.kind(name, {"SchedWriteVariant", "SchedReadVariant"}) or "",
+                tuple(cases),
+            )
         if recs.value(name, "dag Instrs") is not None:
             rws = tuple(
                 canon_name(item, prefix)
@@ -451,6 +629,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--in-model", required=True)
     ap.add_argument("--gen-model", required=True)
     ap.add_argument("--in-processor", help="in-tree ProcessorModel def to compare")
+    ap.add_argument(
+        "--in-mcpu",
+        help="in-tree ProcessorModel selected by its -mcpu name (AArch64 "
+        "processor defs are anonymous)",
+    )
     ap.add_argument("--gen-processor", help="generated ProcessorModel def to compare")
     ap.add_argument("--limit", type=int, default=20)
     ap.add_argument(
@@ -496,8 +679,25 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         generated_recs = load(args.generated)
+    if args.in_processor and args.in_mcpu:
+        ap.error("--in-processor and --in-mcpu are mutually exclusive")
+    intree_processor = args.in_processor
+    if args.in_mcpu is not None:
+        matches = [
+            name
+            for name, cls in intree_recs.cls.items()
+            if cls == "ProcessorModel"
+            and unquote(intree_recs.value(name, "string Name")) == args.in_mcpu
+        ]
+        if len(matches) != 1:
+            print(
+                f"equiv: {args.in_mcpu!r} names {len(matches)} in-tree processors",
+                file=sys.stderr,
+            )
+            return 2
+        intree_processor = matches[0]
     intree_cpu = (
-        build_processor(intree_recs, args.in_processor) if args.in_processor else None
+        build_processor(intree_recs, intree_processor) if intree_processor else None
     )
     generated_cpu = (
         build_processor(generated_recs, args.gen_processor) if args.gen_processor else None
