@@ -83,6 +83,7 @@ if __package__ in (None, ""):
         STIDecl,
         STIFunction,
         TIIPredicate,
+        coerce_layer,
         parse_file,
     )
 else:
@@ -103,6 +104,7 @@ else:
         STIDecl,
         STIFunction,
         TIIPredicate,
+        coerce_layer,
         parse_file,
     )
 
@@ -1889,9 +1891,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--syntax",
-        choices=("v1", "v2"),
-        default="v1",
-        help="surface syntax of the input (default: v1)",
+        type=coerce_layer,
+        metavar="{v2,ir}",
+        default="v2",
+        help="input layer: v2 surface (default) or internal IR text",
     )
     args = ap.parse_args(argv)
 

@@ -96,7 +96,7 @@ def expect_emit_errors(source: str, expectations: list[str]) -> None:
 
 
 def spec_example_text() -> str:
-    doc = (ROOT / "docs/dsl/2026-11-16-ssdl-v1.0-final.md").read_text(encoding="utf-8")
+    doc = (ROOT / "docs/dsl/history/2026-11-16-ssdl-v1.0-final.md").read_text(encoding="utf-8")
     marker = "## 五、完整例子"
     pos = doc.index(marker)
     start = doc.index("```text\n", pos) + len("```text\n")
@@ -105,7 +105,7 @@ def spec_example_text() -> str:
 
 
 @test
-def spec_example_checked_in_copy_matches_the_document():
+def ir_text_example_checked_in_copy_matches_the_document():
     checked_in = (ROOT / "tests/ssdl/spec-example.ssdl").read_text(encoding="utf-8")
     assert_true(
         checked_in == spec_example_text(),
@@ -114,7 +114,7 @@ def spec_example_checked_in_copy_matches_the_document():
 
 
 @test
-def spec_example_parses():
+def ir_text_example_parses():
     program = parser.parse(spec_example_text())
     got = [(type(d).__name__, getattr(d, "name", None)) for d in program.decls]
     expected = [
@@ -142,7 +142,7 @@ def spec_example_parses():
 
 
 @test
-def spec_example_is_not_lowerable_as_written():
+def ir_text_example_is_not_lowerable_as_written():
     try:
         emit_source(spec_example_text(), strict=True)
     except SSDLEmitError as exc:
@@ -223,7 +223,7 @@ def comparator_is_not_vacuous():
 
 @test
 def errata_syntax_parses():
-    program = parser.parse_file(str(ROOT / "tests/ssdl/v1-compat/errata.ssdl"))
+    program = parser.parse_file(str(ROOT / "tests/ssdl/ir-only/errata.ssdl"))
     by_name = {getattr(d, "name", None): d for d in program.decls}
 
     # S1 + S2: parameters and named predicate calls.
@@ -2818,7 +2818,13 @@ machine M {
 """
     )
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "tools/ssdl/validate.py"), str(path)],
+        [
+            sys.executable,
+            str(ROOT / "tools/ssdl/validate.py"),
+            str(path),
+            "--syntax",
+            "ir",
+        ],
         capture_output=True,
         text=True,
     )
@@ -3484,28 +3490,28 @@ def profiles_name_every_instance_the_miner_generates():
 
 
 V2_FIXTURES = [
-    ("family-mini", "tests/ssdl/family-mini.ssdl", "tests/ssdl/v2/family-mini-v2.ssdl"),
-    ("multiline", "tests/ssdl/multiline.ssdl", "tests/ssdl/v2/multiline-v2.ssdl"),
-    ("two-instances", "tests/ssdl/two-instances.ssdl", "tests/ssdl/v2/two-instances-v2.ssdl"),
+    ("family-mini", "tests/ssdl/family-mini.ssdl", "tests/ssdl/surface/family-mini.ssdl"),
+    ("multiline", "tests/ssdl/multiline.ssdl", "tests/ssdl/surface/multiline.ssdl"),
+    ("two-instances", "tests/ssdl/two-instances.ssdl", "tests/ssdl/surface/two-instances.ssdl"),
     (
         "two-instances-runtime",
         "tests/ssdl/two-instances-runtime.ssdl",
-        "tests/ssdl/v2/two-instances-runtime-v2.ssdl",
+        "tests/ssdl/surface/two-instances-runtime.ssdl",
     ),
-    ("itineraries", "tests/ssdl/itineraries.ssdl", "tests/ssdl/v2/itineraries-v2.ssdl"),
-    ("entities", "tests/ssdl/entities.ssdl", "tests/ssdl/v2/entities-v2.ssdl"),
+    ("itineraries", "tests/ssdl/itineraries.ssdl", "tests/ssdl/surface/itineraries.ssdl"),
+    ("entities", "tests/ssdl/entities.ssdl", "tests/ssdl/surface/entities.ssdl"),
     (
         "machine-roles",
         "tests/ssdl/machine-roles.ssdl",
-        "tests/ssdl/v2/machine-roles-v2.ssdl",
+        "tests/ssdl/surface/machine-roles.ssdl",
     ),
-    ("variants", "tests/ssdl/variants.ssdl", "tests/ssdl/v2/variants-v2.ssdl"),
-    ("predicates", "tests/ssdl/predicates.ssdl", "tests/ssdl/v2/predicates-v2.ssdl"),
-    ("map", "tests/ssdl/map.ssdl", "tests/ssdl/v2/map-v2.ssdl"),
+    ("variants", "tests/ssdl/variants.ssdl", "tests/ssdl/surface/variants.ssdl"),
+    ("predicates", "tests/ssdl/predicates.ssdl", "tests/ssdl/surface/predicates.ssdl"),
+    ("map", "tests/ssdl/map.ssdl", "tests/ssdl/surface/map.ssdl"),
     (
         "projection-contract",
         "tests/ssdl/projection-contract.ssdl",
-        "tests/ssdl/v2/projection-contract-v2.ssdl",
+        "tests/ssdl/surface/projection-contract.ssdl",
     ),
 ]
 
@@ -3519,7 +3525,7 @@ def v2_error(source: str) -> str:
 
 
 @test
-def v2_and_v1_frontends_build_the_same_ir():
+def surface_and_ir_build_the_same_program():
     """AC4: the surface changes, the semantic program does not."""
     for label, v1_path, v2_path in V2_FIXTURES:
         v1_text = (ROOT / v1_path).read_text(encoding="utf-8")
@@ -3698,7 +3704,7 @@ machine family m {
 @test
 def v2_instance_override_replaces_one_statement():
     """``override`` drops the inherited statement; fields are never merged."""
-    source = (ROOT / "tests/ssdl/v2/instance-override-v2.ssdl").read_text(encoding="utf-8")
+    source = (ROOT / "tests/ssdl/surface/instance-override.ssdl").read_text(encoding="utf-8")
     flat = family_mod.expand(syntax_v2.to_v1(source))
     text, skips = emit_source(flat, strict=True)
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
@@ -3736,7 +3742,7 @@ def v2_instance_override_replaces_one_statement():
 @test
 def v2_list_fields_take_parameters_and_conditionals():
     """A list field may be a parameter or choose between lists."""
-    source = (ROOT / "tests/ssdl/v2/list-cond-v2.ssdl").read_text(encoding="utf-8")
+    source = (ROOT / "tests/ssdl/surface/list-cond.ssdl").read_text(encoding="utf-8")
     text, skips = emit_source(family_mod.expand(syntax_v2.to_v1(source)), strict=True)
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
     assert_in("WriteRes<W, [narrow_Narrow]>", text)
@@ -3888,7 +3894,7 @@ machine m { write W; resource P2 { units = 1; } bind W { resources = [P2]; laten
 @test
 def v2_machine_roles_split_model_and_processor():
     """AC6: ``machine model`` and ``machine cpu`` emit one record each."""
-    source = (ROOT / "tests/ssdl/v2/machine-roles-v2.ssdl").read_text(
+    source = (ROOT / "tests/ssdl/surface/machine-roles.ssdl").read_text(
         encoding="utf-8"
     )
     flat = elaborate_mod.render(elaborate_mod.elaborate(source, syntax="v2"))
@@ -3973,7 +3979,7 @@ def to_v2_splits_v1_colon_properties():
 @test
 def v2_sifive7_mini_matches_the_handwritten_records():
     """The whole v2 surface lowers to the same records as the v1 fixture."""
-    source = (ROOT / "tests/ssdl/v2/sifive7-mini-v2.ssdl").read_text(encoding="utf-8")
+    source = (ROOT / "tests/ssdl/surface/sifive7-mini.ssdl").read_text(encoding="utf-8")
     flat = syntax_v2.to_v1(source)
     text, skips = emit_source(flat, strict=True, attrs=attrs_schema())
     assert_true(skips == [], f"strict emission skipped constructs: {skips}")
@@ -4350,7 +4356,7 @@ def emit_source_v2(source: str, strict: bool = False, attrs=None):
     return emit_td.emit(parser.parse(source, syntax="v2"), strict=strict, attrs=attrs)
 
 
-def emit_error_text(source: str, *, syntax: str = "v1") -> str:
+def emit_error_text(source: str, *, syntax: str = "ir") -> str:
     try:
         if syntax == "v2":
             emit_source_v2(source)
@@ -4678,7 +4684,7 @@ machine instance i : f(4) {
     v1 = parser.expand_source(
         "machine f(n: INT) { write W; bind W { resources = []; latency = n; } }\n"
         "machine i : f(4) { }",
-        syntax="v1",
+        syntax="ir",
     )
     assert_in("machine i {", v1)
     assert_in("latency = 4", v1)
@@ -4718,6 +4724,41 @@ machine instance i : f(4) {{
 """
         text = elaborate_mod.render(elaborate_mod.elaborate(source, syntax="v2"))
         assert_in("bind W -> [], latency = 3;", text)
+
+
+@test
+def one_surface_and_one_ir_layer():
+    """--syntax has exactly two values: the surface (default) and IR text.
+
+    This pins the 2026-11-18 decision: v1 is not a surface syntax any more, so
+    the old spelling must fail loudly instead of being silently accepted as IR.
+    """
+    surface = ROOT / "tests/ssdl/surface/sifive7-mini.ssdl"
+    ir = ROOT / "tests/ssdl/sifive7-mini.ssdl"
+    tool = str(ROOT / "tools/ssdl/validate.py")
+
+    def run(path, *args):
+        return subprocess.run(
+            [sys.executable, tool, str(path), *args],
+            capture_output=True,
+            text=True,
+        )
+
+    assert_true(run(surface).returncode == 0, "surface is the default layer")
+    assert_true(run(ir, "--syntax", "ir").returncode == 0, "IR needs --syntax ir")
+    assert_true(run(ir).returncode != 0, "IR must not be read as the surface")
+
+    rejected = run(ir, "--syntax", "v1")
+    assert_true(rejected.returncode != 0, "--syntax v1 must be rejected")
+    assert_in("no longer a surface syntax", rejected.stderr)
+    assert_in("'ir'", rejected.stderr)
+
+    try:
+        parser.parse("machine m { }", syntax="v1")
+    except parser.SSDLParseError as exc:
+        assert_in("unknown input layer", str(exc))
+    else:
+        raise Failure("the library must reject the v1 layer name too")
 
 
 def main() -> int:

@@ -1,7 +1,7 @@
 # SSDL 1.0 Final 评审：可解析性与可展开性都还没闭合
 
 - date: 2026-11-16
-- 评审对象：`2026-11-16-ssdl-v1.0-final.md`
+- 评审对象：`history/2026-11-16-ssdl-v1.0-final.md`
 - 证据基线：`/home/ubuntu/llvm/trees/explore` @ `700e551714cc`
 - 方法：只做静态评审。逐条把文档的 EBNF 与示例对推，再把 `norm` 规则对照 LLVM 的 TableGen 类定义；没有运行 SSDL 解析器（目前也不存在），因此不声称示例“能解析”。相反，下面列出的是按文档自己的文法**推不出来**的位置。
 - 结论：**设计方向成立，但“1.0 Final / 语义完整的替代品”不成立。** 至少有 5 处示例无法由 EBNF 推导，10 处语义无法唯一展开成 LLVM TableGen；旗舰例子还把 AArch64 的指令/寄存器/零寄存器习语写进了 RISC-V SiFive7，并把一个 in-order 核写成了 OoO 核。
@@ -387,7 +387,7 @@ Bypass_ALU_LD                # 未用 bypass 声明
 
 SSDL 目前最大的问题不是“有 bug”，而是**没有可执行判据**。建议最小验收链：
 
-1. 写一个 SSDL parser（哪怕只覆盖 1.0 的文法），把 `2026-11-16-ssdl-v1.0-final.md` 第 5 节作为唯一输入；
+1. 写一个 SSDL parser（哪怕只覆盖 1.0 的文法），把 `history/2026-11-16-ssdl-v1.0-final.md` 第 5 节作为唯一输入；
 2. 解析失败即 P0，不能靠“宿主预处理”绕过；
 3. 解析成功后，按 `norm` 生成 `.td`；
 4. 对同一个目标，把生成的 `.td` 与手写 `.td` 分别跑 `llvm-tblgen`，比较：

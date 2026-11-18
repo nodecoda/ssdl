@@ -177,6 +177,8 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
             py,
             str(ROOT / "tools/ssdl/emit_td.py"),
             str(ssdl),
+            "--syntax",
+            "ir",
             "--target",
             "aarch64",
             "--target-include",

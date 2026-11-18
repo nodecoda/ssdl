@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Set evaluation for SSDL 1.1.
+"""Compile-time set evaluation.
 
-SSDL 1.1 does not define a universal attribute universe.  A host supplies one
+SSDL does not define a universal attribute universe.  A host supplies one
 in JSON::
 
     {
@@ -10,7 +10,8 @@ in JSON::
       "reg":  {"X0":  {"is_zero": true, ...}, ...}
     }
 
-The evaluator implements the contract in ``2026-11-16-ssdl-v1.1-draft.md`` §5:
+The evaluator implements the contract recorded in
+``docs/dsl/history/2026-11-16-ssdl-v1.1-draft.md`` §5:
 typed comparisons, errors for unknown/missing attributes, stable host order,
 stable deduplication, spread expansion, and cycle detection.
 """

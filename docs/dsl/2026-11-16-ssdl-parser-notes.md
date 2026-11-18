@@ -1,7 +1,7 @@
 # SSDL 解析器与最小展开器：实现记录
 
 - date: 2026-11-16
-- 上游文档：`2026-11-16-ssdl-v1.0-final.md`（未改动）
+- 上游文档：`history/2026-11-16-ssdl-v1.0-final.md`（未改动）
 - 上游评审：`2026-11-16-ssdl-review.md`（未改动）
 - 代码：`tools/ssdl/{parser,emit_td,compare,check}.py`
 - 测试：`tests/ssdl/`
@@ -78,7 +78,7 @@ tii_predicate isDependencyBreaking: error: TII predicates are not lowered by the
 
 ## 3. 语法 errata：实现接受的六处修正
 
-不修改上游文档，只记录“解析器为了接受文档自己的示例所做的文法修正”。S1–S5 来自评审；S6/S7 是后续实现中新发现的。这些修正已经写进 `2026-11-16-ssdl-v1.1-draft.md`。
+不修改上游文档，只记录“解析器为了接受文档自己的示例所做的文法修正”。S1–S5 来自评审；S6/S7 是后续实现中新发现的。这些修正已经写进 `history/2026-11-16-ssdl-v1.1-draft.md`。
 
 | ID | 位置 | 文档写法 | 文档 EBNF | 解析器接受的修正 |
 |---|---|---|---|---|
@@ -273,7 +273,7 @@ tests/ssdl/attrs.json                 # set 求值用的 inst/reg 属性 schema
 
 ## 10. 2026-11-16 v1.1 增量
 
-v1.1 的规范文本在 `2026-11-16-ssdl-v1.1-draft.md`。本轮只实现其中可判定的部分：
+v1.1 的规范文本在 `history/2026-11-16-ssdl-v1.1-draft.md`。本轮只实现其中可判定的部分：
 
 | v1.1 项 | 实现 | 证据 |
 |---|---|---|

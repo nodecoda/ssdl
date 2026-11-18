@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Elaborate a family source into the SSDL semantic IR and render v1.0 text.
+"""Elaborate SSDL input into the semantic IR and render its text form.
 
 Pipeline:
 
-    family source --split_blocks--> machine/axis structure
+    input (v2 surface, transpiled first) or IR text
+                  --split_blocks--> machine/axis structure
                   --_expand_body--> per-instance statements (axes substituted)
                   --semir---------> SemProgram (identity + phase)
-                  --render--------> flat v1.0 text
+                  --render--------> flat IR text
 
-Phase 1b keeps the v1.2 renderer (``family_expand._expand_body``) as the single
-implementation of norm rules, so the IR path is byte-identical by construction;
-``--check-golden`` proves it against ``data/ssdl-golden.sha256``.
+``family_expand._expand_body`` is the single implementation of the norm rules,
+so the IR path is byte-identical by construction; ``--check-golden`` proves it
+against ``data/ssdl-golden.sha256``.
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import family_expand as fe  # noqa: E402
 from ssdl import golden, semir  # noqa: E402
+from ssdl.parser import coerce_layer  # noqa: E402
 
 
 
@@ -241,12 +243,12 @@ def elaborate(
     *,
     add_axis: tuple[str, str] | None = None,
     origins: list[tuple[str, str, int]] | None = None,
-    syntax: str = "v1",
+    syntax: str = "ir",
 ) -> semir.SemProgram:
     """Build the semantic program; all values here are ELAB.
 
-    ``syntax="v2"`` transpiles the v2 surface to v1 family source first; the
-    semantic kernel below is shared, so both front ends must produce the same
+    ``syntax="v2"`` transpiles the surface to IR text first; the semantic
+    kernel below is shared, so the surface and the IR must produce the same
     ``SemProgram``.
     """
     if syntax == "v2":
@@ -359,7 +361,12 @@ def elaborate(
 
 
 def render(program: semir.SemProgram) -> str:
-    """The flat v1.0 text, byte-identical to the v1.2 expander."""
+    """Print the program as flat IR text.
+
+    This is the IR's text form, not a surface syntax: it is what golden hashes,
+    what ``--syntax ir`` reads back, and what a diff shows.  It is byte
+    compatible with the historical v1.2 expander output.
+    """
     lines = [decl.text for decl in program.globals]
     if program.globals:
         lines.append("")
@@ -377,7 +384,7 @@ def expand_text(
     *,
     add_axis: tuple[str, str] | None = None,
     origins: list[tuple[str, str, int]] | None = None,
-    syntax: str = "v1",
+    syntax: str = "ir",
 ) -> str:
     return render(
         elaborate(text, add_axis=add_axis, origins=origins, syntax=syntax)
@@ -390,9 +397,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-o", "--out")
     ap.add_argument(
         "--syntax",
-        choices=("v1", "v2"),
-        default="v1",
-        help="surface syntax of the input (default: v1)",
+        type=coerce_layer,
+        metavar="{v2,ir}",
+        default="v2",
+        help="input layer: v2 surface (default) or internal IR text",
     )
     ap.add_argument("--symbols", action="store_true", help="print declaration identities")
     ap.add_argument(

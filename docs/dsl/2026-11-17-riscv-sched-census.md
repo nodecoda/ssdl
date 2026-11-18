@@ -78,7 +78,7 @@ SSDL v1.2 要同时解决这两侧：既有族/维度压缩，又有覆盖性诊
 
 ### 3.5 维度轴是词表级，不是机器级
 
-CSV 的 `dimension_axes` 列显示：`mx=SchedMxList`、`eew=[8,16,32,64]`、`nf=2-8`、`sew=SchedSEWSet<mx,...>.val`。这些轴绑定的是 `WriteVLDE_M1` 这类**词表名字**，不是 `machine` 属性。v1.2 的 `set ... : kind = dimension` 必须提升到目标级，与 v1.1 §9.1 的词表所有权一致（`docs/dsl/2026-11-16-ssdl-v1.1-draft.md:409`）。
+CSV 的 `dimension_axes` 列显示：`mx=SchedMxList`、`eew=[8,16,32,64]`、`nf=2-8`、`sew=SchedSEWSet<mx,...>.val`。这些轴绑定的是 `WriteVLDE_M1` 这类**词表名字**，不是 `machine` 属性。v1.2 的 `set ... : kind = dimension` 必须提升到目标级，与 v1.1 §9.1 的词表所有权一致（`docs/dsl/history/2026-11-16-ssdl-v1.1-draft.md:414`）。
 
 ## 4. 复现
 

@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from ssdl import paths  # noqa: E402
 from ssdl.census_sched import llvm_commit  # noqa: E402
 from ssdl.diagnose import diagnose  # noqa: E402
-from ssdl.parser import parse_file  # noqa: E402
+from ssdl.parser import coerce_layer, parse_file  # noqa: E402
 from ssdl.records import load, unquote  # noqa: E402
 
 
@@ -97,7 +97,7 @@ class Result:
 LEVEL_ORDER = {"error": 0, "warning": 1, "note": 2}
 
 
-def diagnose_source(source: Path, syntax: str = "v1") -> list[dict]:
+def diagnose_source(source: Path, syntax: str = "ir") -> list[dict]:
     """Count effect findings in one mined source, keyed by level and effect.
 
     A family source is expanded by ``parse_file``, so the counts are the same
@@ -141,7 +141,7 @@ def run_model(item: dict, args: argparse.Namespace) -> Result:
     ssdl = out / "family.ssdl"
     v2 = out / "family.v2.ssdl"
     flat = out / "flat.ssdl"
-    syntax = getattr(args, "syntax", "v1")
+    syntax = getattr(args, "syntax", "ir")
     if args.diagnose_only:
         if syntax == "v2" and not v2.is_file() and ssdl.is_file():
             from ssdl.to_v2 import to_v2
@@ -250,9 +250,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vlen", type=int, default=128)
     ap.add_argument(
         "--syntax",
-        choices=("v1", "v2"),
-        default="v1",
-        help="migrate each mined source to this surface before validating (default: v1)",
+        type=coerce_layer,
+        metavar="{v2,ir}",
+        default="v2",
+        help="layer each mined source is validated at: v2 surface (default, "
+        "via to_v2) or the mined IR text",
     )
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--only", nargs="*")

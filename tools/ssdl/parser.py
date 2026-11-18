@@ -1,16 +1,44 @@
 #!/usr/bin/env python3
-"""A small recursive-descent parser for SSDL 1.0 + the recorded errata.
+"""A small recursive-descent parser for SSDL's IR text.
 
-The parser accepts the document's section 5 example.  It is deliberately
-syntax-only: names such as `ORR`, `GPR64`, `read_default` are not resolved
-here.  The emitter decides which declarations it can lower.
+SSDL has one surface layer (``v2``) and one intermediate representation.  The
+IR is text, so it needs a reader, but it is not a second grammar: it is what
+``elaborate.render`` prints and what this module consumes.  The parser is
+deliberately syntax-only: names such as `ORR`, `GPR64`, `read_default` are not
+resolved here.  The emitter decides which declarations it can lower.
+
+Callers name the layer explicitly:
+
+    syntax="v2"   the surface language (transpiled to IR first)
+    syntax="ir"   IR text, either a family template or the flat expansion
+
+``v1`` is not accepted: it was the historical surface spelling of the IR.
 """
 from __future__ import annotations
 
+import argparse
 import re
 
 from dataclasses import dataclass, field
 from typing import Any
+
+
+SURFACE = "v2"
+IR = "ir"
+LAYERS = (SURFACE, IR)
+
+
+def coerce_layer(value: str) -> str:
+    """argparse ``type=`` for ``--syntax``; ``v1`` gets a teaching error."""
+    if value == "v1":
+        raise argparse.ArgumentTypeError(
+            "v1 is no longer a surface syntax; pass 'ir' for the internal IR text"
+        )
+    if value not in LAYERS:
+        raise argparse.ArgumentTypeError(
+            "'v2' (surface) or 'ir' (internal IR text)"
+        )
+    return value
 
 
 class SSDLParseError(Exception):
@@ -1176,7 +1204,7 @@ def _remap_program_lines(program: Program, source_map) -> None:
 
 
 def parse(
-    text: str, syntax: str = "v1", source_map=None
+    text: str, syntax: str = IR, source_map=None
 ) -> Program:
     if syntax == "v2":
         if __package__ in (None, ""):
@@ -1184,6 +1212,10 @@ def parse(
         else:
             from . import syntax_v2
         text, source_map = syntax_v2.to_v1_mapped(text)
+    elif syntax != IR:
+        raise SSDLParseError(
+            f"unknown input layer {syntax!r}: expected {SURFACE!r} or {IR!r}"
+        )
     try:
         program = Parser(text).parse()
     except SSDLParseError as exc:
@@ -1201,16 +1233,16 @@ FAMILY_SOURCE = re.compile(
 )
 
 
-def expand_source_mapped(text: str, syntax: str = "v1"):
-    """Expand a source to v1.0 text and return a line map.
+def expand_source_mapped(text: str, syntax: str = IR):
+    """Expand a source to flat IR text and return a line map.
 
-    ``syntax="v2"`` first transpiles the v2 surface to v1 family source; the
-    rest of the path is unchanged.  The marker is either a parameterized
-    ``machine`` header (a family template), a ``machine NAME : F(args)``
-    instantiation, a dimension/relation declaration, or an ``extern fn``;
-    only those sources can need expansion.  Without a marker the text is
-    returned untouched.  ``family_expand`` is the single implementation of
-    the norm rules, and its output is ordinary v1.0 SSDL.
+    ``syntax="v2"`` first transpiles the surface to a family template in IR
+    text; the rest of the path is unchanged.  The marker is either a
+    parameterized ``machine`` header (a family template), a
+    ``machine NAME : F(args)`` instantiation, a dimension/relation
+    declaration, or an ``extern fn``; only those sources can need expansion.
+    Without a marker the text is returned untouched.  ``family_expand`` is the
+    single implementation of the norm rules, and its output is flat IR text.
 
     The returned map is best-effort through family expansion: an expanded
     line points at the template's ``machine`` line, not at the individual
@@ -1223,6 +1255,10 @@ def expand_source_mapped(text: str, syntax: str = "v1"):
         else:
             from . import syntax_v2
         text, source_map = syntax_v2.to_v1_mapped(text)
+    elif syntax != IR:
+        raise SSDLParseError(
+            f"unknown input layer {syntax!r}: expected {SURFACE!r} or {IR!r}"
+        )
     if not FAMILY_SOURCE.search(text):
         return text, source_map
     if __package__ in (None, ""):
@@ -1277,20 +1313,20 @@ def _expanded_line_map(base_text: str, expanded_text: str, base_map):
     return syntax_v2.LineMap(tuple(mapping))
 
 
-def expand_source(text: str, syntax: str = "v1") -> str:
-    """Expand a source to v1.0 text (a no-op for plain v1.0 sources)."""
+def expand_source(text: str, syntax: str = IR) -> str:
+    """Expand a source to flat IR text (a no-op for flat IR input)."""
     return expand_source_mapped(text, syntax=syntax)[0]
 
 
-def load_source_mapped(path: str, syntax: str = "v1"):
+def load_source_mapped(path: str, syntax: str = IR):
     with open(path, encoding="utf-8") as f:
         return expand_source_mapped(f.read(), syntax=syntax)
 
 
-def load_source(path: str, syntax: str = "v1") -> str:
+def load_source(path: str, syntax: str = IR) -> str:
     return load_source_mapped(path, syntax=syntax)[0]
 
 
-def parse_file(path: str, syntax: str = "v1") -> Program:
+def parse_file(path: str, syntax: str = IR) -> Program:
     text, source_map = load_source_mapped(path, syntax=syntax)
-    return parse(text, syntax="v1", source_map=source_map)
+    return parse(text, syntax=IR, source_map=source_map)

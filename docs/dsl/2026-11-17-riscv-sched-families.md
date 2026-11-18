@@ -15,7 +15,7 @@
 | **机器族** | `SchedMachineModel` 子类 + 模板参数 | `SiFive7SchedMachineModel<int vlen>`（`RISCVSchedSiFive7.td:1608`） | `machine` 级：选资源、选记录名 |
 | **词表维度** | 目标级 `defvar` 列表 + `foreach` | `SchedMxList`（`RISCVScheduleV.td:12`）、`SchedSEWSet`（`:31`） | 目标级：铸 `SchedWrite`/`SchedRead` 名字 |
 
-v1.0 只有 `machine X = Y;` 的改名别名（`2026-11-16-ssdl-v1.0-final.md:347`），两层都表达不了。
+v1.0 只有 `machine X = Y;` 的改名别名（`2026-11-16-ssdl-v1.0-final.md:352`），两层都表达不了。
 
 ## 2. SiFive7 族
 
@@ -107,7 +107,7 @@ defm : LMULWriteResMX<"WriteVLSEG" # nf # "e" # eew, [VCQ, VL], mx, IsWorstCase>
 ## 5. 对 v1.2 的硬约束
 
 1. **族参数在 `machine`**：`machine SiFive7(vlen: INT, has_dual_valu: BOOL, ...) { ... }` + `machine X : SiFive7(512, false, ...)`；保持 9 个顶层关键字。
-2. **维度在目标级**：`set LMUL = [...] : kind = dimension;`，与 v1.1 §9.1 的词表所有权一致（`2026-11-16-ssdl-v1.1-draft.md:409`）。
+2. **维度在目标级**：`set LMUL = [...] : kind = dimension;`，与 v1.1 §9.1 的词表所有权一致（`2026-11-16-ssdl-v1.1-draft.md:414`）。
 3. **结构化索引**：`W[LMUL]`，禁止 `"W_" # mx` 式字符串拼接（`RISCVScheduleV.td:159-163` 的上游做法）。
 4. **稀疏成员显式列出**：SiFive7 是 3/24，不是满笛卡尔积。
 5. **投影是一等构造**：`worst(LMUL)`、`legal_sew(LMUL)`、`cycles(...)` 可被 `bind` 引用，但不能递归或自定义。

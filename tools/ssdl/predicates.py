@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lower SSDL predicates, variants, STI predicates and TII predicates to TD.
 
-The lowering follows ``2026-11-16-ssdl-v1.1-draft.md`` §4:
+The lowering follows ``docs/dsl/history/2026-11-16-ssdl-v1.1-draft.md`` §4:
 
   * MC expressions become ``MCInstPredicate`` subclasses;
   * SCHED expressions become ``SchedPredicateBase`` subclasses, with MC

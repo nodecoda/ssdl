@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Expand a compressed SSDL family into v1.0-compatible flat SSDL.
+"""Expand a compressed SSDL family template into flat IR text.
 
-The compressed front end adds exactly two domain constructs; everything else
-is the v1.0 language, so the flat output still goes through ``emit_td.py`` and
-the record table unchanged.
+The compressed IR adds exactly two domain constructs; everything else is the
+flat IR vocabulary, so the output still goes through ``emit_td.py`` and the
+record table unchanged.  This is IR, not a surface: humans write v2, and
+``syntax_v2.to_v1`` is what turns it into the input this module expects.
 
     set LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] :
         kind = dimension, name_format = "_{value}";

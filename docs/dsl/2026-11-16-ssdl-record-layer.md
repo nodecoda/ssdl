@@ -1,7 +1,7 @@
 # SSDL 记录层：record 是契约，`.td` 是打印器
 
 > 2026-11-16。承接 `2026-11-16-ssdl-parser-notes.md` §17（全量 SiFive7 等价）与
-> `2026-11-16-ssdl-v1.1-draft.md` §11（实现状态）。
+> `history/2026-11-16-ssdl-v1.1-draft.md` §11（实现状态）。
 > 这一轮回答一个架构问题：SSDL 的产物到底是 `.td` 文本，还是 TableGen 的 record 表？
 
 ## 0. 一句话

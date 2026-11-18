@@ -28,7 +28,7 @@ if __package__ in (None, ""):
     from family_expand import check_coverage  # type: ignore
     import field_types as field_types_mod  # type: ignore
     import predicate_types as predicate_types_mod  # type: ignore
-    from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, expand_source_mapped, parse  # type: ignore
+    from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, coerce_layer, expand_source_mapped, parse  # type: ignore
     import syntax_v2  # type: ignore
 else:
     from .diagnose import ERROR, NOTE, diagnose, render_findings
@@ -47,6 +47,7 @@ else:
         STIDecl,
         STIFunction,
         TIIPredicate,
+        coerce_layer,
     )
 
 
@@ -467,9 +468,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("input", help="SSDL source file")
     ap.add_argument(
         "--syntax",
-        choices=("v1", "v2"),
-        default="v1",
-        help="surface syntax of the input (default: v1)",
+        type=coerce_layer,
+        metavar="{v2,ir}",
+        default="v2",
+        help="input layer: v2 surface (default) or internal IR text",
     )
     ap.add_argument(
         "--verbose",

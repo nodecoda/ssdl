@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Migrate v1 SSDL sources to the v2 surface syntax.
+"""Migrate IR text to the v2 surface syntax.
 
-``to_v2`` is the inverse of :func:`syntax_v2.to_v1`: it reads a v1 source
-(plain v1.3, or a family/dimension source as emitted by ``family_mine.py``)
-and prints the equivalent v2 source.  Round tripping is checked by
+``to_v2`` is the inverse of :func:`syntax_v2.to_v1`: it reads IR text (flat, or
+a family/dimension template as emitted by ``family_mine.py``) and prints the
+equivalent surface source.  IR is an internal layer, not a second grammar; see
+``docs/dsl/2026-11-18-ssdl-one-surface.md``.  Round tripping is checked by
 ``tools/ssdl/check.py``: ``to_v1(to_v2(text))`` must expand to the same
 family text and lower to the same records.
 
@@ -778,7 +779,7 @@ def to_v2(text: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("input", help="v1 SSDL source")
+    ap.add_argument("input", help="SSDL IR text")
     ap.add_argument("-o", "--output", help="write v2 source here (default: stdout)")
     args = ap.parse_args(argv)
     try:

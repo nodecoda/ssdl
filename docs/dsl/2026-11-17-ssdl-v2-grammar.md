@@ -38,7 +38,7 @@ host_block  = "host" HOST_BLOCK ;
 
 v1 把 `//` 当行注释，同时又在表达式里用 `//` 表示地板除；两者无法在词法层
 同时成立。v2 只保留 `#` 与 `/* */` 两种注释，`//` 一律是 §7 的地板除运算符。
-这是对 v1 注释语法的**不兼容收紧**，v1 文件进入 `v1-compat/` 后才能继续使用
+这是对 v1 注释语法的**不兼容收紧**，v1 文件进入 `ir-only/` 后才能继续使用
 `//` 注释。
 
 ### 1.1 `-` 的词法规则（吸收 S5）
@@ -1212,15 +1212,15 @@ records 契约完全未动；v2 能表达的构造在 v1 里必然已经存在�
 tune）、`predicate` 的表达式 / `select` / `sti` / `tii` 四种形式与
 `predicate prolog`（含 `sched_code(host [{...}])`）。
 
-v2 表面已经能完整表达 §5 的示例模型：`v2/sifive7-mini-v2.ssdl` 经
+v2 表面已经能完整表达 §5 的示例模型：`surface/sifive7-mini.ssdl` 经
 v2 前端后，与手写 `sifive7-mini.expected.td` 的 records 逐字段一致
 （llvm-tblgen 对拍）。
 
-Phase 6 补齐了迁移管线：`tools/ssdl/to_v2.py` 把 v1 源转成 v2 表面，
+Phase 6 补齐了迁移管线：`tools/ssdl/to_v2.py` 把 IR 文本转成 v2 表面，
 `family_sweep.py --syntax v2` 让 14 个模型从 v2 源走完
 validate → emit_td → 两条 equiv 对拍。结果是 **14/14 `records match`**；
-`to_v2` → `to_v1` → 展开后的 family 文本与 v1 源逐字节相同。迁移表、
-工具边界和复现命令见 `docs/dsl/2026-11-17-ssdl-v1-to-v2-migration.md`。
+`to_v2` → `to_v1` → 展开后的文本与 IR 源逐字节相同。迁移表、
+工具边界和复现命令见 `docs/dsl/2026-11-18-ssdl-ir-to-v2-migration.md`。
 
 迁移器不是第二个语义实现：它只重排语法，遇到没有 v2 写法的构造
 （例如 `tii_predicate X = return P;`）会报错而不是猜。注释不保留，
@@ -1279,3 +1279,23 @@ validate → emit_td → 两条 equiv 对拍。结果是 **14/14 `records match`
 是 RISC-V ISA 策略与调优策略的挂点；其他目标只落 `plain`（`targets.py` 里
 AArch64 的 extension/tune class 为 `None`）。改名成 `isa_policy` 会丢掉领域词
 （RISC-V 就叫 extension），所以只做文档澄清，不改名。
+
+### 16.4 v1 撤出表面，只保留为 IR 文本
+
+本文件生效后，SSDL **只有一个表面语法**。v1.0 / v1.1 / v1.2 的 EBNF 是
+IR 的文本格式说明，移入 `docs/dsl/history/`；它们描述的是
+`elaborate.render` 的输出，不是用户可以并行选用的第二套写法。
+
+落点：
+
+- CLI 的 `--syntax` 只有 `v2`（表面，默认）与 `ir`（内部 IR 文本）；
+  `--syntax v1` 直接报错并提示改 `ir`（`parser.coerce_layer`）。
+- 测试夹具按层分目录：`tests/ssdl/surface/` 是人写的表面源，
+  `tests/ssdl/*.ssdl` 是 IR 对拍孪生，`tests/ssdl/ir-only/` 是没有表面
+  写法的 IR 构造。
+- records 契约、`SemProgram`、golden 字节哈希全部不变——被撤销的是
+  "v1 作为可写语法"的地位，不是它的字节。
+
+判据：表达力不变（表面仍是 v2），心智负担减少一层（不必先学 v1 才能读
+测试与生成器输出），领域命名更准（`machine family` / `feature extension`
+是领域概念，`bind W -> [P], latency = 1` 是它的序列化）。

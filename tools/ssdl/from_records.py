@@ -8,7 +8,8 @@ generator, which the spec explicitly allows.  This file is that generator.
 
 It is a transcriber, not an optimiser: every model-scoped record becomes the
 SSDL form that ``emit_td.py`` lowers back to a record with the same
-scheduling identity.  ``equiv.py`` checks that round trip against the
+scheduling identity.  The output is **IR text**, the internal layer: read it
+with ``--syntax ir``, or run ``to_v2.py`` to get a surface source.  ``equiv.py`` checks that round trip against the
 in-tree dump.
 
 Usage:

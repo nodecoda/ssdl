@@ -49,12 +49,17 @@ SSDL 的取舍是：**语义完整的替代品，不是更可读的替代品**�
 
 ---
 
-## 2. 表面语法：v2 与 v1.3 语义基线
+## 2. 一个表面：v2
 
-**v2 是默认表面语法**（6 个顶层关键字），语义模型仍是 v1.3 ——
-v2 只是 v1 的另一种打印，`SemProgram`、records 契约完全未动：
+**v2 是唯一表面语法**（6 个顶层关键字）。v1 已撤出表面，只保留为 **IR 文本**：
+它是 `elaborate.render` 的输出、golden 的字节基线、`--syntax ir` 读回的格式，
+和 `records.json` 同级，不是可以并行选用的第二套写法。决定记录见
+`docs/dsl/2026-11-18-ssdl-one-surface.md`。
 
-| v2 顶层关键字 | 覆盖的 v1 关键字 |
+语义模型仍是 v1.3 —— 表面到 IR 只是一次文本转写，`SemProgram`、records
+契约完全未动：
+
+| v2 顶层关键字 | 覆盖的 IR 关键字 |
 |---|---|
 | `set instructions\|dimension\|relation` | `set`（三种 kind 显式化） |
 | `predicate`（表达式 / `: select` / `: sti` / `: tii` / `prolog`） | `predicate`、`predicate_prolog`、`sti_decl`、`sti_function`、`tii_predicate` |
@@ -63,14 +68,23 @@ v2 只是 v1 的另一种打印，`SemProgram`、records 契约完全未动：
 | `itineraries` | `itineraries` |
 | `extern fn` | 族展开的编译期查表 |
 
-完整 EBNF 见 `docs/dsl/2026-11-17-ssdl-v2-grammar.md`；v1 → v2 的逐条对照、
-迁移工具和诚实边界见 `docs/dsl/2026-11-17-ssdl-v1-to-v2-migration.md`。
+完整 EBNF 见 `docs/dsl/2026-11-17-ssdl-v2-grammar.md`；IR → v2 的逐条对照、
+迁移工具和诚实边界见 `docs/dsl/2026-11-18-ssdl-ir-to-v2-migration.md`。
 AArch64（31 模型）的可支持性普查、4 个缺口的关闭记录与 31/31 sweep
 见 `docs/dsl/2026-11-18-ssdl-aarch64-coverage.md`。
-每条工具链都接受 `--syntax v1|v2`；v1 源仍可读，`tests/ssdl/*.ssdl` 是
-v2 fixture 的 v1 对拍孪生，`tests/ssdl/v1-compat/` 只钉住没有 v2 写法的旧构造。
 
-v1.3 的 9 个关键字（语义基线，仍然有效）：
+工具链的 `--syntax` 只有两个取值：
+
+| 取值 | 含义 | 用途 |
+|---|---|---|
+| `v2`（默认） | 表面语法 | 人写的模型 |
+| `ir` | 内部 IR 文本 | 生成器输出、golden、对拍、调试 |
+
+`--syntax v1` 会直接报错并提示改用 `ir`。夹具按层分目录：
+`tests/ssdl/surface/` 是表面源，`tests/ssdl/*.ssdl` 是 IR 对拍孪生，
+`tests/ssdl/ir-only/` 是没有表面写法的 IR 构造。
+
+IR 文本的 9 个关键字（内部表示，仍然有效）：
 
 | 关键字 | 作用 | 对应 TD |
 |---|---|---|
@@ -84,18 +98,19 @@ v1.3 的 9 个关键字（语义基线，仍然有效）：
 | `machine` | 调度模型 / 处理器 / 别名 / 行程 | `SchedMachineModel`、`ProcessorModel`、`ProcessorAlias` |
 | `itineraries` | 旧式行程表 | `ProcessorItineraries` |
 
-语法全文见 `docs/dsl/2026-11-16-ssdl-v1.0-final.md`；
-v1.2 的维度与机器参数见 `docs/dsl/2026-11-17-ssdl-v1.2-draft.md`；
-v1.3 的身份/阶段/lowering 见 `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md`。
+IR 文本的 EBNF 见 `docs/dsl/history/2026-11-16-ssdl-v1.0-final.md`
+（历史文档，已撤销表面地位）；维度的 IR 拼写见
+`docs/dsl/history/2026-11-17-ssdl-v1.2-draft.md`；
+身份/阶段/lowering 见 `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md`。
 
-一个最小模型：
+一个最小模型（表面 v2）：
 
 ```text
-machine m {
-    resource P : units = 2;
+machine both m {
+    resource P { units = 2; }
     write W;
-    bind W -> [P], latency = 4;
-    map [ADD] -> [W, read_default];
+    bind W { resources = [P]; latency = 4; }
+    map [ADD] { 0 = W; 1 = read_default; }
 }
 ```
 
@@ -108,14 +123,14 @@ machine m {
 同一个 `machine` 也可以直接写成“族 + 实例”，把稀疏维度只写一次：
 
 ```text
-set LMUL = [MF8, M1, M8] : kind = dimension, name_format = "_{value}";
+set dimension LMUL = [MF8, M1, M8] { name_format = "_{value}"; }
 
-machine f(vlen: INT) {
+machine family f(vlen: INT) {
     write W[LMUL];
-    bind  W[LMUL] -> [P], latency = vlen / 128;
+    bind  W[LMUL] { resources = [P]; latency = vlen / 128; }
 }
 
-machine m : f(512) { ... }
+machine instance m : f(512) { }
 ```
 
 ---
@@ -123,9 +138,9 @@ machine m : f(512) { ... }
 ## 3. 一条链路：从 SSDL 到可对拍的 records
 
 ```text
-family.ssdl ──parser.load_source──► v1.0 SSDL ──validate──► Program
-                                                       │
-                                                       ▼
+model.ssdl ──parser──► IR text ──validate──► Program
+   (v2 表面，先 to_v1 转写)                │
+                                            ▼
                                              record_ir.RecordSet ◄── 一等产物
                                                        │
                               ┌────────────────────────┴───────────────────────┐
@@ -166,8 +181,8 @@ python3 tools/ssdl/expand_records.py /tmp/mini.json | head -40
 tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具（纯标准库）
   parser.py         SSDL 文本 → Program
   semir.py          语义 IR：身份 / 阶段 / 声明
-  elaborate.py      family 源 → IR → v1.0 文本（拼写在 lowering 定落）
-  family_expand.py  v1.3 展开核：语句扫描、表达式、runtime 降级
+  elaborate.py      输入（v2 或 IR）→ SemProgram → IR 文本（拼写在 lowering 定落）
+  family_expand.py  展开核：语句扫描、表达式、runtime 降级
   record_ir.py      RecordSet：SSDL 的一等产物
   emit_td.py        RecordSet → TD 文本 / records.json
   records.py        llvm-tblgen -print-records 的读取器
@@ -177,10 +192,10 @@ tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具�
   census_sched.py    单个 target 的 SchedMachineModel 普查
   family_tables.py  从源码抽取 RISC-V 族与词表
   family_mine.py    记录 → 规范基 + 公式（只报告，不发明）
-  family_sweep.py   14 个模型的全链路 sweep（--syntax v1|v2）
-  to_v2.py          v1 → v2 表面迁移（to_v1 的逆）
+  family_sweep.py   14 个模型的全链路 sweep（--syntax v2|ir）
+  to_v2.py          IR → v2 表面迁移（to_v1 的逆）
   check.py          151 项自检
-tests/ssdl/         mini 模型、错误样例、expected TD、stub target
+tests/ssdl/         IR 对拍孪生；surface/ 是表面源；ir-only/ 是无表面写法的构造
 data/               小基线：普查表、诊断表、profiles、族表、公式表
 docs/dsl/           规范、领域模型、验证报告
 docs/examples/      真实族源（sifive7-family.ssdl）
@@ -229,13 +244,14 @@ scripts/fetch-records.sh --target aarch64 700e551714cc       # aarch64.rec
 ### 6.2 重跑 14 模型 sweep（可选，耗时较长）
 
 ```bash
-python3 tools/ssdl/family_sweep.py            # v1 源，写 $SSDL_CACHE/sweep-final
-python3 tools/ssdl/family_sweep.py --syntax v2 --out /tmp/ssdl-sweep-v2
+python3 tools/ssdl/family_sweep.py                          # 默认：mining → to_v2 → 表面路径
+python3 tools/ssdl/family_sweep.py --syntax ir --out /tmp/ssdl-sweep-ir   # 直接走 IR
 ```
 
-`--syntax v2` 在 mining 之后用 `to_v2.py` 迁移，再以 v2 前端走
-validate / emit_td / 两条 equiv 对拍。**门禁结果：14/14 records match**，
-即“从 v2 源出发也能逐字段复现上游模型”。
+默认 `--syntax v2`：mining 产出 IR 文本后，用 `to_v2.py` 迁移成表面源，
+再以 v2 前端走 validate / emit_td / 两条 equiv 对拍。**门禁结果：14/14
+records match**，即“从表面源出发也能逐字段复现上游模型”。`--syntax ir`
+是同一批模型的 IR 直达路径，用来把表面层的问题和语义层的问题分开。
 
 AArch64 走直读路径（records → SSDL → records），同一套对拍：
 
@@ -276,7 +292,7 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
    手工钉住的样本，不是从上游重新推导。
 6. **无元编程**：无 `foreach`、无递归、无用户函数。
 7. **迁移器只搬语法**：`to_v2` 不保留注释，`tii_predicate X = return P;`
-   没有 v2 写法（保留在 `tests/ssdl/v1-compat/`）；裸 `machine X { ... }`
+   没有 v2 写法（保留在 `tests/ssdl/ir-only/`）；裸 `machine X { ... }`
    在往返时会显式化成 `role = both;`（默认值，records 不变）。
 8. **目标词表不在语言内**：`ADD`、`WZR`、`HasSVE` 属于目标 `.td`；AArch64
    sweep 的 `llvm-tblgen` 路径用合成 stub 提供这些名字，只验证类型与结构。
@@ -288,12 +304,13 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
 
 | 文档 | 内容 |
 |---|---|
-| `docs/dsl/2026-11-17-ssdl-v2-grammar.md` | **v2 规范**：唯一 EBNF、6 个顶层关键字、errata 处置、覆盖率表 |
-| `docs/dsl/2026-11-17-ssdl-v1-to-v2-migration.md` | v1 → v2 迁移表、`to_v2`、14/14 门禁与工具边界 |
-| `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md` | **v1.3 语义基线**：身份/拼写、阶段、lowering、五条边界处置 |
-| `docs/dsl/2026-11-17-ssdl-v1.2-verification.md` | **v1.2 基线证据**：14/14、直读路径、诊断基线 |
-| `docs/dsl/2026-11-16-ssdl-v1.0-final.md` | 9 关键字完整语法 |
-| `docs/dsl/2026-11-17-ssdl-v1.2-draft.md` | 维度、机器参数、族与实例 |
+| `docs/dsl/2026-11-17-ssdl-v2-grammar.md` | **唯一表面规范**：EBNF、6 个顶层关键字、errata 处置、决策记录 |
+| `docs/dsl/2026-11-18-ssdl-one-surface.md` | **v1 撤出表面的决定**：分层、CLI、夹具布局、保留项与代价 |
+| `docs/dsl/2026-11-18-ssdl-ir-to-v2-migration.md` | IR → v2 迁移表、`to_v2`、14/14 门禁与工具边界 |
+| `docs/dsl/2026-11-17-ssdl-v1.3-semantic-ir.md` | **语义层**：身份/拼写、阶段、lowering、五条边界处置 |
+| `docs/dsl/2026-11-17-ssdl-v1.2-verification.md` | 历史基线证据：14/14、直读路径、诊断基线 |
+| `docs/dsl/history/2026-11-16-ssdl-v1.0-final.md` | 历史：IR 文本的 9 关键字 EBNF（已撤销表面地位） |
+| `docs/dsl/history/2026-11-17-ssdl-v1.2-draft.md` | 历史：维度、机器参数、族与实例的 IR 拼写 |
 | `docs/dsl/2026-11-16-ssdl-domain-model.md` | 语义层 / 策略层 / ABI 层 |
 | `docs/dsl/2026-11-17-ssdl-direct-records.md` | 为什么 records 是一等产物 |
 | `docs/dsl/2026-11-17-ssdl-effect-diagnostics.md` | 字段效果诊断与证据 |
