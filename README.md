@@ -65,6 +65,8 @@ v2 只是 v1 的另一种打印，`SemProgram`、records 契约完全未动：
 
 完整 EBNF 见 `docs/dsl/2026-11-17-ssdl-v2-grammar.md`；v1 → v2 的逐条对照、
 迁移工具和诚实边界见 `docs/dsl/2026-11-17-ssdl-v1-to-v2-migration.md`。
+AArch64（31 模型）的可支持性普查、4 个缺口与 31 模型 sweep 实测见
+`docs/dsl/2026-11-18-ssdl-aarch64-coverage.md`。
 每条工具链都接受 `--syntax v1|v2`；v1 源仍可读，`tests/ssdl/*.ssdl` 是
 v2 fixture 的 v1 对拍孪生，`tests/ssdl/v1-compat/` 只钉住没有 v2 写法的旧构造。
 
@@ -281,6 +283,7 @@ v1.2 的五条边界已逐条消除或契约化，完整说明见
 | `docs/dsl/2026-11-17-ssdl-family-expansion.md` | 族展开规则 |
 | `docs/dsl/2026-11-17-riscv-sched-census.md` | RISC-V 调度结构普查 |
 | `docs/dsl/2026-11-17-riscv-sched-families.md` | 族与词表的抽取方法 |
+| `docs/dsl/2026-11-18-ssdl-aarch64-coverage.md` | **AArch64 可支持性**：31 模型普查、构造映射、4 个缺口、2/31 sweep 与修法 |
 | `docs/dsl/2026-11-16-ssdl-keyword-reference.md` | 自动生成的关键字参考（勿手改） |
 
 ---
