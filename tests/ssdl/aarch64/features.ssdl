@@ -1,0 +1,31 @@
+# ``UnsupportedFeatures`` takes host predicate def names, verbatim.
+# AArch64 writes ``UnsupportedFeatures = [HasSVE, HasMTE]``; the host supplies
+# the Has* predicates (AArch64InstrInfo.td).  Declaring them here keeps the
+# fixture self-contained; the names are target vocabulary, like opcodes.
+predicate select HasSVE {
+    when = host [{ Subtarget->isSVEAvailable() }];
+}
+
+predicate select HasMTE {
+    when = host [{ Subtarget->hasMTE() }];
+}
+
+feature plain FeatureSVE {
+    bool FeatureSVE = true;
+    mattr = "sve";
+    desc  = "Enable Scalable Vector Extension (SVE) instructions";
+}
+
+feature plain FeatureMTE {
+    bool FeatureMTE = true;
+    mattr = "mte";
+    desc  = "Enable Memory Tagging Extension";
+}
+
+machine both tsv110 {
+    complete_model      = false;
+    unsupported_features = [HasSVE, HasMTE];
+    resource P0 { units = 1; }
+    write W;
+    bind W { resources = [P0]; latency = 1; }
+}

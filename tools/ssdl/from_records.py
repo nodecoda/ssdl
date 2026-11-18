@@ -400,8 +400,8 @@ def generate(recs: RecordFile, model: str, machine: str, processor: str | None,
 
     unsupported = as_list(recs.value(model, "list<Predicate> UnsupportedFeatures"))
     if unsupported_features and unsupported:
-        names = [n.removeprefix("Has") for n in unsupported]
-        out.append(f"    unsupported_features = [{', '.join(names)}];")
+        # Predicate def names are target vocabulary: transcribe them verbatim.
+        out.append(f"    unsupported_features = [{', '.join(unsupported)}];")
 
     resources = [n for n in selected if recs.value(n, "int NumUnits") is not None]
     groups = [n for n in selected if recs.has(n, "list<ProcResource> Resources")]

@@ -1637,7 +1637,19 @@ class Emitter:
                         value = "true" if value else "false"
                     model_fields.append((field, str(value)))
             if "unsupported_features" in props:
-                preds = [f"Has{name}" for name in props["unsupported_features"]]
+                # ``UnsupportedFeatures`` is ``list<Predicate>``: the elements
+                # are host predicate def names (HasSVE), not features.  Emit
+                # them verbatim -- inventing a ``Has`` prefix turned AArch64's
+                # ``HasSVE`` into ``HasHasSVE``.
+                preds = []
+                for name in props["unsupported_features"]:
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name)):
+                        self.error(
+                            where,
+                            f"unsupported_features: {name!r} is not a TableGen def name",
+                        )
+                        continue
+                    preds.append(str(name))
                 model_fields.append(("UnsupportedFeatures", join_list(preds)))
             model_text = self.define(
                 where, f"{info.def_name}Model", "SchedMachineModel", (), model_fields

@@ -447,6 +447,12 @@ machine_prop
 
 `model` 只允许在 `machine cpu` 中；其他角色写 `model =` 是错误。
 
+`unsupported_features` 的元素是 `list<Predicate>` 的**宿主谓词 def 名**，按字面发射：
+AArch64 写 `[HasSVE, HasMTE]`，RISC-V 写 `[HasStdExtZbkb]`。它们属于目标词表
+（与 `opcode(ADD)` 同一约定），SSDL 只检查名字能作为 TableGen def，不检查存在性；
+不存在时由 `llvm-tblgen` 报错。v1.1 的 `Has<Name>` 前缀约定已删除——它把
+`HasSVE` 拼成了 `HasHasSVE`。
+
 ### 6.2 角色允许项
 
 | 项 | `both` | `model` | `cpu` | `family` | `instance` | `alias` |

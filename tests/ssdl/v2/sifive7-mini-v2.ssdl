@@ -122,7 +122,7 @@ machine both ssdl-sifive-7 {
     mispredict_penalty   = 3;
     complete_model       = false;
     enable_intervals     = true;
-    unsupported_features = [StdExtZbkb];
+    unsupported_features = [HasStdExtZbkb];
 
     resource PipeA {
         units = 1;

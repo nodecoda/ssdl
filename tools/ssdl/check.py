@@ -824,6 +824,50 @@ def tii_predicate_rejects_unknown_fields():
 
 
 @test
+def unsupported_features_are_predicate_names():
+    """``UnsupportedFeatures`` is ``list<Predicate>``; names are verbatim.
+
+    The v1.1 ``Has<Name>`` convenience turned AArch64's ``HasSVE`` into
+    ``HasHasSVE``.  The list now carries host predicate defs unchanged, which
+    is also how RISC-V spells it upstream (``HasStdExtZbkb``).
+    """
+    source = (ROOT / "tests/ssdl/aarch64/features.ssdl").read_text(encoding="utf-8")
+    text, skips = emit_td.emit(
+        parser.parse(source, syntax="v2"),
+        strict=True,
+        target=targets_mod.profile("aarch64"),
+        target_include="SSDLStub.td",
+    )
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+    assert_in("let UnsupportedFeatures = [HasSVE, HasMTE];", text)
+    assert_true("HasHasSVE" not in text, text)
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = Path(tmp) / "features.td"
+        generated.write_text(text, encoding="utf-8")
+        compare_mod.run_tblgen(
+            compare_mod.default_tblgen(),
+            str(generated),
+            [
+                str(ROOT / "tests/ssdl/stub-target"),
+                str(paths_mod.require_llvm_src() / "include"),
+            ],
+        )
+
+
+@test
+def unsupported_features_reject_non_names():
+    source = """
+machine M {
+    resource P : units = 1;
+    write W;
+    bind W -> [P], latency = 1;
+    unsupported_features = [Has-SVE];
+}
+"""
+    expect_emit_errors(source, ["unsupported_features: 'Has-SVE' is not a TableGen def name"])
+
+
+@test
 def scheduling_vocabulary_is_target_global():
     source = """
 machine A {
