@@ -1,0 +1,35 @@
+# Target-level declarations next to a dimension declaration.
+#
+# Regression: the family expander classified a top-level line by splitting on
+# the first space, so `predicate_prolog([{` and `machine X = Y;` and a plain
+# `set` were only recognised when the file had no dimension.  Adding a single
+# `set dimension` turned a working source into "expected a declaration".
+
+set dimension LMUL = [M1, M2] {
+    name_format = "_{value}";
+    units       = [8, 16];
+}
+
+set instructions ALU = [ADD, SUB];
+
+predicate prolog = host [{ int x = 1; }];
+predicate sched IsALU = opcode(ALU);
+
+machine both base {
+    resource P { units = 1; }
+    write W;
+    bind W { resources = [P]; latency = 1; }
+    map [ADD] { 0 = W; 1 = read_default; }
+}
+
+machine alias base-alias = base;
+
+machine family fam(vlen: INT) {
+    resource Q { units = 2; }
+    write VW[LMUL];
+    bind VW[LMUL] { resources = [Q]; latency = 2; }
+}
+
+machine instance fam128 : fam(128) {
+    features = [];
+}

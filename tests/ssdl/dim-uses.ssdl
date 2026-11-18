@@ -9,13 +9,14 @@ feature HasF : kind = plain, mattr = "has-f", field = "HasF", value = "true";
 machine dims {
     role = both;
     resource P : units = 1;
+    resource Q : units = 1;
 
     write W[LMUL in [MF4, MF2, M1, M2, M4], SEW in [64]];
     write W[LMUL, SEW_Pred];
-    bind W[LMUL in [MF4, MF2, M1, M2, M4], SEW in [64]] -> [P], latency = 4, release = [1, LMUL // 4];
+    bind W[LMUL in [MF4, MF2, M1, M2, M4], SEW in [64]] -> [P, Q], latency = 4, release = [1, LMUL // 4];
 
     write W[worst(LMUL_MF4_M4), SEW in [64]];
-    bind W[worst(LMUL_MF4_M4), SEW in [64]] -> [P], latency = 4, release = [1, LMUL_MF4_M4 // 4];
+    bind W[worst(LMUL_MF4_M4), SEW in [64]] -> [P, Q], latency = 4, release = [1, LMUL_MF4_M4 // 4];
 
     variant W[LMUL in [MF4, MF2, M1, M2, M4], SEW in [64]] {
         case feature(HasF): [W[LMUL, SEW_Pred]];

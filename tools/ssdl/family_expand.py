@@ -83,6 +83,16 @@ INSTANCE_RE = re.compile(
     rf"^machine\s+({MACHINE_IDENT})\s*:\s*({MACHINE_IDENT})\s*\((.*?)\)\s*\{{"
 )
 PLAIN_RE = re.compile(rf"^machine\s+({MACHINE_IDENT})\s*\{{")
+# ``machine X = Y;`` is an alias, not a block.  It stays target-level, so the
+# expander passes it through; without this, a dimension declaration anywhere in
+# the file turns a working alias into "expected a declaration".
+MACHINE_ALIAS_RE = re.compile(
+    rf"^machine\s+({MACHINE_IDENT})\s*=\s*({MACHINE_IDENT})\s*;"
+)
+# ``set NAME = ...;`` without ``: kind = ...`` is a compile-time instruction
+# set; only the dimension form is consumed here, the rest is a global.
+INSTR_SET_RE = re.compile(rf"^set\s+({IDENT})\s*=")
+FIRST_WORD_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)")
 PARAM_RE = re.compile(rf"^\s*({IDENT})\s*:\s*(INT|BOOL)\s*$")
 EXTERN_RE = re.compile(
     rf"^extern\s+fn\s+({IDENT})\s*\(([^)]*)\)\s*->\s*(INT|BOOL)\s*:\s*({IDENT})\s*;$"
@@ -1163,6 +1173,11 @@ def split_blocks(
             if match:
                 name, rhs = match.group(1), match.group(2).strip()
                 props = _parse_props(match.group(3))
+                if props.get("kind") is None:
+                    # A plain ``set`` is a compile-time instruction set; keep it
+                    # for the flat front end instead of rejecting the file.
+                    globals_.append(line)
+                    continue
                 if props.get("kind") != "dimension":
                     raise ExpandError(
                         f"line {line_no}: set {name} is not a dimension "
@@ -1224,9 +1239,19 @@ def split_blocks(
                 continue
             if line.strip() == "}":
                 continue
-            if line.split(" ", 1)[0].rstrip(":") in GLOBAL_KEYWORDS:
+            # Classify by the first token, not by "split on the first space":
+            # ``predicate_prolog([{...}]);`` has no space before the paren and
+            # must still reach the globals list untouched.
+            first = FIRST_WORD_RE.match(line)
+            if first is not None and first.group(1) in GLOBAL_KEYWORDS:
                 globals_.append(line)
                 global_depth = _brace_delta(line)
+                continue
+            if MACHINE_ALIAS_RE.match(line):
+                globals_.append(line)
+                continue
+            if INSTR_SET_RE.match(line):
+                globals_.append(line)
                 continue
             raise ExpandError(f"line {line_no}: expected a declaration, got {line.strip()!r}")
         else:

@@ -24,14 +24,14 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
-    from diagnose import ERROR, NOTE, diagnose, render_findings  # type: ignore
+    from diagnose import ERROR, NOTE, diagnose, reachable_rws, render_findings  # type: ignore
     from family_expand import check_coverage  # type: ignore
     import field_types as field_types_mod  # type: ignore
     import predicate_types as predicate_types_mod  # type: ignore
     from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, coerce_layer, expand_source_mapped, parse  # type: ignore
     import syntax_v2  # type: ignore
 else:
-    from .diagnose import ERROR, NOTE, diagnose, render_findings
+    from .diagnose import ERROR, NOTE, diagnose, reachable_rws, render_findings
     from .family_expand import check_coverage
     from . import field_types as field_types_mod
     from . import predicate_types as predicate_types_mod
@@ -361,6 +361,32 @@ class SortChecker:
                     self.check_itin_fields(decl, "itineraries")
         return self.errors
 
+    def check_bind_cycles(self, item: dict, where: str, items: list[dict]) -> None:
+        """``release``/``acquire`` pair by position with the declared resources.
+
+        ``SubtargetEmitter.cpp:1228`` compares the cycle list against the
+        *declared* ``ProcResources`` list, before resource groups and supers are
+        expanded, and only for writes a sched class actually reaches.  A dead
+        write keeps whatever upstream wrote, including lists that would fail if
+        it were used, so the check follows reachability.
+        """
+        write = item.get("write")
+        if write not in reachable_rws(items):
+            return
+        resources = [r for r in item.get("resources") or [] if isinstance(r, str)]
+        for field in ("release", "acquire"):
+            value = item.get("props", {}).get(field)
+            if not isinstance(value, list) or not value:
+                continue
+            if len(value) != len(resources):
+                self.error(
+                    f"{where}.{write}.{field}",
+                    f"{field} has {len(value)} cycle entries for "
+                    f"{len(resources)} resource(s); ReleaseAtCycles and "
+                    "AcquireAtCycles pair by position with the declared "
+                    "ProcResources list (SubtargetEmitter rejects a mismatch)",
+                )
+
     def check_item_fields(self, items: list[dict], where: str) -> None:
         """Apply the shared field table to IR machine items."""
         for item in items:
@@ -388,6 +414,8 @@ class SortChecker:
                         else f"{where}.{subject}.{field}"
                     )
                     self.error(site, problem)
+            if kind == "bind":
+                self.check_bind_cycles(item, where, items)
 
     def check_itin_fields(self, itin: ItinerariesDecl, where: str) -> None:
         """Check itinerary fields and stage bodies against the same table."""

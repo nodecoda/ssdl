@@ -2286,7 +2286,7 @@ def family_statements_are_layout_independent():
 set D = [A, B] : kind = dimension, name_format = "_{value}";
 machine fam(vlen: INT) {
     write W[D];
-    bind W[D] -> [P], latency = vlen / 128, uops = 1, release = [1, 2];
+    bind W[D] -> [P, Q], latency = vlen / 128, uops = 1, release = [1, 2];
     variant W[D] {
         case all_of(feature(F), is_zero(1)): [W[D]];
         default: [W[D]];
@@ -2294,6 +2294,7 @@ machine fam(vlen: INT) {
 }
 machine m512 : fam(512) {
     resource P : units = 2;
+    resource Q : units = 1;
     read R;
     map [ADD] -> [W_A];
     advance R : cycles = 1 : writes = [W_A];
@@ -3149,7 +3150,7 @@ def dimension_subsets_stay_at_the_use_site():
         "use-site subsets did not expand to their concrete members",
     )
     assert_true(
-        "bind W_WorstCase_E64 -> [P], latency = 4, release = [1, 8];" in flat,
+        "bind W_WorstCase_E64 -> [P, Q], latency = 4, release = [1, 8];" in flat,
         "worst() must use the narrow view's widest member (M4=32 -> 8)",
     )
     assert_true(
@@ -4131,6 +4132,83 @@ def v2_sifive7_mini_matches_the_handwritten_records():
 
 
 @test
+def grammar_examples_are_parseable():
+    """Every complete example in the grammar document must compile.
+
+    Examples are fenced as ``ssdl``; IR snippets and mid-production fragments
+    stay ``text``.  Without this pin the 1300-line spec drifts: section 6.5
+    still showed ``itin { cycles = ... }`` long after the errata renamed it.
+    """
+    doc = (ROOT / "docs/dsl/2026-11-17-ssdl-v2-grammar.md").read_text(
+        encoding="utf-8"
+    )
+    blocks = re.findall(r"```ssdl\n(.*?)```", doc, re.S)
+    assert_true(len(blocks) >= 6, f"expected the tagged examples, found {len(blocks)}")
+    for block in blocks:
+        body = block.strip("\n")
+        try:
+            parser.parse(body + "\n", syntax="v2")
+        except Exception as exc:
+            first = body.splitlines()[0] if body else "<empty>"
+            raise Failure(f"grammar example does not compile ({first}): {exc}")
+
+
+@test
+def globals_survive_dimension_expansion():
+    """A dimension declaration must not hide the other top-level keywords.
+
+    The expander classified a top-level statement by splitting on the first
+    space, so ``predicate_prolog([{``, ``machine X = Y;`` and a plain ``set``
+    were only recognised when the file had no dimension declaration at all.
+    """
+    source = (ROOT / "tests/ssdl/surface/globals-with-dim.ssdl").read_text(
+        encoding="utf-8"
+    )
+    program = parser.parse(source, syntax="v2")
+    prolog = [decl for decl in program.decls if isinstance(decl, parser.PredicateProlog)]
+    sets = [decl for decl in program.decls if isinstance(decl, parser.SetDecl)]
+    machines = [
+        decl for decl in program.decls if isinstance(decl, parser.MachineDecl)
+    ]
+    assert_true(len(prolog) == 1, f"predicate_prolog lost: {program.decls}")
+    assert_true(
+        any(decl.name == "ALU" for decl in sets),
+        "the compile-time instruction set must survive expansion",
+    )
+    assert_true(
+        any(decl.alias is not None for decl in machines),
+        "the machine alias must survive expansion",
+    )
+    assert_true(
+        any(decl.name == "fam128" for decl in machines),
+        "the family instance must expand",
+    )
+    elaborate_mod.elaborate(source, syntax="v2")
+
+
+@test
+def surface_entry_points_agree():
+    """parse, parse_file, expand_source and elaborate accept the same sources.
+
+    ``parse(syntax="v2")`` used to stop after the transpile step while
+    ``parse_file``/``expand_source`` also expanded, so one entry point could
+    accept a family source that another rejected.
+    """
+    for path in sorted((ROOT / "tests/ssdl/surface").glob("*.ssdl")):
+        text = path.read_text(encoding="utf-8")
+        parser.parse(text, syntax="v2")
+        parser.parse_file(str(path), syntax="v2")
+        flat = parser.expand_source(text, syntax="v2")
+        parser.parse(flat)
+        v2_render = elaborate_mod.render(elaborate_mod.elaborate(text, syntax="v2"))
+        ir_render = elaborate_mod.render(elaborate_mod.elaborate(flat))
+        assert_true(
+            v2_render == ir_render,
+            f"{path.name}: the surface and the semantic layer disagree",
+        )
+
+
+@test
 def v2_predicate_forms_are_checked():
     """select/sti/tii have one spelling; mistakes are rejected with a hint."""
     for source, needle in [
@@ -4693,6 +4771,57 @@ predicate sti P {
     assert_in("line 8: machine m: error: duplicate write 'W'", text)
     assert_in("line 9: machine m: error: unknown feature 'Nope'", text)
     assert_in("line 12: sti_decl P: error: unknown delegate 'Nope'", text)
+
+
+@test
+def release_and_acquire_pair_with_resources():
+    """A cycle list must be as long as the resource list.
+
+    ``SubtargetEmitter.cpp:1228`` rejects a size mismatch, but only when the
+    model reaches ``-gen-subtarget``; the check has to happen at the source.
+    """
+    bad = """
+machine m {
+    resource P { units = 1; }
+    write W;
+    bind W { resources = [P]; latency = 3; release = [1, 2]; }
+    map [ADD] { 0 = W; 1 = read_default; 2 = read_default; }
+}
+"""
+    errors = validate_mod.validate(parser.parse(bad, syntax="v2"))
+    assert_true(
+        any("release has 2 cycle entries for 1 resource(s)" in e for e in errors),
+        errors,
+    )
+
+    # A write no sched class reaches keeps upstream's numbers: LLVM only checks
+    # the cycle list when the write is emitted into a sched class.
+    dead = bad.replace(
+        "    map [ADD] { 0 = W; 1 = read_default; 2 = read_default; }\n", ""
+    )
+    assert_true(
+        not validate_mod.validate(parser.parse(dead, syntax="v2")),
+        "a dead write must not be checked",
+    )
+    text = emit_error_text(bad, syntax="v2")
+    assert_in("release has 2 cycle entries for 1 resource(s)", text)
+
+    good = """
+machine m {
+    resource P { units = 1; }
+    resource Q { units = 1; }
+    write W;
+    bind W { resources = [P, Q]; latency = 3; release = [1, 2]; acquire = [0, 1]; }
+    write V;
+    bind V { resources = [P]; latency = 1; release = [1]; }
+    map [ADD] { 0 = W; 1 = read_default; 2 = read_default; }
+    map [SUB] { 0 = V; 1 = read_default; 2 = read_default; }
+}
+"""
+    assert_true(
+        not validate_mod.validate(parser.parse(good, syntax="v2")),
+        validate_mod.validate(parser.parse(good, syntax="v2")),
+    )
 
 
 @test

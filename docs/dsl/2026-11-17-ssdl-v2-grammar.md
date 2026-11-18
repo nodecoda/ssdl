@@ -161,7 +161,7 @@ projection
 范围端点是有符号整数：`-2..2` 合法。负号只在允许负值的上下文有意义（集合项、
 `int_list`）；操作数下标由谓词签名拒绝负数（`is_reg(-1)` 在 validate 阶段报错）。
 
-```text
+```ssdl
 set dimension SEW = [8, 16, 32, 64] {
     name_format = "_E{value}";
     units       = [8, 16, 32, 64];
@@ -260,7 +260,7 @@ statement
 保留单关键字的理由：拆成四个关键字会把 `prolog` 再次变成特例，且迁移成本
 只有噪音；角色表让“predicate 还能定义 STI 实现”的意外感消失。
 
-```text
+```ssdl
 predicate sched IsZeroReg(i: INT) = reg_is(i, ZeroRegs);
 
 predicate select HasStdExtI {
@@ -352,7 +352,7 @@ bitmask_body
 - `tune` 的 `positive_directive`/`negative_directive` 进入命令行映射。
 - `host [{ ... }]` 保留给无法类型化的 host-only 字段。
 
-```text
+```ssdl
 feature plain Feature64Bit {
     bool IsRV64 = true;
     mattr = "64bit";
@@ -414,7 +414,7 @@ arg
 - 参数列表只允许出现在 `family`；`: F(args)` 只允许出现在 `instance`。
 - `cpu` 不得声明实体/关系；`model` 不得写 `model =`；`alias` 不接受 body。
 
-```text
+```ssdl
 machine model siFive7 {
     issue_width = 4;
     resource PipeA { units = 2; }
@@ -629,6 +629,7 @@ advance_field
 
 map_decl
     = "map" inst_set map_body
+    | "map" inst_set "->" sched_rw_list ";"
     ;
 
 map_body
@@ -748,7 +749,7 @@ stage 在列表中的序号；`timeinc` 是进入下一级前的 time increment�
 必须出现在 `itineraries.func_units` 中。两个字段名字不同，就是为了让这个
 区别在源码里可见；`itin` 里的 `cycles` 会报错并指向 `operand_cycles`。
 
-```text
+```ssdl
 itineraries : packetizer_namespace = "SiFive7" {
     func_units = [FU_ALU, FU_LSU];
     bypasses   = [no_bypass];
@@ -757,7 +758,7 @@ itineraries : packetizer_namespace = "SiFive7" {
             stage { cycles = 1; units = [FU_ALU]; },
             stage { cycles = 2; units = [FU_LSU]; timeinc = 1; },
         ];
-        cycles = [3, 1];
+        operand_cycles = [3, 1];
     }
 }
 ```
@@ -1124,45 +1125,52 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 
 ## 12. 覆盖率表
 
-每个产生式至少一个 fixture。`✓ P2` 表示 Phase 2 前端已实现且有 v1/v2 parity
-测试；`P3`/`P4`/`P5` 是后续阶段。
+每个产生式至少一个 fixture。两列分别回答两个问题：
 
-| 产生式 | fixture | 状态 |
-|---|---|---|
-| `set instructions` | `tests/ssdl/surface/sifive7-mini.ssdl` | P3 |
-| `set dimension`（基本形式） | `tests/ssdl/surface/family-mini.ssdl` | ✓ P2 |
-| `set dimension` + units/projections | `tests/ssdl/surface/machine-roles.ssdl` | ✓ P3 |
-| `set relation` | `tests/ssdl/surface/projection-contract.ssdl` | ✓ P2 |
-| `predicate` 表达式 | `tests/ssdl/surface/predicates.ssdl` | ✓ P3 |
-| `predicate : select` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P3 |
-| `predicate prolog` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P3 |
-| `predicate : sti` / `: tii` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P3 |
-| `predicate tii` + `method =` + `mc(TII)` | `tests/ssdl/aarch64/tii.ssdl` | ✓ AArch64 P2 |
-| `feature` plain/extension/tune | `tests/ssdl/surface/machine-roles.ssdl` | ✓ P3 |
-| `feature` typed field / host / bitmask | `tests/ssdl/surface/machine-roles.ssdl` | ✓ P3 |
-| `machine` role 缺省（= `both`） | `tests/ssdl/surface/machine-roles.ssdl` | ✓ P1 |
-| `machine family` / `instance` | `tests/ssdl/surface/family-mini.ssdl` | ✓ P2 |
-| `machine alias` | `tests/ssdl/surface/sifive7-mini.ssdl` | P3（parser 路径） |
-| `unsupported_features`（宿主谓词名逐字） | `tests/ssdl/aarch64/features.ssdl` | ✓ AArch64 G4 |
-| `resource` / `res_group` | `tests/ssdl/surface/entities.ssdl` | ✓ P2 |
-| `write` / `read` / `write_seq` | `tests/ssdl/surface/entities.ssdl` | ✓ P2 |
-| `reg_file` / `retire_unit` / queues | `tests/ssdl/surface/entities.ssdl` | ✓ P2 |
-| `bind` / `advance` | `tests/ssdl/surface/multiline.ssdl` | ✓ P2 |
-| `map` 显式下标 / 密集列表 | `tests/ssdl/surface/map.ssdl` | ✓ P2 |
-| `instance override`（整条替换） | `tests/ssdl/surface/instance-override.ssdl` | ✓ P2b |
-| 列表条件 / bool 字段折叠 | `tests/ssdl/surface/list-cond.ssdl` | ✓ P2b |
-| `set relation` 命名列 | `tests/ssdl/surface/projection-contract.ssdl` | ✓ P2b |
-| `map=`（FunctionMapper helper def） | `tests/ssdl/aarch64/mapper.ssdl` | ✓ AArch64 G1 |
-| `variant` / `read_variant` | `tests/ssdl/surface/variants.ssdl` | ✓ P2 |
-| `sched_alias` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P1 |
-| `itineraries` + 命名 stage | `tests/ssdl/surface/itineraries.ssdl` | ✓ P2 |
-| `itineraries` + body 内 `packetizer_namespace` | `tests/ssdl/surface/itineraries.ssdl` | ✓ P1 |
-| `extern` + `from "key"` | `tests/ssdl/surface/projection-contract.ssdl` | ✓ P1 |
-| `host` block | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ P3 |
-| `dim_index` | `tests/ssdl/surface/multiline.ssdl` | ✓ P2 |
-| `worst` / `in []` 子集 | `tests/ssdl/surface/dim-uses.ssdl` | ✓ |
-| `name_template` | `tests/ssdl/surface/two-instances.ssdl` | ✓ P2 |
-| RUNTIME 降级 | `tests/ssdl/surface/two-instances-runtime.ssdl` | ✓ P2 |
+- **flat**：`syntax_v2.to_ir` + 解析器接受该 fixture；
+- **语义层**：`elaborate.elaborate` 接受同一份 v2 源并渲染回 IR。
+
+两项都由 `check.py` 的 `surface_entry_points_agree`（全量 fixture）与
+`globals_survive_dimension_expansion`（`predicate_prolog` / `set instructions` /
+`machine alias` 与 `set dimension` 共存）钉住。历史阶段号（P2/P3…）已删除：
+它们描述的是实现顺序，不是今天的能力。
+
+| 产生式 | fixture | flat | 语义层 |
+|---|---|---|---|
+| `set instructions` | `tests/ssdl/surface/globals-with-dim.ssdl` | ✓ | ✓ |
+| `set dimension`（基本形式） | `tests/ssdl/surface/family-mini.ssdl` | ✓ | ✓ |
+| `set dimension` + units/projections | `tests/ssdl/surface/machine-roles.ssdl` | ✓ | ✓ |
+| `set relation` | `tests/ssdl/surface/projection-contract.ssdl` | ✓ | ✓ |
+| `predicate` 表达式 | `tests/ssdl/surface/predicates.ssdl` | ✓ | ✓ |
+| `predicate : select` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ | ✓ |
+| `predicate prolog` | `tests/ssdl/surface/globals-with-dim.ssdl` | ✓ | ✓ |
+| `predicate : sti` / `: tii` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ | ✓ |
+| `predicate tii` + `method =` + `mc(TII)` | `tests/ssdl/aarch64/tii.ssdl` | ✓ | ✓ |
+| `feature` plain/extension/tune | `tests/ssdl/surface/machine-roles.ssdl` | ✓ | ✓ |
+| `feature` typed field / host / bitmask | `tests/ssdl/surface/machine-roles.ssdl` | ✓ | ✓ |
+| `machine` role 缺省（= `both`） | `tests/ssdl/surface/machine-roles.ssdl` | ✓ | ✓ |
+| `machine family` / `instance` | `tests/ssdl/surface/family-mini.ssdl` | ✓ | ✓ |
+| `machine alias` | `tests/ssdl/surface/globals-with-dim.ssdl` | ✓ | ✓ |
+| `unsupported_features`（宿主谓词名逐字） | `tests/ssdl/aarch64/features.ssdl` | ✓ | ✓ |
+| `resource` / `res_group` | `tests/ssdl/surface/entities.ssdl` | ✓ | ✓ |
+| `write` / `read` / `write_seq` | `tests/ssdl/surface/entities.ssdl` | ✓ | ✓ |
+| `reg_file` / `retire_unit` / queues | `tests/ssdl/surface/entities.ssdl` | ✓ | ✓ |
+| `bind` / `advance` | `tests/ssdl/surface/multiline.ssdl` | ✓ | ✓ |
+| `map` 显式下标 / 密集列表 | `tests/ssdl/surface/map.ssdl` | ✓ | ✓ |
+| `instance override`（整条替换） | `tests/ssdl/surface/instance-override.ssdl` | ✓ | ✓ |
+| 列表条件 / bool 字段折叠 | `tests/ssdl/surface/list-cond.ssdl` | ✓ | ✓ |
+| `set relation` 命名列 | `tests/ssdl/surface/projection-contract.ssdl` | ✓ | ✓ |
+| `map=`（FunctionMapper helper def） | `tests/ssdl/aarch64/mapper.ssdl` | ✓ | ✓ |
+| `variant` / `read_variant` | `tests/ssdl/surface/variants.ssdl` | ✓ | ✓ |
+| `sched_alias` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ | ✓ |
+| `itineraries` + 命名 stage | `tests/ssdl/surface/itineraries.ssdl` | ✓ | ✓ |
+| `itineraries` + body 内 `packetizer_namespace` | `tests/ssdl/surface/itineraries.ssdl` | ✓ | ✓ |
+| `extern` + `from "key"` | `tests/ssdl/surface/projection-contract.ssdl` | ✓ | ✓ |
+| `host` block | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ | ✓ |
+| `dim_index` | `tests/ssdl/surface/multiline.ssdl` | ✓ | ✓ |
+| `worst` / `in []` 子集 | `tests/ssdl/surface/dim-uses.ssdl` | ✓ | ✓ |
+| `name_template` | `tests/ssdl/surface/two-instances.ssdl` | ✓ | ✓ |
+| RUNTIME 降级 | `tests/ssdl/surface/two-instances-runtime.ssdl` | ✓ | ✓ |
 
 ---
 
@@ -1182,7 +1190,7 @@ machine m512 : fam(512) { }
 
 v2：
 
-```text
+```ssdl
 set dimension D = [A];
 
 machine family fam(vlen: INT) {
@@ -1245,8 +1253,8 @@ validate → emit_td → 两条 equiv 对拍。结果是 **14/14 `records match`
 
 - `machine family|instance` 的名字现在允许 `-`：族扫描器的机器名正则已与
   §1.1 对齐，拼写仍按原样进入 flat 文本，`emit_td` 负责把 `-` 转成 `_`。
-- `machine alias X = Y;` 只对 parser 路径有意义；`SemProgram` 没有 alias 节点，
-  所以 AC4 的 IR parity 不覆盖它。
+- `machine alias X = Y;` 在 flat 层透传，语义层也保留（`elaborate` 渲染后仍在），
+  但 `records` 只认 `ProcessorAlias`，alias 的解析仍由 `emit_td` 完成。
 - `reg_file` 的名字不做实例消歧：`resource` 会按 `<machine>_<local>` 重命名，
   但 `reg_file` 保持作者写的名字。因此一个 family 有两个实例、又各自声明
   `reg_file` 时，第二个实例会撞上第一个的 def（`emitted def 'GPR' collides`）。

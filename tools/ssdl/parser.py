@@ -1207,11 +1207,11 @@ def parse(
     text: str, syntax: str = IR, source_map=None
 ) -> Program:
     if syntax == "v2":
-        if __package__ in (None, ""):
-            import syntax_v2  # type: ignore
-        else:
-            from . import syntax_v2
-        text, source_map = syntax_v2.to_ir_mapped(text)
+        # One v2 entry point, one meaning: transpile *and* expand.  Before this,
+        # ``parse(syntax="v2")`` stopped at the transpile step while
+        # ``parse_file``/``expand_source`` expanded, so the same source could
+        # parse through one entry point and fail through another.
+        text, source_map = expand_source_mapped(text, syntax="v2")
     elif syntax != IR:
         raise SSDLParseError(
             f"unknown input layer {syntax!r}: expected {SURFACE!r} or {IR!r}"

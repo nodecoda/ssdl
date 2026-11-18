@@ -384,7 +384,7 @@ def _bind(item: dict, where: str) -> list[Finding]:
     return out
 
 
-def _reachable_rws(decl: MachineDecl) -> set[str]:
+def reachable_rws(items: list[dict]) -> set[str]:
     """Names TableGen will index for this machine.
 
     ``collectSchedRW`` walks instruction ``Sched`` lists, ``InstRW``/``ItinRW``
@@ -394,7 +394,7 @@ def _reachable_rws(decl: MachineDecl) -> set[str]:
     ``llvm-tblgen`` with ``invalid SchedWrite``/``invalid SchedRead``.
     """
     reach: set[str] = set()
-    for item in decl.items:
+    for item in items:
         kind = item.get("kind")
         if kind in ("map", "map_itin"):
             reach.update(x for x in item.get("rw") or () if isinstance(x, str))
@@ -404,7 +404,7 @@ def _reachable_rws(decl: MachineDecl) -> set[str]:
     grew = True
     while grew:
         grew = False
-        for item in decl.items:
+        for item in items:
             kind = item.get("kind")
             if item.get("name") not in reach:
                 continue
@@ -437,7 +437,7 @@ def _unreachable_rw(decl: MachineDecl, where: str) -> list[Finding]:
     * anything else -- declared and bound, but no instruction names it, so the
       bind/variant has no observable effect.
     """
-    reach = _reachable_rws(decl)
+    reach = reachable_rws(decl.items)
     declared: dict[str, list[str]] = {"write": [], "read": []}
     alias_subject: dict[str, set[str]] = {"write": set(), "read": set()}
     advance_write: set[str] = set()

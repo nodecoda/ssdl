@@ -10,12 +10,11 @@ machine fam(vlen: INT)
         W[D];
 
     bind W[D] ->
-        [P],
+        [P, Q],
         latency = vlen
             / 128,
         uops = 1,
-        release = [1,
-                   2];
+        release = [1, 2];
 
     variant W[D]
     {
@@ -28,6 +27,8 @@ machine m512 : fam(512)
 {
     resource
         P : units = 2;
+    resource
+        Q : units = 1;
 
     read
         R;

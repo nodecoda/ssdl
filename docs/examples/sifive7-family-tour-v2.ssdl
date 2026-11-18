@@ -108,7 +108,8 @@ machine family tour(vlen: INT) {
     bind W_LD[LMUL] {
         resources = [LSU];
         latency   = 3;
-        release   = [1, LMUL];
+        # 一个资源一项：LSU 到第 LMUL 个周期释放。
+        release   = [LMUL];
     }
 
     # 成员集不是笛卡尔积时，按轴分块；SEW 只到 64 的块直接写 in [...]。
@@ -123,7 +124,7 @@ machine family tour(vlen: INT) {
     bind W_VALU[worst(LMUL_M1_M8), SEW_div in [64]] {
         resources = [PipeA];
         latency   = 8;
-        release   = [1, LMUL_M1_M8 // 4];
+        release   = [LMUL_M1_M8 // 4];
     }
 
     write W_VALU_SLOW[LMUL, SEW_div];

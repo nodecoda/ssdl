@@ -1227,6 +1227,11 @@ class Emitter:
                 self.define(where, def_name, "SchedAlias", [resolved[0], resolved[1]])
             )
 
+        # Only a write that some sched class reaches is checked by
+        # SubtargetEmitter; a dead write keeps whatever upstream wrote.
+        reachable_writes = validate_mod.reachable_rws(
+            [i for kind, bucket in items.items() for i in bucket]
+        )
         bound: set[str] = set()
         for item in items["bind"]:
             self.at(item)
@@ -1244,6 +1249,16 @@ class Emitter:
                 if res not in seen_res:
                     self.error(where, f"bind {write}: unknown resource {res!r}")
                 resources.append(res)
+            if write in reachable_writes:
+                for field in ("release", "acquire"):
+                    value = bind_props.get(field)
+                    if isinstance(value, list) and value and len(value) != len(resources):
+                        self.error(
+                            where,
+                            f"bind {write}: {field} has {len(value)} cycle "
+                            f"entries for {len(resources)} resource(s); the list "
+                            "pairs by position with the declared ProcResources",
+                        )
             for key in bind_props:
                 if key not in (
                     "latency",

@@ -9,7 +9,7 @@ machine family fam(vlen: INT) {
     write W[D];
 
     bind W[D] {
-        resources = [P];
+        resources = [P, Q];
         latency   = vlen / 128;
         uops      = 1;
         release   = [1, 2];
@@ -25,6 +25,9 @@ machine family fam(vlen: INT) {
 machine instance m512 : fam(512) {
     resource P {
         units = 2;
+    }
+    resource Q {
+        units = 1;
     }
 
     read R;

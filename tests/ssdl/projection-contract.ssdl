@@ -5,8 +5,9 @@ extern fn cycles(lmul: INT, sew: INT) -> INT : cycles;
 
 machine fam(sew: INT) {
     resource P : units = 1;
+    resource Q : units = 1;
     write W;
-    bind W -> [P], latency = DivFactor(sew), release = [1, cycles(1, sew)];
+    bind W -> [P, Q], latency = DivFactor(sew), release = [1, cycles(1, sew)];
 }
 
 machine s8 : fam(8) { }
