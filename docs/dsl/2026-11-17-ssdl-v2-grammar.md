@@ -1048,11 +1048,13 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 | `machine both` / `model` / `cpu` | `v2/machine-roles-v2.ssdl` | ✓ P3 |
 | `machine family` / `instance` | `v2/family-mini-v2.ssdl` | ✓ P2 |
 | `machine alias` | `v2/machine-roles.ssdl` | P3（parser 路径） |
+| `unsupported_features`（宿主谓词名逐字） | `aarch64/features.ssdl` | ✓ AArch64 G4 |
 | `resource` / `res_group` | `v2/entities-v2.ssdl` | ✓ P2 |
 | `write` / `read` / `write_seq` | `v2/entities-v2.ssdl` | ✓ P2 |
 | `reg_file` / `retire_unit` / queues | `v2/entities-v2.ssdl` | ✓ P2 |
 | `bind` / `advance` | `v2/multiline-v2.ssdl` | ✓ P2 |
 | `map` 显式下标 | `v2/map-v2.ssdl` | ✓ P2 |
+| `map=`（FunctionMapper helper def） | `aarch64/mapper.ssdl` | ✓ AArch64 G1 |
 | `variant` / `read_variant` | `v2/variants-v2.ssdl` | ✓ P2 |
 | `itineraries` + 命名 stage | `v2/itineraries-v2.ssdl` | ✓ P2 |
 | `extern` | `v2/projection-contract-v2.ssdl` | ✓ P2 |

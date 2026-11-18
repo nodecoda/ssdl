@@ -365,7 +365,13 @@ python3 tools/ssdl/sweep_aarch64.py --check    # 与 data/aarch64-sched-sweep.js
 | 5 | 把 31 模型 sweep 接进 `check.py` 门禁 | 小 | AArch64 与 RISC-V 同级证据 |
 
 **状态**：0–5 全部完成（G4 的 `set predicates` 为可选语法糖，未做）；
-P4 转写器与 P5 sweep、P6 文档已入库，`check.py` 新增 3 项 AArch64 门禁。
+P4 转写器与 P5 sweep、P6 文档已入库。`check.py` 里的 AArch64 证据分两层：
+
+- fixture 层：`tests/ssdl/aarch64/` 下 `mapper.ssdl` / `tii.ssdl` / `features.ssdl`
+  逐字断言展开结果，且 `aarch64_fixtures_emit_strict_without_skips` 要求三者
+  以 `--target aarch64 --strict` 发射后 `skips == []`（不允许「静默跳过」通过验收）。
+- 全量层：`aarch64_sweep_covers_every_model_and_matches_the_table` 对
+  `data/aarch64-sched-sweep.json` 做 31/31 对拍。
 
 **不建议做的**：为 AArch64 增加新的顶层关键字、引入 `defm`/`foreach` 式的元编程、
 或把 `FunctionMapper` 做成字符串模板。这四条都会把「语法融合、语义分层」

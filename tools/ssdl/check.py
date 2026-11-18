@@ -749,24 +749,34 @@ def hook_lowering_negative_controls():
 @test
 def mapper_argument_becomes_a_record_field():
     """``map=`` is a FunctionMapper field, so the atom needs its own def."""
-    source = """
-machine M {
-    resource P : units = 1;
-    write W;
-    bind W -> [P], latency = 1;
-    variant W {
-        case IsLSL: [W];
-        default: [W];
-    }
-}
-predicate IsLSL = all_of(opcode([ADDWrs]),
-                         imm_is_enum(3, "AArch64_AM::LSL",
-                                     map = "AArch64_AM::getShiftType"));
-"""
-    text, _ = emit_source(source)
+    source = (ROOT / "tests/ssdl/aarch64/mapper.ssdl").read_text(encoding="utf-8")
+    text, skips = emit_td.emit(
+        parser.parse(source, syntax="v2"),
+        strict=True,
+        target=targets_mod.profile("aarch64"),
+        target_include="SSDLStub.td",
+    )
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
     assert_in("let FunctionMapper = \"AArch64_AM::getShiftType\";", text)
     assert_in('CheckImmOperand_s<3, "AArch64_AM::LSL">', text)
     assert_in("Mapped_CheckImmOperand_s_3_AArch64_AM_LSL", text)
+
+
+@test
+def aarch64_fixtures_emit_strict_without_skips():
+    """Every AArch64 language-gap fixture lowers with no skipped construct."""
+    fixtures = sorted((ROOT / "tests/ssdl/aarch64").glob("*.ssdl"))
+    missing = {"features.ssdl", "mapper.ssdl", "tii.ssdl"} - {p.name for p in fixtures}
+    assert_true(not missing, f"missing AArch64 fixtures: {sorted(missing)}")
+    for path in fixtures:
+        text, skips = emit_td.emit(
+            parser.parse(path.read_text(encoding="utf-8"), syntax="v2"),
+            strict=True,
+            target=targets_mod.profile("aarch64"),
+            target_include="SSDLStub.td",
+        )
+        assert_true(skips == [], f"{path.name}: {skips}")
+        assert_true(text.strip() != "", f"{path.name}: empty output")
 
 
 @test

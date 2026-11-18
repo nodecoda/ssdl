@@ -1,0 +1,28 @@
+# ``map=`` is a FunctionMapper field, so the atom cannot stay inline: the
+# lowering materialises one named def per (class, arguments, mapper).
+# Mirrors AArch64SchedPredicates.td:
+#   def CheckLSL0 : CheckImmOperand_s<3, "AArch64_AM::LSL"> {
+#     let FunctionMapper = "AArch64_AM::getShiftType";
+#   }
+# The opcodes are stub vocabulary (SSDL does not own instruction names).
+predicate sched IsLSL = all_of(
+    opcode([ADD, SUB]),
+    imm_is_enum(3, "AArch64_AM::LSL", map = "AArch64_AM::getShiftType"),
+);
+
+machine both tsv110 {
+    complete_model = false;
+    resource P0 { units = 1; }
+    write WArith;
+    bind WArith { resources = [P0]; latency = 1; }
+    # One InstRW keeps the model non-empty: llvm-tblgen -gen-subtarget
+    # asserts when an aliased SchedWriteVariant is the only scheduling object.
+    map [ADD] {
+        0 = WArith;
+        1 = read_default;
+    }
+    variant WArith {
+        case IsLSL: [WArith];
+        default: [WArith];
+    }
+}
