@@ -72,6 +72,12 @@ RELATION_RE = re.compile(
 RANGE_RE = re.compile(r"^(-?\d+)\s*\.\.\s*(-?\d+)$")
 ITEM_HEAD_RE = re.compile(rf"^(write|read|bind|advance)\s+({IDENT})\s*\[")
 DIM_USE_WORST_RE = re.compile(rf"^worst\(\s*({IDENT})\s*\)$")
+# ``worst(AXIS in [..])`` keeps the widest member of the *use-site*
+# subset, so the five ``LMUL_*`` view declarations upstream needs are
+# no longer part of the language surface.
+DIM_USE_WORST_SUBSET_RE = re.compile(
+    rf"^worst\(\s*({IDENT})\s+in\s*\[([^\]]*)\]\s*\)$"
+)
 DIM_USE_SUBSET_RE = re.compile(rf"^({IDENT})\s+in\s*\[([^\]]*)\]$")
 DIM_USE_RE = re.compile(rf"^({IDENT})$")
 VARIANT_HEAD_RE = re.compile(rf"^variant\s+({IDENT})\s*(?:\[(.*)\])?\s*\{{$")
@@ -1284,6 +1290,19 @@ def _parse_dim_uses(
                 raise ExpandError(f"undeclared dimension {axis!r}")
             uses.append((axis, [], True))
             continue
+        match = DIM_USE_WORST_SUBSET_RE.match(item)
+        if match:
+            axis, subset = match.group(1), match.group(2)
+            if axis not in dimensions:
+                raise ExpandError(f"undeclared dimension {axis!r}")
+            chosen = _parse_items(subset)
+            unknown = [value for value in chosen if value not in dimensions[axis].values]
+            if unknown:
+                raise ExpandError(f"dimension {axis} has no member(s) {unknown}")
+            if not chosen:
+                raise ExpandError(f"worst({axis} in [...]) needs at least one member")
+            uses.append((axis, chosen, True))
+            continue
         match = DIM_USE_SUBSET_RE.match(item)
         if match:
             axis, subset = match.group(1), match.group(2)
@@ -1448,6 +1467,11 @@ def _expand_selected(
             subject_axis = _subject_axis(line, base, worst.group(1), mapping, dimensions)
             suffix += "_WorstCase"
             continue
+        if DIM_USE_WORST_SUBSET_RE.match(item):
+            raise ExpandError(
+                f"line {line}: a variant selection names the subject's member; "
+                "write worst(AXIS) or the member name, not a subset"
+            )
         subset = DIM_USE_SUBSET_RE.match(item)
         if subset:
             raise ExpandError(f"line {line}: variant selection cannot narrow an axis")
@@ -1780,10 +1804,16 @@ def _axis_env(
             continue
         if axis in merged:
             raise ExpandError(f"axis {axis} shadows a family parameter of the same name")
-        chosen = None if is_worst else member
-        merged[axis] = spec.unit_of(chosen)
+        chosen = member
+        if is_worst and _members:
+            # ``worst(AXIS in [..])``: the widest member of the *subset*, by
+            # units.  The subset is not necessarily sorted, so pick the max
+            # instead of trusting the last entry.
+            chosen = max(_members, key=lambda value: spec.units[spec.values.index(value)])
+        pseudo = None if is_worst and not _members else chosen
+        merged[axis] = spec.unit_of(pseudo)
         for key in spec.extra:
-            merged[f"{axis}.{key}"] = spec.projection(key, chosen)
+            merged[f"{axis}.{key}"] = spec.projection(key, pseudo)
     return merged
 
 

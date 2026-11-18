@@ -3266,6 +3266,66 @@ machine m {
 
 
 @test
+def family_worst_subset_reads_the_subset_widest_member():
+    """`worst(AXIS in [..])` removes the narrow-view declarations upstream needs.
+
+    SiFive7's `LMUL_MF4_M4` existed only to tell `worst` which member is the
+    widest the base covers.  Reading the subset at the use site expresses the
+    same thing without a second axis name, and the arithmetic uses the axis,
+    so `LMUL // 4` cannot silently reference a view that was spelled
+    differently from the axis.
+    """
+    source = """set LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] :
+    kind = dimension, name_format = "_{value}",
+    units = [1, 2, 4, 8, 16, 32, 64];
+
+machine m {
+    resource P : units = 1;
+    write A[worst(LMUL in [MF8, MF4, MF2, M1, M2, M4])];
+    bind  A[worst(LMUL in [MF8, MF4, MF2, M1, M2, M4])] -> [P],
+        latency = 1 + max(1, LMUL // 4);
+    write B[worst(LMUL in [M2, MF8, M4])];
+    bind  B[worst(LMUL in [M2, MF8, M4])] -> [P], latency = LMUL;
+    write C[worst(LMUL)];
+    bind  C[worst(LMUL)] -> [P], latency = LMUL;
+}
+"""
+    flat = family_mod.expand(source)
+    # MF4..M4 -> M4=32; the unsorted subset still picks M4, not the last
+    # entry; the bare axis keeps the full axis's widest member (M8=64).
+    assert_in("bind A_WorstCase -> [P], latency = 9;", flat)
+    assert_in("bind B_WorstCase -> [P], latency = 32;", flat)
+    assert_in("bind C_WorstCase -> [P], latency = 64;", flat)
+
+    surface = """set dimension LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] {
+    name_format = "_{value}";
+    units = [1, 2, 4, 8, 16, 32, 64];
+}
+machine model m {
+    resource P { units = 1; }
+    write A[worst(LMUL in [MF8, MF4, MF2, M1, M2, M4])];
+    bind A[worst(LMUL in [MF8, MF4, MF2, M1, M2, M4])] {
+        resources = [P];
+        latency = 1 + max(1, LMUL // 4);
+    }
+}
+"""
+    v2_flat = parser.expand_source(surface, syntax="v2")
+    assert_in("bind A_WorstCase -> [P], latency = 9;", v2_flat)
+
+    expect_expand_error(
+        """set A = [X] : kind = dimension;
+machine m {
+    resource P : units = 1;
+    write W[worst(A in [Nope])];
+    bind W[worst(A in [Nope])] -> [P];
+}
+""",
+        "dimension A has no member(s) ['Nope']",
+    )
+
+
+@test
 def family_numeric_members_become_units_without_declaration():
     """A range axis is already numeric; no `units` list is needed."""
     source = """set NF = 2..8 : kind = dimension, name_format = "{value}";
@@ -3279,6 +3339,13 @@ machine m {
     flat = family_mod.expand(source)
     assert_in("bind V2 -> [P], latency = 4, release = [1, 1];", flat)
     assert_in("bind V8 -> [P], latency = 16, release = [1, 7];", flat)
+    explicit = source.replace(
+        'name_format = "{value}";', 'name_format = "{value}", units = [2, 3, 4, 5, 6, 7, 8];'
+    )
+    assert_true(
+        family_mod.expand(explicit) == flat,
+        "an explicit units list equal to the members must expand identically",
+    )
 
 
 @test
@@ -4919,6 +4986,26 @@ machine instance m128 : f(128) {
 """
     text = elaborate_mod.render(elaborate_mod.elaborate(source, syntax="v2"))
     assert_in("bind W -> [P], latency = 1;", text)
+
+
+@test
+def v2_slash_slash_comment_gets_a_targeted_error():
+    """A C++ comment line is a comment-style mistake, not a stray token.
+
+    ``//`` is the floor-division operator in v2 (§1.0); the generic
+    ``unexpected top-level token '//'`` made the fix non-obvious.
+    """
+    for source in (
+        "// machine m\nmachine both m { resource P { units = 1; } }\n",
+        "machine both m {\n  // a comment\n  resource P { units = 1; }\n}\n",
+    ):
+        try:
+            parser.parse(source, syntax="v2")
+        except Exception as exc:
+            text = str(exc)
+            assert_in("'//' is floor division; use '#' for comments", text)
+            continue
+        raise Failure("a '//' comment line must be rejected")
 
 
 @test

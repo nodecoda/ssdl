@@ -40,7 +40,9 @@ host_block  = "host" HOST_BLOCK ;
 v1 把 `//` 当行注释，同时又在表达式里用 `//` 表示地板除；两者无法在词法层
 同时成立。v2 只保留 `#` 与 `/* */` 两种注释，`//` 一律是 §7 的地板除运算符。
 这是对 v1 注释语法的**不兼容收紧**，v1 文件进入 `ir-only/` 后才能继续使用
-`//` 注释。
+`//` 注释。行首出现 `//` 时前端直接报
+`'//' is floor division; use '#' for comments`，而不是笼统的
+`unexpected top-level token '//'`。
 
 ### 1.1 `-` 的词法规则（吸收 S5）
 
@@ -155,8 +157,11 @@ projection
   `'ADD' is both a target inst name and a set; rename the set`；没有 schema 时
   无法判定，文档写明这是能力边界。
 
-`name_format` 只能包含一个 `{value}`；`units` 与成员一一对应；缺失 `units`
-的维度不能用于数值表达式。
+`name_format` 只能包含一个 `{value}`，省略时默认 `_{value}`；`units` 与成员
+一一对应。`units` 省略时按成员推断：成员全是整数就用成员本身（
+`set dimension NF = 2..8` 可直接写 `latency = NF * 2`）；有非数值成员
+（`MF8`、`M1`）的命名轴没有数值投影，用于数值字段会报
+`unknown parameter`。
 
 范围端点是有符号整数：`-2..2` 合法。负号只在允许负值的上下文有意义（集合项、
 `int_list`）；操作数下标由谓词签名拒绝负数（`is_reg(-1)` 在 validate 阶段报错）。
@@ -1023,7 +1028,7 @@ dim_index
 
 dim_use
     = IDENT
-    | "worst" "(" IDENT ")"
+    | "worst" "(" dim_use ")"
     | IDENT "in" "[" [ IDENT { "," IDENT } [ "," ] ] "]"
     ;
 
@@ -1052,9 +1057,10 @@ name_template
   并与①的自动消歧互相打架，所以不做。
 - **一个轴只声明一次，子集留在使用点**：维度声明取该轴在本模型中的成员并集；
   某个语句只需要子集时写 `SEW in [64]`，不得为每个子集另造 `SEW_17` 之类的
-  编号声明。只有 `worst(AXIS)` 需要「该 base 实际覆盖的最宽成员」时，才允许
-  声明成员表更窄的视图（例如 `LMUL_MF8_M4`），因为 `worst` 读的是视图自己的
-  `units` 末尾。
+  编号声明。`worst` 也吃使用点子集：`worst(LMUL in [M1, M2, M4])` 取该子集里
+  `units` 最大的成员，并在同一条语句里把 `LMUL` 绑定到它的数值，所以
+  `latency = 1 + LMUL // 4` 不需要再引用一个视图名。上游的 `LMUL_MF4_M4`
+  这类窄视图因此只是兼容写法，新源不再需要声明它们。
 - **`variant` 的 selected 列表不参与 `in [...]` 收窄**：case 选中的记录按
   subject 当前成员取名，收窄在 TableGen 里没有对应条件。需要另一种
   `name_format` 时，先声明该格式的视图，再在 selected 里直接引用视图名。
@@ -1232,6 +1238,11 @@ tune）、`predicate` 的表达式 / `select` / `sti` / `tii` 四种形式与
 v2 表面已经能完整表达 §5 的示例模型：`surface/sifive7-mini.ssdl` 经
 v2 前端后，与手写 `sifive7-mini.expected.td` 的 records 逐字段一致
 （llvm-tblgen 对拍）。
+
+`worst` 支持使用点子集（§8）：`worst(LMUL in [M1, M2, M4])` 取子集内 `units`
+最大的成员，并把 `LMUL` 绑定到它的数值。上游为了表达「该 base 实际覆盖的
+最宽成员」而声明的 `LMUL_MF4_M4` 等窄视图因此可以删除；`to_v2` 也不再为
+数值轴重复 `units`（成员即投影时不打印）。
 
 Phase 6 补齐了迁移管线：`tools/ssdl/to_v2.py` 把 IR 文本转成 v2 表面，
 `family_sweep.py --syntax v2` 让 14 个模型从 v2 源走完

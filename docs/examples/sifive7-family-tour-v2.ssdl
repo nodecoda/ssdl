@@ -35,10 +35,6 @@ set dimension LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] {
     name_format = "_{value}";
     units       = [1, 2, 4, 8, 16, 32, 64];
 }
-set dimension LMUL_M1_M8 = [M1, M2, M4, M8] {
-    name_format = "_{value}";
-    units       = [8, 16, 32, 64];
-}
 set dimension SEW = [8, 16, 32, 64] {
     name_format = "_E{value}";
     units       = [8, 16, 32, 64];
@@ -119,18 +115,18 @@ machine family tour(vlen: INT) {
         latency   = vlen / 128 + SEW_div.div_factor;
     }
 
-    # worst 取“该 base 实际覆盖的最宽成员”，所以给它一个窄视图。
-    write W_VALU[worst(LMUL_M1_M8), SEW_div in [64]];
-    bind W_VALU[worst(LMUL_M1_M8), SEW_div in [64]] {
+    # worst 取使用点子集里最宽的成员：M8=64，64 // 4 = 16。
+    write W_VALU[worst(LMUL in [M1, M2, M4, M8]), SEW_div in [64]];
+    bind W_VALU[worst(LMUL in [M1, M2, M4, M8]), SEW_div in [64]] {
         resources = [PipeA];
         latency   = 8;
-        release   = [LMUL_M1_M8 // 4];
+        release   = [LMUL // 4];
     }
 
     write W_VALU_SLOW[LMUL, SEW_div];
-    variant W_VALU[LMUL_M1_M8, SEW_div] {
-        case feature(TunePostRA): [W_VALU_SLOW[LMUL_M1_M8, SEW_div]];
-        default: [W_VALU[LMUL_M1_M8, SEW_div]];
+    variant W_VALU[LMUL in [M1, M2, M4, M8], SEW_div] {
+        case feature(TunePostRA): [W_VALU_SLOW[LMUL, SEW_div]];
+        default: [W_VALU[LMUL, SEW_div]];
     }
 
     map [ADD, SUB, XOR] {

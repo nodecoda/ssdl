@@ -218,6 +218,14 @@ def _set(text: str) -> list[str]:
         rest = props[1:]
     if kind == "dimension":
         direct = [(k, v) for k, v in rest if k in ("name_format", "units")]
+        # A numeric axis's units are the members themselves; repeating them
+        # is noise the reader has to diff by hand.  Non-numeric members
+        # (MF8, M1) still need the explicit projection.
+        direct = [
+            (k, v)
+            for k, v in direct
+            if not (k == "units" and _units_repeat_members(value, v))
+        ]
         extra = [(k, v) for k, v in rest if k not in ("name_format", "units")]
         lines = [f"set dimension {name} = {value}"]
         fields = [f"{k} = {v};" for k, v in direct]
@@ -231,6 +239,19 @@ def _set(text: str) -> list[str]:
     if kind is not None:
         raise ToV2Error(f"unknown set kind {kind!r} in {text!r}")
     return [f"set instructions {name} = {value};"]
+
+
+def _units_repeat_members(values: str, units: str) -> bool:
+    """True when ``units`` is literally the member list (so it is redundant)."""
+    members = _list_items(values)
+    projection = _list_items(units)
+    return (
+        len(members) == len(projection)
+        and all(
+            re.fullmatch(r"-?\d+", member) and member == unit
+            for member, unit in zip(members, projection)
+        )
+    )
 
 
 def _feature(text: str) -> list[str]:

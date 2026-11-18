@@ -1134,7 +1134,27 @@ class _Out(list):
         self.lines.append(self.cursor.decl_line)
 
 
+_COMMENT_LINE_RE = re.compile(r"^[ \t]*//", re.M)
+
+
+def _reject_cpp_comments(text: str) -> None:
+    """``//`` is an operator here; a C++ comment line deserves a real hint.
+
+    Without this the tokenizer produces ``PUNCT '//'`` and the parser reports
+    ``unexpected top-level token``, which reads like a missing declaration
+    instead of a comment-style mistake.
+    """
+    for match in _COMMENT_LINE_RE.finditer(text):
+        offset = match.start()
+        line = text.count("\n", 0, offset) + 1
+        col = offset - text.rfind("\n", 0, offset)
+        raise V2Error(
+            f"line {line}:{col}: '//' is floor division; use '#' for comments"
+        )
+
+
 def _transpile(text: str) -> _Out:
+    _reject_cpp_comments(text)
     tokens = parser.tokenize(text, floor_div=True)
     cursor = _Cursor(tokens)
     out = _Out(cursor)
