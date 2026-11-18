@@ -1,0 +1,155 @@
+# 阅读入口：一个 SiFive7 风格的完整语法走查（约 100 行）。
+#
+# 全量模型是生成物，不在这里读：
+#   sifive7-family-v2.ssdl  整颗 SiFive7，3600+ 行，golden 对拍基线
+# 本文件只保留每种构造各一处，数值是示意，不声称与上游等价。
+# 校验：python3 tools/ssdl/validate.py docs/examples/sifive7-family-tour-v2.ssdl
+
+feature plain Feature64Bit {
+    mattr = "64bit";
+    bool IsRV64 = true;
+    desc  = "Implements RV64";
+}
+
+feature extension StdExtZbb {
+    version = "1.0";
+    bitmask = {
+        group = 0;
+        bit   = 3;
+    };
+    desc    = "Basic bit manipulation";
+}
+
+feature tune TunePostRA {
+    bool UsePostRAScheduler = true;
+    positive_directive = "use-postra-scheduler";
+    negative_directive = "no-use-postra-scheduler";
+    desc = "Schedule again after register allocation";
+}
+
+# 谓词里直接写词表；具名集合（set instructions）属于 flat 前端，
+# 语义层的 elaborate 尚未支持，本走查不展示未实现的构造。
+
+# 维度只声明一次；子集留在使用点（LMUL in [...]）。
+set dimension LMUL = [MF8, MF4, MF2, M1, M2, M4, M8] {
+    name_format = "_{value}";
+    units       = [1, 2, 4, 8, 16, 32, 64];
+}
+set dimension LMUL_M1_M8 = [M1, M2, M4, M8] {
+    name_format = "_{value}";
+    units       = [8, 16, 32, 64];
+}
+set dimension SEW = [8, 16, 32, 64] {
+    name_format = "_E{value}";
+    units       = [8, 16, 32, 64];
+}
+set dimension SEW_div = [16, 32, 64] {
+    name_format = "_E{value}";
+    units       = [16, 32, 64];
+    projections = { div_factor = [15, 28, 57]; }
+}
+
+# 谓词：sched 是表达式，select 带 host/assembler，sti/tii 是块形式。
+predicate sched IsZero(i: INT) = reg_is(i, X0);
+predicate sched IsALU = opcode([ADD, SUB, XOR]);
+
+predicate select NoZbb {
+    when      = host [{ !Subtarget->hasStdExtZbb() }];
+    assembler = none_of([StdExtZbb]);
+    desc      = "Zbb is absent";
+}
+
+predicate sti TourXorX0 {
+    default     = false;
+    opcode_mask = true;
+    impl TourXorX0Impl : tour-cpu {
+        dep_breaking_class XorX0(
+            [XOR],
+            all_of(opcode([XOR]), IsZero(1)),
+            [1, 2]
+        );
+    }
+}
+
+predicate tii IsXorZero {
+    switch opcode {
+        case [XOR]: return all_of(opcode([XOR]), IsZero(1));
+        default:    return false;
+    }
+}
+
+# 族：一次写维度；实例只给参数。
+machine family tour(vlen: INT) {
+    issue_width  = 2;
+    load_latency = 3;
+
+    resource PipeA {
+        units = 2;
+    }
+    resource LSU {
+        units  = 1;
+        buffer = 4;
+    }
+
+    read R_ALU;
+    advance R_ALU {
+        cycles = 1;
+        writes = [W_ALU];
+    }
+
+    write W_ALU;
+    bind W_ALU {
+        resources = [PipeA];
+        latency   = 1;
+    }
+
+    write W_LD[LMUL];
+    bind W_LD[LMUL] {
+        resources = [LSU];
+        latency   = 3;
+        release   = [1, LMUL];
+    }
+
+    # 成员集不是笛卡尔积时，按轴分块；SEW 只到 64 的块直接写 in [...]。
+    write W_VALU[LMUL, SEW_div];
+    bind W_VALU[LMUL, SEW_div] {
+        resources = [PipeA];
+        latency   = vlen / 128 + SEW_div.div_factor;
+    }
+
+    # worst 取“该 base 实际覆盖的最宽成员”，所以给它一个窄视图。
+    write W_VALU[worst(LMUL_M1_M8), SEW_div in [64]];
+    bind W_VALU[worst(LMUL_M1_M8), SEW_div in [64]] {
+        resources = [PipeA];
+        latency   = 8;
+        release   = [1, LMUL_M1_M8 // 4];
+    }
+
+    write W_VALU_SLOW[LMUL, SEW_div];
+    variant W_VALU[LMUL_M1_M8, SEW_div] {
+        case feature(TunePostRA): [W_VALU_SLOW[LMUL_M1_M8, SEW_div]];
+        default: [W_VALU[LMUL_M1_M8, SEW_div]];
+    }
+
+    map [ADD, SUB, XOR] {
+        0 = W_ALU;
+        1 = R_ALU;
+    }
+
+    itineraries : packetizer_namespace = "Tour" {
+        func_units = [FU_ALU];
+        bypasses   = [no_bypass];
+
+        itin IIC_ALU {
+            stages         = [stage { cycles = 1; units = [FU_ALU]; }];
+            operand_cycles = [1];
+            uops           = 1;
+        }
+    }
+}
+
+machine instance tour-cpu : tour(512) {
+    features      = [Feature64Bit, StdExtZbb];
+    tune_features = [TunePostRA];
+}
+

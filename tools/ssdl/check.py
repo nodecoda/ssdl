@@ -3660,6 +3660,22 @@ def to_v2_migrates_the_sifive7_family_example():
 
 
 @test
+def tour_example_stays_a_readable_entry():
+    """The docs tour must stay hand-sized and strictly emittable."""
+    path = ROOT / "docs/examples/sifive7-family-tour-v2.ssdl"
+    text = path.read_text(encoding="utf-8")
+    lines = len(text.splitlines())
+    assert_true(
+        lines <= 200,
+        f"docs tour grew to {lines} lines; generated detail belongs in "
+        "docs/examples/sifive7-family-v2.ssdl",
+    )
+    flat = parser.expand_source(text, syntax="v2")
+    _td, skips = emit_source(flat, strict=True)
+    assert_true(skips == [], f"strict emission skipped constructs: {skips}")
+
+
+@test
 def v2_rejects_ir_field_separators_and_kind_tails():
     """AC5/AC3: every IR separator gets a v2 error, not a silent accept."""
     cases = [

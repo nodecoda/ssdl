@@ -62,6 +62,15 @@
 | `history/2026-11-17-ssdl-v1.2-draft.md` | 历史 | 维度、机器参数、族与实例的 IR 拼写来源 |
 | `history/2026-11-17-ssdl-v1.2-verification.md` | 历史 | v1.2 基线证据 |
 
+## 例子
+
+| 文件 | 角色 |
+|---|---|
+| `../examples/sifive7-family-tour-v2.ssdl` | **阅读入口**：~150 行手写语法走查 |
+| `../examples/sifive7-family.ssdl` | 整颗 SiFive7 的 IR 生成物（golden 基线） |
+| `../examples/sifive7-family-v2.ssdl` | 同一模型的表面生成物（字节等价） |
+| `../examples/README.md` | 三个文件的分工与校验命令 |
+
 ## 自动生成
 
 | 文档 | 状态 | 说明 |

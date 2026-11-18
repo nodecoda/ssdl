@@ -18,7 +18,7 @@ SSDL 是 LLVM 后端调度模型的领域专用语言：它不描述指令本身
 export SSDL_LLVM_SRC=/path/to/llvm-project          # LLVM 源码树
 export SSDL_LLVM_BUILD=/path/to/llvm-build          # 含 bin/llvm-tblgen 的构建目录
 
-python3 tools/ssdl/check.py                         # 153/153 checks passed
+python3 tools/ssdl/check.py                         # 154/154 checks passed
 ```
 
 `check.py` 有两条硬性前置：`SSDL_LLVM_SRC` 指向一个 LLVM checkout，
@@ -133,9 +133,10 @@ machine family f(vlen: INT) {
 machine instance m : f(512) { }
 ```
 
-全量示例在 `docs/examples/`：`sifive7-family.ssdl` 是 IR 文本，
-`sifive7-family-v2.ssdl` 是同一份模型的表面源；两者由
-`family_mine.py` + `to_v2.py` 生成，`check.py` 断言它们展开一致。
+读语法先看 `docs/examples/sifive7-family-tour-v2.ssdl`（约 150 行，手写走查，
+每种构造一处）。整颗 SiFive7 的生成物是 `sifive7-family.ssdl`（IR）与
+`sifive7-family-v2.ssdl`（表面，约 3700 行），只作 golden 基线，不逐行读；
+文件角色见 `docs/examples/README.md`。
 
 ---
 
@@ -198,7 +199,7 @@ tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具�
   family_mine.py    记录 → 规范基 + 公式（只报告，不发明）
   family_sweep.py   14 个模型的全链路 sweep（--syntax v2|ir）
   to_v2.py          IR → v2 表面迁移（to_ir 的逆）
-  check.py          153 项自检
+  check.py          154 项自检
 tests/ssdl/         IR 对拍孪生；surface/ 是表面源；ir-only/ 是无表面写法的构造
 data/               小基线：普查表、诊断表、profiles、族表、公式表
 docs/dsl/           规范、领域模型、验证报告
@@ -271,11 +272,11 @@ python3 tools/ssdl/sweep_aarch64.py --check             # 与 data/aarch64-sched
 ### 6.3 回归
 
 ```bash
-python3 tools/ssdl/check.py                   # 153/153
+python3 tools/ssdl/check.py                   # 154/154
 python3 tools/ssdl/golden.py --check          # 24 expansions
 ```
 
-`check.py` 的 153 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
+`check.py` 的 154 项覆盖：语法/规范化、错误诊断、records 层、TD 打印、
 schema 类型检查、关键字引用同步、14 模型对拍、31 模型 AArch64 sweep 表、
 族展开、效果诊断。
 

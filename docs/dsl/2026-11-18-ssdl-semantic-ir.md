@@ -146,7 +146,7 @@ export SSDL_LLVM_SRC=/path/to/llvm-project
 export SSDL_LLVM_BUILD=/path/to/llvm-build
 
 python3 tools/ssdl/golden.py --check            # 24/24（当前）
-python3 tools/ssdl/check.py                     # 153/153（当前）
+python3 tools/ssdl/check.py                     # 154/154（当前）
 python3 tools/ssdl/elaborate.py tests/ssdl/two-instances-runtime.ssdl
 python3 tools/ssdl/elaborate.py tests/ssdl/two-instances-runtime.ssdl --symbols
 python3 tools/ssdl/elaborate.py tests/ssdl/projection-contract.ssdl

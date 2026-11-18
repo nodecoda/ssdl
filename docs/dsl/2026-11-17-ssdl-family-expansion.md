@@ -3,7 +3,7 @@
 - date: 2026-11-17
 - status: **Implemented + 14/14 RISC-V models verified**
 - 工具：`tools/ssdl/family_expand.py`
-- 测试：`check.py` 153/153
+- 测试：`check.py` 154/154
 - 源：LLVM `700e551714cc`
 
 ## 1. 实现了什么
@@ -253,7 +253,7 @@ processor 名仍按 SSDL 标识符规则折叠 `-` → `_`；扫掠每个模型�
 cd /path/to/ssdl
 python3 tools/ssdl/family_expand.py tests/ssdl/family-mini.ssdl --check-coverage
 python3 tools/ssdl/family_expand.py tests/ssdl/sifive7-vlde.ssdl --check-coverage
-python3 tools/ssdl/check.py   # 153/153
+python3 tools/ssdl/check.py   # 154/154
 
 # 四个已对拍实例（profile 名见 data/riscv-sched-profiles.json）
 python3 tools/ssdl/family_mine.py --emit /tmp/sf.ssdl --profile sifive7-512
