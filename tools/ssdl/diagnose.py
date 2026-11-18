@@ -146,6 +146,25 @@ def _atoms(
     return {name}
 
 
+def _named_keys(expr) -> set[str]:
+    """Named-argument keys used anywhere in a predicate expression tree."""
+    if not expr:
+        return set()
+    tag = expr[0]
+    if tag == "not":
+        return _named_keys(expr[1])
+    if tag != "call":
+        return set()
+    keys: set[str] = set()
+    for arg in expr[2]:
+        if arg[0] == "named":
+            keys.add(arg[1])
+            keys |= _named_keys(arg[2])
+        elif arg[0] == "call":
+            keys |= _named_keys(arg)
+    return keys
+
+
 def _named_atoms(
     name: str,
     predicates: dict[str, PredicateDecl],
@@ -664,6 +683,16 @@ def diagnose(program: Program) -> list[Finding]:
             out.extend(_sti_function(decl, sti_decls, predicates))
         elif isinstance(decl, TIIPredicate):
             out.extend(_tii(decl, predicates))
+        elif isinstance(decl, PredicateDecl):
+            if decl.expr and "map" in _named_keys(decl.expr):
+                out.append(
+                    _f(
+                        NOTE,
+                        f"predicate {decl.name}",
+                        "map= is the legacy spelling of the mapper argument; "
+                        "write mapper= (both lower to FunctionMapper)",
+                    )
+                )
         elif isinstance(decl, PredicateProlog):
             out.append(
                 _f(

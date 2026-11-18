@@ -28,7 +28,7 @@ if __package__ in (None, ""):
     from family_expand import check_coverage  # type: ignore
     import field_types as field_types_mod  # type: ignore
     import predicate_types as predicate_types_mod  # type: ignore
-    from parser import FAMILY_SOURCE, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, coerce_layer, expand_source_mapped, parse  # type: ignore
+    from parser import FAMILY_SOURCE, FeatureDecl, MachineDecl, PredicateDecl, Program, STIDecl, STIFunction, TIIPredicate, ItinerariesDecl, coerce_layer, expand_source_mapped, parse  # type: ignore
     import syntax_v2  # type: ignore
 else:
     from .diagnose import ERROR, NOTE, diagnose, reachable_rws, render_findings
@@ -38,6 +38,7 @@ else:
     from . import syntax_v2
     from .parser import (
         FAMILY_SOURCE,
+        FeatureDecl,
         ItinerariesDecl,
         MachineDecl,
         expand_source_mapped,
@@ -299,6 +300,8 @@ class SortChecker:
             elif isinstance(decl, STIDecl):
                 if "default" in decl.fields:
                     self.require_mc(decl.fields["default"], f"sti_decl {decl.name}.default")
+            elif isinstance(decl, FeatureDecl):
+                self.check_feature(decl)
             elif isinstance(decl, STIFunction):
                 for item in decl.items:
                     self.current_line = item.get("line") or decl.line
@@ -360,6 +363,40 @@ class SortChecker:
                     self.check_itin_names(decl, "itineraries", classes)
                     self.check_itin_fields(decl, "itineraries")
         return self.errors
+
+    def check_feature(self, decl: FeatureDecl) -> None:
+        """The feature schema lives in one table, checked here and in emit_td.
+
+        ``SubtargetFeature`` needs ``mattr``/``field``/``value`` for a plain
+        feature and ``version`` for an extension; until now only the emitter
+        said so, which made ``validate`` accept sources that cannot lower.
+        """
+        where = f"feature {decl.name}"
+        kind = decl.fields.get("kind", "plain")
+        if kind not in field_types_mod.FEATURE_FIELDS:
+            self.error(
+                where,
+                f"unknown kind {kind!r}; expected plain, extension or tune",
+            )
+            return
+        allowed = field_types_mod.FEATURE_FIELDS[kind]
+        for key in decl.fields:
+            if key != "kind" and key not in allowed:
+                self.error(
+                    where,
+                    f"field {key!r} is not allowed for kind = {kind} "
+                    f"(allowed: {', '.join(sorted(allowed))})",
+                )
+        for key in field_types_mod.FEATURE_REQUIRED[kind]:
+            if key not in decl.fields:
+                self.error(where, f"kind = {kind} requires field {key!r}")
+        behavior = decl.fields.get("inline_behavior")
+        if behavior is not None and behavior not in field_types_mod.INLINE_BEHAVIOR:
+            self.error(
+                where,
+                f"unknown inline_behavior {behavior!r}; expected one of "
+                f"{', '.join(sorted(field_types_mod.INLINE_BEHAVIOR))}",
+            )
 
     def check_bind_cycles(self, item: dict, where: str, items: list[dict]) -> None:
         """``release``/``acquire`` pair by position with the declared resources.

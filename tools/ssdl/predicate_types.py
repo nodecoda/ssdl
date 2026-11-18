@@ -41,6 +41,10 @@ REMOVED: dict[str, str] = {
 }
 
 
+#: The mapper argument's current spelling is ``mapper=``; ``map=`` is the
+#: legacy spelling kept for compatibility (the emitter always wrote map=).
+MAPPER_EXTRAS = ("map", "mapper")
+
 SIGNATURES: dict[str, Signature] = {
     "opcode": Signature((INST_SET,)),
     "is_reg": Signature((OPERAND,)),
@@ -48,14 +52,14 @@ SIGNATURES: dict[str, Signature] = {
     "is_valid_reg": Signature((OPERAND,)),
     "is_invalid_reg": Signature((OPERAND,)),
     "is_zero": Signature((OPERAND,)),
-    "reg_is": Signature((OPERAND, REG_OR_SET), ("map",)),
-    "imm_is": Signature((OPERAND, INT), ("map",)),
-    "imm_is_enum": Signature((OPERAND, STRING), ("map",)),
-    "imm_lt": Signature((OPERAND, INT), ("map",)),
-    "imm_gt": Signature((OPERAND, INT), ("map",)),
-    "imm_le": Signature((OPERAND, INT), ("map",)),
-    "imm_ge": Signature((OPERAND, INT), ("map",)),
-    "imm_range": Signature((OPERAND, INT, INT), ("map",)),
+    "reg_is": Signature((OPERAND, REG_OR_SET), MAPPER_EXTRAS),
+    "imm_is": Signature((OPERAND, INT), MAPPER_EXTRAS),
+    "imm_is_enum": Signature((OPERAND, STRING), MAPPER_EXTRAS),
+    "imm_lt": Signature((OPERAND, INT), MAPPER_EXTRAS),
+    "imm_gt": Signature((OPERAND, INT), MAPPER_EXTRAS),
+    "imm_le": Signature((OPERAND, INT), MAPPER_EXTRAS),
+    "imm_ge": Signature((OPERAND, INT), MAPPER_EXTRAS),
+    "imm_range": Signature((OPERAND, INT, INT), MAPPER_EXTRAS),
     "num_ops": Signature((INT,)),
     "same_reg": Signature((OPERAND, OPERAND)),
     "func": Signature((STRING, STRING)),
@@ -118,16 +122,22 @@ def check_call(name: str, args: list) -> list[str]:
                     f"{name}: argument {index} expects {_KIND_LABEL[kind]}, "
                     f"got {arg!r}"
                 )
+    seen_extras: set[str] = set()
     for arg in named:
         extra = arg[1]
         if extra not in signature.extras:
             problems.append(f"{name}: unexpected named argument {extra!r}")
             continue
+        key = "mapper" if extra in MAPPER_EXTRAS else extra
+        if key in seen_extras:
+            problems.append(f"{name}: duplicate mapper argument")
+            continue
+        seen_extras.add(key)
         value = arg[2]
-        if extra == "map":
+        if extra in MAPPER_EXTRAS:
             if value[0] not in ("ident", "call", "set_list", "string"):
                 problems.append(
-                    f"{name}: map= expects a mapper name, got {value!r}"
+                    f"{name}: {extra}= expects a mapper name, got {value!r}"
                 )
         elif extra == "tii":
             if value[0] not in ("string", "ident"):

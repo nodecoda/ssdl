@@ -584,6 +584,14 @@ reg_file GPR {
 }
 ```
 
+术语（三组容易混的名字）：
+
+| SSDL | TableGen | 语义 |
+|---|---|---|
+| `write` / `read` | `SchedWrite` / `SchedRead` | 词表项：一个可被指令引用的读写类型，本身不带时间 |
+| `bind` | `WriteRes` | 把 `write` 绑到资源与时间（latency/release/acquire） |
+| `advance` | `ReadAdvance` | 把 `read` 绑到旁路周期 |
+
 ### 6.4 关系
 
 ```ebnf
@@ -694,6 +702,12 @@ map ADD {
   两种拼法产出同一组 `InstRW`，列表形式同样不接受 `dim_index` 目标。
 - `unsupported = true;` 与 v1 的 `: unsupported = true` 等价，可和下标字段混写。
 - `regex("...")` 仍可出现在 `inst_set` 中；与显式指令名混写仍报错。
+
+两个 "alias" 不是一回事：`machine alias X = Y;`（§6.2）是 CPU 级别名，
+发射 `ProcessorAlias`；机器体内的 `sched_alias A -> B;` 是调度级别名，
+发射 `SchedAlias`，表示名字 `A` 的读写类型在 TableGen 层替换为 `B`。
+`A` 仍需被某条指令的 sched class 引用，否则 `llvm-tblgen` 会以
+`invalid SchedWrite` 中止（`diagnose` 会提前报告）。
 
 ### 6.5 `itineraries`
 
@@ -973,14 +987,14 @@ atom_pred
     | "is_valid_reg" "(" INT ")"
     | "is_invalid_reg" "(" INT ")"
     | "is_zero" "(" INT ")"
-    | "reg_is" "(" INT "," ( IDENT | reg_ref | set_expr ) [ "," "map" "=" IDENT ] ")"
-    | "imm_is" "(" INT "," INT [ "," "map" "=" IDENT ] ")"
-    | "imm_is_enum" "(" INT "," STRING [ "," "map" "=" IDENT ] ")"
-    | "imm_lt" "(" INT "," INT [ "," "map" "=" IDENT ] ")"
-    | "imm_gt" "(" INT "," INT [ "," "map" "=" IDENT ] ")"
-    | "imm_le" "(" INT "," INT [ "," "map" "=" IDENT ] ")"
-    | "imm_ge" "(" INT "," INT [ "," "map" "=" IDENT ] ")"
-    | "imm_range" "(" INT "," INT "," INT [ "," "map" "=" IDENT ] ")"
+    | "reg_is" "(" INT "," ( IDENT | reg_ref | set_expr ) [ "," mapper_arg ] ")"
+    | "imm_is" "(" INT "," INT [ "," mapper_arg ] ")"
+    | "imm_is_enum" "(" INT "," STRING [ "," mapper_arg ] ")"
+    | "imm_lt" "(" INT "," INT [ "," mapper_arg ] ")"
+    | "imm_gt" "(" INT "," INT [ "," mapper_arg ] ")"
+    | "imm_le" "(" INT "," INT [ "," mapper_arg ] ")"
+    | "imm_ge" "(" INT "," INT [ "," mapper_arg ] ")"
+    | "imm_range" "(" INT "," INT "," INT [ "," mapper_arg ] ")"
     | "num_ops" "(" INT ")"
     | "same_reg" "(" INT "," INT ")"
     | "func" "(" STRING "," STRING ")"
@@ -991,6 +1005,14 @@ atom_pred
 ```
 
 命名谓词调用（吸收 S2）在 v2 中是正式产生式，并要求实参个数/类型在前端检查。
+
+```ebnf
+mapper_arg = "mapper" "=" IDENT ;
+```
+
+`mapper=` 是当前拼写；早期源与 `from_records` 的旧输出用的 `map=` 仍然接受，
+但只作为兼容写法（`diagnose --verbose` 会给一条 note）。两者都落到
+`FunctionMapper` 字段，records 不变。
 
 `opcode` / `reg_is` 等原子里的 `IDENT` 是**目标词汇**：`ADD`、`X0`、
 `GPR64` 由目标 `.td` 定义，SSDL 只检查语法与谓词签名，不检查这些名字是否存在。
@@ -1166,7 +1188,7 @@ tii_predicate = "tii_predicate" IDENT "=" statement ;
 | `instance override`（整条替换） | `tests/ssdl/surface/instance-override.ssdl` | ✓ | ✓ |
 | 列表条件 / bool 字段折叠 | `tests/ssdl/surface/list-cond.ssdl` | ✓ | ✓ |
 | `set relation` 命名列 | `tests/ssdl/surface/projection-contract.ssdl` | ✓ | ✓ |
-| `map=`（FunctionMapper helper def） | `tests/ssdl/aarch64/mapper.ssdl` | ✓ | ✓ |
+| `mapper=`（FunctionMapper helper def） | `tests/ssdl/aarch64/mapper.ssdl` | ✓ | ✓ |
 | `variant` / `read_variant` | `tests/ssdl/surface/variants.ssdl` | ✓ | ✓ |
 | `sched_alias` | `tests/ssdl/surface/sifive7-mini.ssdl` | ✓ | ✓ |
 | `itineraries` + 命名 stage | `tests/ssdl/surface/itineraries.ssdl` | ✓ | ✓ |

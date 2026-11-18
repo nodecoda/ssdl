@@ -268,7 +268,7 @@ class Predicates:
         ):
             index = as_int(recs.value(name, "int OpIndex"))
             mapper = unquote(recs.value(name, "string FunctionMapper"))
-            tail = f", map = {quote(mapper)}" if mapper else ""
+            tail = f", mapper = {quote(mapper)}" if mapper else ""
             if cls == "CheckImmOperand_s":
                 value = recs.value(name, "string ImmVal") or '""'
                 return f"imm_is_enum({index}, {value}{tail})"

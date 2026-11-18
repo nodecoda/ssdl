@@ -564,10 +564,12 @@ class PredicateLowerer:
         return "FalsePred"
 
     def take_mapper(self, extras: list, where: str, name: str) -> str | None:
-        """Consume the optional ``map=`` argument, rejecting anything else."""
+        """Consume the optional ``mapper=`` argument (legacy ``map=`` too)."""
         mapper: str | None = None
         for extra in extras:
-            if extra[0] == "named" and extra[1] == "map":
+            if extra[0] == "named" and extra[1] in ("map", "mapper"):
+                if mapper is not None:
+                    self.error(where, f"{name}: duplicate mapper argument")
                 mapper = self.string_arg(extra[2], where, name)
             else:
                 self.error(where, f"{name}: unexpected argument {extra!r}")

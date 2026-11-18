@@ -763,6 +763,83 @@ def mapper_argument_becomes_a_record_field():
 
 
 @test
+def mapper_spelling_is_current_and_map_is_legacy():
+    """`mapper=` is the current spelling; `map=` stays but gets a note.
+
+    Both spellings feed the same ``FunctionMapper`` field, so the records do
+    not move; the note tells a reader which one the language now teaches.
+    """
+    current = """
+predicate sched P = imm_is_enum(3, "AArch64_AM::LSL",
+                                mapper = "AArch64_AM::getShiftType");
+machine model M { issue_width = 1; }
+"""
+    legacy = current.replace("mapper =", "map =")
+    current_td, _ = emit_source_v2(current, strict=True)
+    legacy_td, _ = emit_source_v2(legacy, strict=True)
+    assert_true(
+        current_td == legacy_td,
+        "the two spellings must emit the same records",
+    )
+    current_notes = [
+        f
+        for f in diagnose_mod.diagnose(parser.parse(current, syntax="v2"))
+        if f.level == diagnose_mod.NOTE and "legacy spelling" in f.message
+    ]
+    legacy_notes = [
+        f
+        for f in diagnose_mod.diagnose(parser.parse(legacy, syntax="v2"))
+        if f.level == diagnose_mod.NOTE and "legacy spelling" in f.message
+    ]
+    assert_true(current_notes == [], f"mapper= must not be deprecated: {current_notes}")
+    assert_true(len(legacy_notes) == 1, f"map= must produce exactly one note: {legacy_notes}")
+
+    errors = validate_mod.validate(
+        parser.parse(
+            "predicate sched P = imm_is(1, 2, map = a, mapper = b);", syntax="v2"
+        )
+    )
+    assert_true(
+        any("duplicate mapper argument" in error for error in errors),
+        errors,
+    )
+
+
+@test
+def validate_checks_the_feature_schema_before_emission():
+    """`validate` must reject a feature the emitter cannot lower.
+
+    The schema lives in `field_types` and both sides read it, so the two
+    cannot drift: a plain feature without `mattr`, an unknown kind, and an
+    illegal field for the kind all fail before `emit_td` runs.
+    """
+    errors = validate_mod.validate(
+        parser.parse(
+            'feature plain F { field = "F"; value = "true"; }', syntax="v2"
+        )
+    )
+    assert_true(
+        any("kind = plain requires field 'mattr'" in error for error in errors),
+        errors,
+    )
+    try:
+        parser.parse("feature mystery F { }", syntax="v2")
+    except Exception as exc:
+        assert_in("feature needs a kind right after the keyword", str(exc))
+    else:
+        raise Failure("the surface front end must reject an unknown kind")
+    errors = validate_mod.validate(
+        parser.parse(
+            'feature extension E { version = "2"; mattr = "e"; }', syntax="v2"
+        )
+    )
+    assert_true(
+        any("field 'mattr' is not allowed for kind = extension" in error for error in errors),
+        errors,
+    )
+
+
+@test
 def aarch64_fixtures_emit_strict_without_skips():
     """Every AArch64 language-gap fixture lowers with no skipped construct."""
     fixtures = sorted((ROOT / "tests/ssdl/aarch64").glob("*.ssdl"))

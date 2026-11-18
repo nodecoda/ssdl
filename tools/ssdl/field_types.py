@@ -262,3 +262,33 @@ def value_error(expected: str, text: str) -> str | None:
                 return f"expects a write/read list, got item {item!r}"
         return None
     return None
+
+#: Feature kinds and the fields each kind accepts.  Both ``validate`` and
+#: ``emit_td`` read this table; keeping one copy is what makes "validate catches
+#: it before the emitter" true instead of aspirational.
+FEATURE_FIELDS = {
+    "plain": {"mattr", "field", "value", "desc", "implies", "inline_behavior"},
+    "extension": {"version", "field", "value", "desc", "implies", "experimental", "bitmask"},
+    "tune": {
+        "positive_directive",
+        "negative_directive",
+        "field",
+        "value",
+        "desc",
+        "implies",
+        "inline_behavior",
+    },
+}
+
+FEATURE_REQUIRED = {
+    "plain": ("mattr", "field", "value"),
+    "extension": ("version",),
+    "tune": ("positive_directive", "field", "value"),
+}
+
+INLINE_BEHAVIOR = {
+    "ignore": "InlineIgnore",
+    "default": "InlineDefault",
+    "inverse": "InlineInverse",
+    "must_match": "InlineMustMatch",
+}

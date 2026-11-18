@@ -53,6 +53,7 @@ if __package__ in (None, ""):
     import validate as validate_mod  # type: ignore
     from record_ir import Base, DuplicateRecord, Record, RecordSet  # type: ignore
     from predicates import PredicateError, PredicateLowerer  # type: ignore
+    import field_types  # type: ignore
     from sets import attribute_names  # type: ignore
     from sets import AttributeSchema, SetEvaluator  # type: ignore
     from tdutil import join_list, td_def_name, td_str  # type: ignore
@@ -61,6 +62,7 @@ else:
     from . import validate as validate_mod
     from .record_ir import Base, DuplicateRecord, Record, RecordSet
     from .predicates import PredicateError, PredicateLowerer
+    from . import field_types
     from .sets import attribute_names, AttributeSchema, SetEvaluator
     from .tdutil import join_list, td_def_name, td_str
     from .targets import TargetProfile, profile as target_profile
@@ -152,32 +154,9 @@ class _Unset:
 
 _UNSET = _Unset()
 
-INLINE_BEHAVIOR = {
-    "ignore": "InlineIgnore",
-    "default": "InlineDefault",
-    "inverse": "InlineInverse",
-    "must_match": "InlineMustMatch",
-}
-
-FEATURE_FIELDS = {
-    "plain": {"mattr", "field", "value", "desc", "implies", "inline_behavior"},
-    "extension": {"version", "field", "value", "desc", "implies", "experimental", "bitmask"},
-    "tune": {
-        "positive_directive",
-        "negative_directive",
-        "field",
-        "value",
-        "desc",
-        "implies",
-        "inline_behavior",
-    },
-}
-
-FEATURE_REQUIRED = {
-    "plain": ("mattr", "field", "value"),
-    "extension": ("version",),
-    "tune": ("positive_directive", "field", "value"),
-}
+INLINE_BEHAVIOR = field_types.INLINE_BEHAVIOR
+FEATURE_FIELDS = field_types.FEATURE_FIELDS
+FEATURE_REQUIRED = field_types.FEATURE_REQUIRED
 
 RESERVED_RW = {
     "read_default": "ReadDefault",
