@@ -87,7 +87,9 @@ def XorSelf : DepBreakingClass<
     CheckAll<[CheckOpcode<[XOR]>, CheckSameRegOperand<1, 2>]>,
     [1, 2]>;
 
-def ssdl_generic_rv64Model : SchedMachineModel;
+def ssdl_generic_rv64Model : SchedMachineModel {
+  let CompleteModel = false;
+}
 
 def ssdl_generic_rv64 : RISCVProcessorModel<"ssdl-generic-rv64",
                                             ssdl_generic_rv64Model,
@@ -147,10 +149,10 @@ let SchedModel = ssdl_sifive_7Model in {
 
   def ssdl_sifive_7_RAdv_R_ALU : SchedReadAdvance<1, [W_ALU]>;
 
-  def ssdl_sifive_7_IRW_ADD_SUB_XOR : InstRW<[W_ALU, ReadDefault, ReadDefault],
+  def ssdl_sifive_7_IRW_ADD_SUB_XOR : InstRW<[W_ALU, R_ALU, ReadDefault],
                                (instrs ADD, SUB, XOR)>;
   def ssdl_sifive_7_IRW_LD : InstRW<[W_LOAD, ReadDefault], (instrs LD)>;
-  def ssdl_sifive_7_IRW_REGEX_MUL : InstRW<[W_ALU, ReadDefault, ReadDefault],
+  def ssdl_sifive_7_IRW_REGEX_MUL : InstRW<[W_MULDIV, ReadDefault, ReadDefault],
                              (instregex "MUL.*")>;
   def ssdl_sifive_7_IRW_AND_instrs : InstRW<[W_ALU, ReadDefault], (instrs AND)>;
   def ssdl_sifive_7_IRW_REGEX_DIV_regex : InstRW<[W_ALU, ReadDefault], (instregex "DIV.*")>;
@@ -189,6 +191,7 @@ def ssdl_sifive_7 : RISCVProcessorModel<"ssdl-sifive-7", ssdl_sifive_7Model,
 def ssdl_sifive_7_alias : ProcessorAlias<"ssdl-sifive-7-alias", "ssdl-sifive-7">;
 
 def ssdl_itin_rv64Model : SchedMachineModel {
+  let CompleteModel = false;
   let Itineraries = ssdl_itin_rv64Itineraries;
 }
 

@@ -138,6 +138,20 @@ aux 拼写是 subject 与分支序号的纯函数（`<subject>__case0/1`）。�
 7. **`validate.py` 不重复 relation/extern 检查**：展开期已经强制；静态检查
    器只做它自己的覆盖性/效果诊断。
 8. **不是上游提案**：学习项目，public repo 只为复现与讨论。
+9. **`-gen-subtarget` 只对"完整模型 + 替换式 target"成立**：`SubtargetEmitter`
+   对每个可达 `SchedWrite` 都要求 `WriteRes`（`SubtargetEmitter.cpp:984-989`），
+   而完整 target 自带成千上万个指令，所以 `sifive7-mini` / `tour` 这类**部分模型**
+   在 `RISCV.td` 上必然停在 `does not define resources for`。可证明的门禁是它的下一层：
+   `CodeGenSchedule` 必须接受全部记录（`check.py::riscv_fixture_records_reach_the_resource_gate`）。
+   完整模型（`sifive7-family-v2`）只能以**替换**方式加载：它按上游名字重声明
+   `WriteIDiv` 等，与 `RISCVSchedule*.td` 同时 include 会 `def already exists`。
+10. **`SchedAlias.MatchRW` 必须由别处索引**：`collectSchedRW`
+   （`CodeGenSchedule.cpp:583-641`）只从指令 `Sched` 列表、`InstRW`/`ItinRW`
+   操作数、`SchedAlias` 的 *target* 收集；`MatchRW` 不收集。SSDL 的 write/read 是
+   model-local 名字，所以"只被 alias / variant / bind 引用"的名字会在
+   `getSchedWrite(0)`/`getSchedRead(0)` 断言。诊断在 `diagnose.py::_unreachable_rw`
+   （三档 note，按 `SchedAlias.MatchRW` / `ProcReadAdvance.ValidWrites` /
+   `InstRW.OperandReadWrites` 标注），fixture 已改为在 `map` 里点名。
 
 ## 5. 复现
 

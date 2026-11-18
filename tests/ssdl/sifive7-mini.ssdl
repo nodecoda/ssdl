@@ -120,6 +120,7 @@ tii_predicate isXorZeroIdiom =
     };
 
 machine ssdl-generic-rv64 {
+    complete_model = false;
     features = [FeatureSSDL64Bit, StdExtXssdl];
     default_march = "rv64i2p1";
 }
@@ -152,9 +153,9 @@ machine ssdl-sifive-7 {
 
     advance R_ALU : cycles = 1 : writes = [W_ALU];
 
-    map [ADD, SUB, XOR]  -> [W_ALU, read_default, read_default];
+    map [ADD, SUB, XOR]  -> [W_ALU, R_ALU, read_default];
     map [LD]             -> [W_LOAD, read_default];
-    map [regex("MUL.*")] -> [W_ALU, read_default, read_default];
+    map [regex("MUL.*")] -> [W_MULDIV, read_default, read_default];
     map [AND, regex("DIV.*")] -> [W_ALU, read_default];
 
     variant W_ALU {
@@ -196,6 +197,7 @@ machine ssdl-sifive-7 {
 machine ssdl-sifive-7-alias = ssdl-sifive-7;
 
 machine ssdl-itin-rv64 {
+    complete_model = false;
     features = [FeatureSSDL64Bit];
 }
 

@@ -331,6 +331,8 @@ def _machine(
                     if out[index].line is None:
                         out[index] = replace(out[index], line=line)
 
+    out.extend(_unreachable_rw(decl, where))
+
     if has_itin:
         if has_sched:
             out.append(
@@ -380,6 +382,135 @@ def _bind(item: dict, where: str) -> list[Finding]:
             )
         )
     return out
+
+
+def _reachable_rws(decl: MachineDecl) -> set[str]:
+    """Names TableGen will index for this machine.
+
+    ``collectSchedRW`` walks instruction ``Sched`` lists, ``InstRW``/``ItinRW``
+    operand lists and every ``SchedAlias`` *target*.  A name that only appears
+    as an alias subject, a ``WriteRes.WriteType`` or a variant selection is
+    never indexed, so the model can be accepted by SSDL and still abort
+    ``llvm-tblgen`` with ``invalid SchedWrite``/``invalid SchedRead``.
+    """
+    reach: set[str] = set()
+    for item in decl.items:
+        kind = item.get("kind")
+        if kind in ("map", "map_itin"):
+            reach.update(x for x in item.get("rw") or () if isinstance(x, str))
+        elif kind == "alias" and isinstance(item.get("dst"), str):
+            reach.add(item["dst"])
+
+    grew = True
+    while grew:
+        grew = False
+        for item in decl.items:
+            kind = item.get("kind")
+            if item.get("name") not in reach:
+                continue
+            members: list = []
+            if kind in ("variant", "read_variant"):
+                for case in item.get("cases", ()):
+                    members.extend(case.get("selected") or ())
+                members.extend(item.get("default") or ())
+            elif kind == "write_seq":
+                members.extend(item.get("writes") or item.get("members") or ())
+            for member in members:
+                if isinstance(member, str) and member not in reach:
+                    reach.add(member)
+                    grew = True
+    return reach
+
+
+def _unreachable_rw(decl: MachineDecl, where: str) -> list[Finding]:
+    """Report declared reads/writes TableGen will never index.
+
+    Whether a name is reachable also depends on the target's own ``Sched<>``
+    lists, which a model-local SSDL source cannot see, so every category is a
+    note rather than a warning.  The message still states the exact failure:
+
+    * alias subject -- ``SchedAlias.MatchRW`` is not collected by
+      ``collectSchedRW``, so ``getSchedWrite(0)``/``getSchedRead(0)`` asserts
+      with ``invalid SchedWrite``/``invalid SchedRead``;
+    * ``advance`` valid write -- ``ProcReadAdvance.ValidWrites`` must name a
+      write some instruction uses, else ``addReadAdvance`` is fatal;
+    * anything else -- declared and bound, but no instruction names it, so the
+      bind/variant has no observable effect.
+    """
+    reach = _reachable_rws(decl)
+    declared: dict[str, list[str]] = {"write": [], "read": []}
+    alias_subject: dict[str, set[str]] = {"write": set(), "read": set()}
+    advance_write: set[str] = set()
+    for item in decl.items:
+        kind = item.get("kind")
+        if kind == "alias" and isinstance(item.get("src"), str):
+            alias_subject["write"].add(item["src"])
+            alias_subject["read"].add(item["src"])
+        elif kind in ("variant", "read_variant") and isinstance(item.get("name"), str):
+            alias_subject["write" if kind == "variant" else "read"].add(item["name"])
+        elif kind == "advance":
+            advance_write.update(
+                write
+                for write in item.get("props", {}).get("writes") or ()
+                if isinstance(write, str)
+            )
+        name = item.get("name")
+        if kind in declared and isinstance(name, str) and name not in reach:
+            declared[kind].append(name)
+
+    out: list[Finding] = []
+    for kind, names in declared.items():
+        noun = "SchedWrite" if kind == "write" else "SchedRead"
+        aliased = [n for n in names if n in alias_subject[kind]]
+        advanced = (
+            [n for n in names if n in advance_write and n not in alias_subject["write"]]
+            if kind == "write"
+            else []
+        )
+        plain = [n for n in names if n not in aliased and n not in advanced]
+        if aliased:
+            out.append(
+                _f(
+                    NOTE,
+                    f"{where}.{kind}",
+                    f"{len(aliased)} {kind}(s) are alias subjects that no map or "
+                    f"map_itin names ({_sample(aliased)}). collectSchedRW never "
+                    "visits SchedAlias.MatchRW, so llvm-tblgen aborts with "
+                    f"'invalid {noun}' unless the target's own Sched<> lists "
+                    "already name them",
+                    "SchedAlias.MatchRW",
+                )
+            )
+        if advanced:
+            out.append(
+                _f(
+                    NOTE,
+                    f"{where}.write",
+                    f"{len(advanced)} advance() valid write(s) are never named by "
+                    f"a map or map_itin ({_sample(advanced)}); llvm-tblgen rejects "
+                    "a ReadAdvance whose ValidWrites no instruction uses",
+                    "ProcReadAdvance.ValidWrites",
+                )
+            )
+        if plain:
+            out.append(
+                _f(
+                    NOTE,
+                    f"{where}.{kind}",
+                    f"{len(plain)} declared {kind}(s) are never named by a map or "
+                    f"map_itin ({_sample(plain)}); the bind/variant has no "
+                    "observable effect unless an InstRW or the target's Sched<> "
+                    "lists name them",
+                    "InstRW.OperandReadWrites",
+                )
+            )
+    return out
+
+
+def _sample(names: list[str], limit: int = 6) -> str:
+    shown = ", ".join(names[:limit])
+    rest = len(names) - limit
+    return shown + (f" and {rest} more" if rest > 0 else "")
 
 
 # ---------------------------------------------------------------------- STI

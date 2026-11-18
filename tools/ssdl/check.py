@@ -1030,6 +1030,97 @@ machine stub-cpu {
 
 
 @test
+def unindexed_alias_subject_is_reported_before_tblgen_aborts():
+    """An alias subject no InstRW names is diagnosed, not left to an assert.
+
+    ``CodeGenSchedule::collectSchedRW`` indexes a SchedReadWrite only when an
+    instruction ``Sched`` list, an ``InstRW``/``ItinRW`` operand list or a
+    ``SchedAlias`` *target* reaches it.  An alias *subject* is therefore
+    invisible, and ``getSchedWrite``/``getSchedRead`` abort on index 0.  The
+    diagnostic must name the record and the reason.
+    """
+    source = """
+machine m {
+    resource P : units = 1;
+    write W;
+    read R;
+    bind W -> [P], latency = 1;
+    advance R : cycles = 1 : writes = [W];
+    variant W { case true: [W]; default: [W]; }
+    read_variant R { case true: [R]; default: [R]; }
+    map [ADD] -> [read_default, read_default];
+}
+"""
+    findings = diagnose_mod.diagnose(parser.parse(source))
+    notes = [f for f in findings if f.level == diagnose_mod.NOTE]
+    text = "\n".join(f.render() for f in notes)
+    assert_in("invalid SchedWrite", text)
+    assert_in("invalid SchedRead", text)
+    assert_in("(W)", text)
+    assert_in("(R)", text)
+    assert_true(
+        any(f.effect == "SchedAlias.MatchRW" for f in notes),
+        "the alias subject must be tagged with its field: " + text,
+    )
+
+    quiet = source.replace(
+        "map [ADD] -> [read_default, read_default];", "map [ADD] -> [W, R];"
+    )
+    quiet_findings = diagnose_mod.diagnose(parser.parse(quiet))
+    assert_true(
+        not [f for f in quiet_findings if f.level == diagnose_mod.NOTE],
+        "a named subject must stay quiet: "
+        + "\n".join(f.render() for f in quiet_findings),
+    )
+
+
+@test
+def riscv_fixture_records_reach_the_resource_gate():
+    """The generated RISC-V records must survive CodeGenSchedule construction.
+
+    A *partial* model cannot pass ``-gen-subtarget`` against the full RISCV
+    target: once any ``WriteRes`` exists, SubtargetEmitter demands one for every
+    reachable ``SchedWrite``, and the target's own instructions supply thousands.
+    The layer that must accept our records is CodeGenSchedule; the run has to
+    stop at resource coverage, never at the invalid SchedWrite/SchedRead
+    assertion that an unindexed alias subject produces.
+    """
+    try:
+        tblgen = compare_mod.default_tblgen()
+        include_dirs = compare_mod.default_include_dirs()
+        paths_mod.require_llvm_src()
+    except compare_mod.CompareError:
+        return
+    riscv_dir = Path(include_dirs[1])
+    if not (riscv_dir / "RISCV.td").exists():
+        return
+
+    text, skips = emit_td.emit(
+        parser.parse_file(str(ROOT / "tests/ssdl/surface/sifive7-mini.ssdl"), syntax="v2"),
+        strict=True,
+        attrs=attrs_schema(),
+        target_include="RISCV.td",
+    )
+    assert_true(skips == [], skips)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "mini-riscv.td"
+        path.write_text(text, encoding="utf-8")
+        cmd = [tblgen, "-gen-subtarget"]
+        for inc in include_dirs:
+            cmd.extend(["-I", inc])
+        cmd.extend(["-o", str(Path(tmp) / "mini.inc"), str(path)])
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+
+    assert_true(proc.returncode != 0, "a partial model is expected to fail coverage")
+    assert_in("does not define resources for", proc.stderr)
+    assert_true(
+        "invalid SchedWrite" not in proc.stderr and "invalid SchedRead" not in proc.stderr,
+        "CodeGenSchedule rejected an unindexed SchedReadWrite:\n" + proc.stderr,
+    )
+
+
+@test
 def builtin_sti_hooks_are_bound_not_redeclared():
     """`isZeroIdiom` and friends already exist in TargetInstrPredicate.td."""
     text, skips = emit_source(

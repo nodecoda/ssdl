@@ -109,6 +109,7 @@ predicate tii isXorZeroIdiom {
 }
 
 machine both ssdl-generic-rv64 {
+    complete_model = false;
     features      = [FeatureSSDL64Bit, StdExtXssdl];
     default_march = "rv64i2p1";
 }
@@ -162,7 +163,7 @@ machine both ssdl-sifive-7 {
 
     map [ADD, SUB, XOR] {
         0 = W_ALU;
-        1 = read_default;
+        1 = R_ALU;
         2 = read_default;
     }
     map [LD] {
@@ -170,7 +171,7 @@ machine both ssdl-sifive-7 {
         1 = read_default;
     }
     map [regex("MUL.*")] {
-        0 = W_ALU;
+        0 = W_MULDIV;
         1 = read_default;
         2 = read_default;
     }
@@ -225,6 +226,7 @@ machine both ssdl-sifive-7 {
 machine alias ssdl-sifive-7-alias = ssdl-sifive-7;
 
 machine both ssdl-itin-rv64 {
+    complete_model = false;
     features = [FeatureSSDL64Bit];
 }
 

@@ -80,6 +80,7 @@ predicate tii IsXorZero {
 
 # 族：一次写维度；实例只给参数。
 machine family tour(vlen: INT) {
+    # 走查只建模标量指令，向量写只演示维度展开与 variant，\n    # 因此它不是一个完整模型（CompleteModel 默认是 true）。\n    complete_model = false;
     issue_width  = 2;
     load_latency = 3;
 
