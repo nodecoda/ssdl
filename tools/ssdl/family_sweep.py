@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import paths  # noqa: E402
-from ssdl.census_riscv import llvm_commit  # noqa: E402
+from ssdl.census_sched import llvm_commit  # noqa: E402
 from ssdl.diagnose import diagnose  # noqa: E402
 from ssdl.parser import parse_file  # noqa: E402
 from ssdl.records import load, unquote  # noqa: E402

@@ -174,7 +174,7 @@ tools/ssdl/         解析器、records、TD 打印机、对拍与普查工具�
   td_schema.py      从 TD 声明抽取 schema（把后端字符串绑定变成可检查的契约）
   expand_records.py 用 schema 展开 records.json，无需 tblgen
   equiv.py          两套 records 的语义对拍
-  census_riscv.py   26 个 SchedMachineModel 的普查
+  census_sched.py    单个 target 的 SchedMachineModel 普查
   family_tables.py  从源码抽取 RISC-V 族与词表
   family_mine.py    记录 → 规范基 + 公式（只报告，不发明）
   family_sweep.py   14 个模型的全链路 sweep（--syntax v1|v2）

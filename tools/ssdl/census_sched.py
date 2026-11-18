@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Census of the in-tree RISC-V scheduling models.
+"""Census of one target's in-tree scheduling models.
 
 The census answers three questions that the SSDL v1.2 plan depends on:
 
@@ -20,13 +20,15 @@ Models are enumerated from the record table, not from the source text: a model
 is any record whose last class ends in ``SchedModel`` / ``SchedMachineModel``
 (``SiFive7SchedMachineModel``, ``SyntacoreSchedModel``, ...), minus
 ``NoSchedModel``.  Enumerating with ``class == SchedMachineModel`` misses 11 of
-the 25 RISC-V models.
+the target's models.
 
 Usage::
 
-    python3 tools/ssdl/census_riscv.py --records "$SSDL_CACHE/riscv.rec" \
+    python3 tools/ssdl/census_sched.py --records "$SSDL_CACHE/riscv.rec" \
         --llvm "$SSDL_LLVM_SRC" -o data/riscv-sched-census.csv
-    python3 tools/ssdl/census_riscv.py ... --check   # fail if out of date
+    python3 tools/ssdl/census_sched.py --target aarch64 \
+        --records "$SSDL_CACHE/aarch64.rec" ... -o data/aarch64-sched-census.csv
+    python3 tools/ssdl/census_sched.py ... --check   # fail if out of date
 """
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ssdl import paths as paths_mod  # noqa: E402
 from ssdl import records as records_mod  # noqa: E402
+from ssdl import targets as targets_mod  # noqa: E402
 
 COLUMNS = [
     "file",
@@ -131,15 +134,15 @@ def file_metrics(path: Path) -> dict[str, object]:
     }
 
 
-def model_source_file(riscv_dir: Path, model: str) -> str:
+def model_source_file(target_dir: Path, model: str) -> str:
     """The ``*Sched*.td`` file that declares ``def <model>``.
 
-    Every RISC-V model is an explicit ``def`` today, so a word-boundary search
+    Every model in these targets is an explicit ``def`` today, so a word-boundary search
     is enough; a future ``defm``-generated model returns "-" rather than a
     guess, and Step 2 has to name its family explicitly.
     """
     pattern = re.compile(DEF_RE_TEMPLATE.format(name=re.escape(model)), re.MULTILINE)
-    for path in sorted(riscv_dir.glob("*Sched*.td")):
+    for path in sorted(target_dir.glob("*Sched*.td")):
         if pattern.search(path.read_text(errors="replace")):
             return path.name
     return "-"
@@ -163,7 +166,7 @@ def llvm_commit(llvm_dir: Path | None) -> str:
 def census(
     recs: "records_mod.RecordFile",
     *,
-    riscv_dir: Path | None = None,
+    target_dir: Path | None = None,
 ) -> tuple[list[dict[str, object]], list[str]]:
     """Return (rows, per-file metrics reused across rows)."""
     index = index_by_model(recs)
@@ -171,9 +174,9 @@ def census(
     cache: dict[str, dict[str, object]] = {}
     for model in model_names(recs):
         defs = index.get(model, [])
-        source = model_source_file(riscv_dir, model) if riscv_dir else "-"
+        source = model_source_file(target_dir, model) if target_dir else "-"
         if source != "-" and source not in cache:
-            cache[source] = file_metrics(riscv_dir / source)  # type: ignore[operator]
+            cache[source] = file_metrics(target_dir / source)  # type: ignore[operator]
         metrics = cache.get(source, {
             "lines": 0,
             "foreach": 0,
@@ -209,9 +212,11 @@ def census(
     return rows, sorted(cache)
 
 
-def render(rows: list[dict[str, object]], commit: str) -> str:
+def render(rows: list[dict[str, object]], commit: str, target: str = "riscv") -> str:
     out = io.StringIO()
-    out.write("# RISC-V scheduling census; regenerate with tools/ssdl/census_riscv.py\n")
+    out.write(
+        f"# {target} scheduling census; regenerate with tools/ssdl/census_sched.py\n"
+    )
     out.write(f"# llvm={commit}\n")
     out.write("# explicit = record has Unsupported != 1 (TableGen fills the rest)\n")
     writer = csv.DictWriter(out, fieldnames=COLUMNS, lineterminator="\n")
@@ -224,7 +229,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--records", required=True, help="-print-records dump")
     parser.add_argument("--llvm", default=None, help="LLVM source root (for source metrics)")
-    parser.add_argument("-o", "--out", default=str(ROOT / "data/riscv-sched-census.csv"))
+    parser.add_argument(
+        "--target", choices=("riscv", "aarch64"), default="riscv"
+    )
+    parser.add_argument(
+        "-o",
+        "--out",
+        default=None,
+        help="CSV path (default: data/<target>-sched-census.csv)",
+    )
     parser.add_argument(
         "--check",
         action="store_true",
@@ -233,15 +246,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     llvm_dir = Path(args.llvm) if args.llvm else None
-    riscv_dir = llvm_dir / "lib/Target/RISCV" if llvm_dir else None
-    if riscv_dir is not None and not riscv_dir.is_dir():
-        print(f"error: {riscv_dir} is not a directory", file=sys.stderr)
+    target = targets_mod.profile(args.target)
+    target_dir = llvm_dir / "lib/Target" / target.td_dir if llvm_dir else None
+    if target_dir is not None and not target_dir.is_dir():
+        print(f"error: {target_dir} is not a directory", file=sys.stderr)
         return 2
 
     recs = records_mod.load(args.records)
-    rows, files = census(recs, riscv_dir=riscv_dir)
-    text = render(rows, llvm_commit(llvm_dir))
-    out = Path(args.out)
+    rows, files = census(recs, target_dir=target_dir)
+    text = render(rows, llvm_commit(llvm_dir), target.display)
+    out = Path(args.out) if args.out else ROOT / f"data/{target.name}-sched-census.csv"
 
     if args.check:
         if not out.is_file():

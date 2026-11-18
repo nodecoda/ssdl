@@ -4,8 +4,8 @@
 The emitter deliberately covers the part of SSDL that maps one-to-one onto
 existing TableGen records:
 
-  feature   -> SubtargetFeature / RISCVExtension / RISCVTuneFeature
-  machine   -> SchedMachineModel + RISCVProcessorModel / ProcessorAlias
+  feature   -> SubtargetFeature / profile extension & tune classes
+  machine   -> SchedMachineModel + profile processor class / ProcessorAlias
   resource  -> ProcResource / ProcResGroup
   write/read-> SchedWrite / SchedRead
   bind      -> WriteRes
@@ -45,12 +45,14 @@ if __package__ in (None, ""):
     from predicates import PredicateError, PredicateLowerer  # type: ignore
     from sets import AttributeSchema, SetEvaluator  # type: ignore
     from tdutil import join_list, td_def_name, td_str  # type: ignore
+    from targets import TargetProfile, profile as target_profile  # type: ignore
 else:
     from . import validate as validate_mod
     from .record_ir import Base, DuplicateRecord, Record, RecordSet
     from .predicates import PredicateError, PredicateLowerer
     from .sets import AttributeSchema, SetEvaluator
     from .tdutil import join_list, td_def_name, td_str
+    from .targets import TargetProfile, profile as target_profile
 
 if __package__ in (None, ""):
     from diagnose import (  # type: ignore
@@ -191,11 +193,13 @@ class Emitter:
         strict: bool = False,
         attrs: AttributeSchema | None = None,
         sorts: dict[str, str] | None = None,
+        target: TargetProfile | None = None,
     ):
         self.program = program
         self.strict = strict
         self.attrs = attrs
         self.sorts = sorts
+        self.target = target or target_profile(None)
         self.errors: list[Diagnostic] = []
         self.skips: list[Diagnostic] = []
         # Effect-aware findings from ``diagnose.py``.  Error findings are
@@ -521,6 +525,13 @@ class Emitter:
             return self.define(where, info.def_name, "SubtargetFeature", args)
 
         if info.kind == "extension":
+            if self.target.extension_class is None:
+                self.error(
+                    where,
+                    f"kind = extension is RISC-V specific; "
+                    f"target {self.target.name!r} has no extension class",
+                )
+                return ""
             version = fields.get("version")
             if version is None:
                 return ""
@@ -536,7 +547,11 @@ class Emitter:
                     "experimental extensions with implies need RISCVExperimentalExtension, "
                     "whose implies list is list<RISCVExtension>; not lowered",
                 )
-            cls = "RISCVExperimentalExtension" if experimental else "RISCVExtension"
+            cls = (
+                "RISCVExperimentalExtension"
+                if experimental
+                else self.target.extension_class
+            )
             args = [major, minor, td_str(desc)]
             if implies:
                 args.append(join_list(implies))
@@ -579,7 +594,14 @@ class Emitter:
             if not implies:
                 args.append("[]")
             args.append(inline)
-        return self.define(where, info.def_name, "RISCVTuneFeature", args)
+        if self.target.tune_feature_class is None:
+            self.error(
+                where,
+                f"kind = tune is RISC-V specific; "
+                f"target {self.target.name!r} has no tune-feature class",
+            )
+            return ""
+        return self.define(where, info.def_name, self.target.tune_feature_class, args)
 
     # -- itineraries -----------------------------------------------------
     def itinerary_def_name(self, decl: ItinerariesDecl, owner_def: str) -> str:
@@ -1650,8 +1672,24 @@ class Emitter:
         fargs = self._resolve_features(where, features)
         self.current_line = prop_lines.get("tune_features") or info.decl.line
         targs = self._resolve_features(where, tune)
+        if march is not None and not self.target.has_default_march:
+            self.error(
+                where,
+                f"default_march is not a field of {self.target.processor_class} "
+                f"(target {self.target.name!r})",
+            )
+            march = None
         if role == "model":
             pass
+        elif self.target.tune_processor_class is None:
+            # Generic ProcessorModel: features is a required positional list,
+            # tune features are optional, and there is no DefaultMarch.
+            args = [td_str(decl.name), sched_model_name, join_list(fargs) if fargs else "[]"]
+            if targs:
+                args.append(join_list(targs))
+            processor_texts.append(
+                self.define(where, info.def_name, self.target.processor_class, args)
+            )
         elif features:
             args = [td_str(decl.name), sched_model_name, join_list(fargs)]
             if tune or march:
@@ -1659,7 +1697,7 @@ class Emitter:
             if march is not None:
                 args.append(td_str(march))
             processor_texts.append(
-                self.define(where, info.def_name, "RISCVProcessorModel", args)
+                self.define(where, info.def_name, self.target.processor_class, args)
             )
         else:
             if march is not None:
@@ -1668,7 +1706,7 @@ class Emitter:
             if tune:
                 args.append(join_list(targs))
             processor_texts.append(
-                self.define(where, info.def_name, "RISCVTuneProcessorModel", args)
+                self.define(where, info.def_name, self.target.tune_processor_class, args)
             )
 
         chunks = list(prelude) + ([model_text] if model_text else [])
@@ -1686,17 +1724,21 @@ def emit(
     header_comment: str | None = None,
     attrs: AttributeSchema | None = None,
     sorts: dict[str, str] | None = None,
-    target_include: str = "RISCV.td",
+    target_include: str | None = None,
     records: RecordSet | None = None,
     findings: list | None = None,
+    target: TargetProfile | None = None,
 ) -> tuple[str, list[Diagnostic]]:
     """Lower ``program`` and prepend the includes the output needs to load.
 
-    ``target_include`` is the target description that must be loaded first.
-    It is ``RISCV.td`` for real use; the validation fixture points it at a
-    minimal stub so ``-gen-subtarget`` can be exercised in CI.
+    ``target_include`` is the target description that must be loaded first;
+    it defaults to the profile's ``td_file`` (``RISCV.td`` / ``AArch64.td``).
+    The validation fixture points it at a minimal stub so ``-gen-subtarget``
+    can be exercised in CI.
     """
-    emitter = Emitter(program, strict=strict, attrs=attrs, sorts=sorts)
+    emitter = Emitter(program, strict=strict, attrs=attrs, sorts=sorts, target=target)
+    if target_include is None:
+        target_include = emitter.target.td_file
     body = emitter.run()
     if records is not None:
         records.records.extend(emitter.records.records)
@@ -1736,9 +1778,15 @@ def main(argv: list[str] | None = None) -> int:
         help="JSON attribute schema used to evaluate set declarations",
     )
     ap.add_argument(
+        "--target",
+        choices=("riscv", "aarch64"),
+        default="riscv",
+        help="target profile (default: riscv)",
+    )
+    ap.add_argument(
         "--target-include",
-        default="RISCV.td",
-        help="target description included first (default: RISCV.td)",
+        default=None,
+        help="target description included first (default: the profile's td file)",
     )
     ap.add_argument(
         "--records-json",
@@ -1790,6 +1838,7 @@ def main(argv: list[str] | None = None) -> int:
             header_comment=f"// Generated from {args.input} by tools/ssdl/emit_td.py.",
             attrs=attrs,
             target_include=args.target_include,
+            target=target_profile(args.target),
         )
     except SSDLEmitError as exc:
         for diag in exc.diagnostics:

@@ -1,4 +1,4 @@
-# RISC-V scheduling census; regenerate with tools/ssdl/census_riscv.py
+# RISC-V scheduling census; regenerate with tools/ssdl/census_sched.py
 # llvm=700e551714cc
 # explicit = record has Unsupported != 1 (TableGen fills the rest)
 file,model,lines,foreach,defm,write_res_stmts,write_res_explicit,read_advance_explicit,proc_resources,instr_rw,variants,family_class,dimension_axes

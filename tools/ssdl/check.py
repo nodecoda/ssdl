@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from ssdl import census_riscv as census_mod  # noqa: E402
+from ssdl import census_sched as census_mod  # noqa: E402
 from ssdl import compare as compare_mod  # noqa: E402
 from ssdl import diagnose as diagnose_mod  # noqa: E402
 from ssdl import effects as effects_mod  # noqa: E402
@@ -34,6 +34,7 @@ from ssdl import equiv as equiv_mod  # noqa: E402
 from ssdl import paths as paths_mod  # noqa: E402
 from ssdl import predicate_types as predicate_types_mod  # noqa: E402
 from ssdl import predicates as predicates_mod  # noqa: E402
+from ssdl import targets as targets_mod  # noqa: E402
 from ssdl import family_expand as family_mod  # noqa: E402
 from ssdl import family_mine as family_mine_mod  # noqa: E402
 from ssdl import family_sweep as family_sweep_mod  # noqa: E402
@@ -1944,7 +1945,7 @@ def census_separates_explicit_bindings_from_tblgen_fill_ins():
         "anon_ra_b": ["  int Cycles = 1;", "  bit Unsupported = 1;", scope],
         "P": ["  int NumUnits = 1;", scope],
     }
-    rows, _files = census_mod.census(recs, riscv_dir=None)
+    rows, _files = census_mod.census(recs, target_dir=None)
     assert_true([row["model"] for row in rows] == ["TestModel"], f"models: {rows}")
     row = rows[0]
     assert_true(row["write_res_explicit"] == 1, f"explicit writes: {row}")
@@ -1968,11 +1969,13 @@ def riscv_census_matches_the_committed_table():
     if src is None or not dump.is_file() or not (src / "lib/Target/RISCV").is_dir() or not table.is_file():
         return
     recs = records_mod.load(str(dump))
-    rows, _files = census_mod.census(recs, riscv_dir=src / "lib/Target/RISCV")
-    text = census_mod.render(rows, census_mod.llvm_commit(src))
+    rows, _files = census_mod.census(recs, target_dir=src / "lib/Target/RISCV")
+    text = census_mod.render(
+        rows, census_mod.llvm_commit(src), targets_mod.profile("riscv").display
+    )
     assert_true(
         text == table.read_text(),
-        "census table is stale; regenerate with tools/ssdl/census_riscv.py "
+        "census table is stale; regenerate with tools/ssdl/census_sched.py "
         f"--records {paths_mod.RECORDS} --llvm $SSDL_LLVM_SRC",
     )
 

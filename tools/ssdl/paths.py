@@ -10,7 +10,7 @@ no module hard-codes an absolute path.  Three environment variables exist:
 
 Derived cache entries:
 
-    $SSDL_CACHE/riscv.rec      ``llvm-tblgen -print-records`` dump for RISC-V
+    $SSDL_CACHE/<target>.rec   ``llvm-tblgen -print-records`` dump per target
     $SSDL_CACHE/sweep-final/   ``family_sweep.py`` output, compared by check.py
 
 Neither cache entry is checked in: both are reproducible with
@@ -50,8 +50,15 @@ def cache_dir() -> Path:
 
 
 CACHE = cache_dir()
+#: RISC-V stays the default so every existing gate keeps its meaning; other
+#: targets go through ``records_path`` instead of a second global.
 RECORDS = CACHE / "riscv.rec"
 SWEEP = CACHE / "sweep-final"
+
+
+def records_path(target: str) -> Path:
+    """The record dump for ``target`` (``riscv`` -> ``$SSDL_CACHE/riscv.rec``)."""
+    return CACHE / f"{target}.rec"
 
 
 def tblgen() -> str | None:

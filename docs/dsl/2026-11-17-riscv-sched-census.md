@@ -4,7 +4,7 @@
 - status: **Evidence（可复算）**
 - 数据源：`llvm-tblgen -print-records` → `$SSDL_CACHE/riscv.rec`（151 MB）
 - LLVM：`700e551714cc`（`$SSDL_LLVM_SRC`）
-- 机读表：`data/riscv-sched-census.csv`（由 `tools/ssdl/census_riscv.py` 生成）
+- 机读表：`data/riscv-sched-census.csv`（由 `tools/ssdl/census_sched.py` 生成）
 
 ## 1. 口径
 
@@ -93,10 +93,10 @@ llvm-tblgen -print-records \
     $SSDL_LLVM_SRC/lib/Target/RISCV/RISCV.td
 
 # 生成 / 校验普查表
-python3 tools/ssdl/census_riscv.py --records $SSDL_CACHE/riscv.rec \
+python3 tools/ssdl/census_sched.py --records $SSDL_CACHE/riscv.rec \
     --llvm $SSDL_LLVM_SRC \
     -o data/riscv-sched-census.csv
-python3 tools/ssdl/census_riscv.py --records $SSDL_CACHE/riscv.rec \
+python3 tools/ssdl/census_sched.py --records $SSDL_CACHE/riscv.rec \
     --llvm $SSDL_LLVM_SRC --check
 ```
 

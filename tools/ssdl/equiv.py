@@ -468,6 +468,12 @@ def main(argv: list[str] | None = None) -> int:
         "record names, e.g. small (repeatable)",
     )
     ap.add_argument(
+        "--target",
+        choices=("riscv", "aarch64"),
+        default="riscv",
+        help="target whose TD schema expands --records-json (default: riscv)",
+    )
+    ap.add_argument(
         "--llvm-src",
         default=None,
         help="LLVM checkout used to expand a generated records-json table "
@@ -486,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         generated_recs = expand_records.expand_table(
-            args.generated, expand_records.schema_for(src)
+            args.generated, expand_records.schema_for_target(src, args.target)
         )
     else:
         generated_recs = load(args.generated)

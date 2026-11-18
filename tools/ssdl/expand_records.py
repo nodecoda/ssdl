@@ -26,18 +26,37 @@ from ssdl import paths, records, td_schema  # noqa: E402
 from ssdl.td_value import parse_value, render  # noqa: E402
 
 # Target classes the emitted records instantiate.  The schema sources are
-# target-agnostic; RISCV's processor/feature classes live in the target tree.
-RISCV_SOURCES = (
-    "lib/Target/RISCV/RISCVProcessors.td",
-    "lib/Target/RISCV/RISCVFeatures.td",
-)
+# target-agnostic; each target's processor/feature classes live in its tree.
+TARGET_SOURCES = {
+    "riscv": (
+        "lib/Target/RISCV/RISCVProcessors.td",
+        "lib/Target/RISCV/RISCVFeatures.td",
+    ),
+    "aarch64": (
+        "lib/Target/AArch64/AArch64Processors.td",
+        "lib/Target/AArch64/AArch64Features.td",
+        "lib/Target/AArch64/AArch64.td",
+    ),
+}
+RISCV_SOURCES = TARGET_SOURCES["riscv"]
 
 
-def schema_for(llvm_src: str | Path, extra: tuple[str, ...] = RISCV_SOURCES) -> td_schema.Schema:
+def schema_for(
+    llvm_src: str | Path, extra: tuple[str, ...] = RISCV_SOURCES
+) -> td_schema.Schema:
     root = Path(llvm_src)
     paths = list(td_schema.default_sources(str(root)))
     paths += [root / rel for rel in extra if (root / rel).is_file()]
     return td_schema.parse_files(paths)
+
+
+def schema_for_target(llvm_src: str | Path, target: str = "riscv") -> td_schema.Schema:
+    try:
+        extra = TARGET_SOURCES[target]
+    except KeyError:
+        known = ", ".join(sorted(TARGET_SOURCES))
+        raise SystemExit(f"unknown target {target!r}; expected one of: {known}") from None
+    return schema_for(llvm_src, extra)
 
 
 def split_args(text: str) -> list[str]:
@@ -296,13 +315,20 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("input", help="records JSON from emit_td.py --records-json")
     ap.add_argument(
+        "--target",
+        choices=("riscv", "aarch64"),
+        default="riscv",
+        help="target whose TD schema expands the table (default: riscv)",
+    )
+    ap.add_argument(
         "--llvm-src",
         default=None,
         help="LLVM checkout holding the TD schema (default: $SSDL_LLVM_SRC)",
     )
     args = ap.parse_args(argv)
     table = expand_table(
-        args.input, schema_for(args.llvm_src or paths.require_llvm_src())
+        args.input,
+        schema_for_target(args.llvm_src or paths.require_llvm_src(), args.target),
     )
     for name, lines in table.body.items():
         print(f"def {name} {{ // {table.cls[name]}")
