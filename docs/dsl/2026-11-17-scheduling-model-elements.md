@@ -3,6 +3,9 @@
 > 定位：这份文档解释 SSDL 到底在给 LLVM 描述什么。它不介绍 SSDL 语法，
 > 只画清楚 `MCSchedModel` 里四类字段的关系——**opcode → 资源 + 时间**。
 > 所有数字取自 `RISCVSchedSiFive7.td`，所有语义取自 LLVM 源码，见 §6 索引。
+>
+> 四层组成、元素清单、编译期流水线与 `PostRAScheduler` 等字段的消费者见
+> `2026-11-19-ssdl-scheduling-model.md`；本文只展开四要素的图与约束。
 
 ## 0. 一句话
 

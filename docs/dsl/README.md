@@ -46,6 +46,7 @@
 
 | 文档 | 状态 | 回答什么 |
 |---|---|---|
+| `2026-11-19-ssdl-scheduling-model.md` | 说明 | 调度模型的四层组成、元素清单与关系（含 `PostRAScheduler` 等字段的消费者） |
 | `2026-11-17-scheduling-model-elements.md` | 说明 | 调度模型四要素：资源、延迟、释放、读推进 |
 | `2026-11-17-llvm-scheduling-algorithms.md` | 说明 | MachineScheduler / llvm-mca 如何消费这些字段 |
 | `2026-11-17-debugging-machine-scheduler.md` | 说明 | 一步一步调试调度器 |
