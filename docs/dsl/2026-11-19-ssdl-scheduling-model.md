@@ -356,6 +356,31 @@ llvm-mca 完全不看这个字段。
 `LoopMicroOpBufferSize` 也不是调度器字段：它由 `BasicTTIImpl` 读取，作为循环
 展开时“循环体微操作数”的目标（`BasicTTIImpl.h:755-756`），属于 TTI/展开启发式。
 
+### 6.2 默认管线里到底谁在调度
+
+“SelectionDAG 内调度器只做线性化，真正的调度在 pre-RA / post-RA”这个说法
+方向正确，但要加三个限定：
+
+1. **默认路径确实近似线性化**。`createDefaultScheduler` 的选择顺序是：
+   target 自定义 `getDAGScheduler` → O0 / `enableMachineScheduler() &&
+   enableMachineSchedDefaultSched()` / `Sched::Source` →
+   `createSourceListDAGScheduler`（`SelectionDAGISel.cpp:299-311`）。
+   source 调度器的描述就是 “similar to list-burr but schedules in source
+   order when possible”（`ScheduleDAGRRList.cpp:73-76`）：它仍是带延迟依赖边的
+   拓扑排序，只是尽量保持源序，把 ILP/压力权衡留给后面的 MachineScheduler。
+2. **不是所有 target 都这样**。`getDAGScheduler` 可以整条覆盖；
+   `enableMachineScheduler()` 在基类返回 false（`TargetSubtargetInfo.cpp:51`），
+   没启用的 target 仍由 DAG 阶段的 BURR/ILP/hybrid 调度器做真正的 pre-RA 调度；
+   `-pre-RA-sched=list-burr|list-ilp|...` 也可强制。
+3. **post-RA 是可选的，而且分工不同**。它由 `PostRAScheduler` / `-misched-postra`
+   开关；主要面向 in-order/hazard 机器（避免 stall、插 NOP、打断反依赖），
+   乱序核通常不开。pre-RA MachineScheduler 也不是“只管寄存器压力”：
+   它在压力约束下用 sched model 的资源、latency、issue width 最大化 ILP。
+
+一句话：**默认现代 target 上，DAG 阶段选一个合法且尽量保序的线性序，真正的
+指令级重排发生在 pre-RA MachineScheduler；post-RA 只在需要的 target 上再补一次
+面向冒险与 ILP 的局部调度。**
+
 ---
 
 ## 7. 与 SSDL 的对应
