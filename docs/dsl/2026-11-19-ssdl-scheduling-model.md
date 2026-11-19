@@ -377,6 +377,22 @@ llvm-mca 完全不看这个字段。
    乱序核通常不开。pre-RA MachineScheduler 也不是“只管寄存器压力”：
    它在压力约束下用 sched model 的资源、latency、issue width 最大化 ILP。
 
+
+
+4. **pre-RA 也是 CPU 感知的，只是感知粒度是“模型”，不是“模拟器”**。
+   `TargetSchedModel` 直接向 `MCSchedModel` 要 `NumMicroOps`、`IssueWidth`、
+   `InstrLatency`、`OperandLatency`（含 `ReadAdvance` 折扣）和每条指令的
+   `WriteProcRes` 区间（`TargetSchedule.cpp:91/169/237`）。
+   `SchedBoundary::checkHazard` 每拍检查：uop 数是否超过发射宽度、
+   `mustBeginGroup`/`mustEndGroup`、以及资源的 `acquire/release` 区间是否冲突
+   （`MachineScheduler.cpp:2995-3055`）。如果 target 提供 itineraries，
+   `CreateTargetMIHazardRecognizer` 还会启用 `ScoreboardHazardRecognizer`，
+   用 `InstrItineraryData` 的 stage 做流水线阶段级冒险检查；没有 itineraries
+   时这个识别器自动禁用（`TargetInstrInfo.cpp:1728`、
+   `ScoreboardHazardRecognizer.cpp:30-70`）。
+   但它**不是逐拍流水线模拟**：没有寄存器重命名/ROB 建模，`MicroOpBufferSize`
+   只是启发式阈值；完整的逐拍模拟是 llvm-mca 的职责。
+
 一句话：**默认现代 target 上，DAG 阶段选一个合法且尽量保序的线性序，真正的
 指令级重排发生在 pre-RA MachineScheduler；post-RA 只在需要的 target 上再补一次
 面向冒险与 ILP 的局部调度。**
